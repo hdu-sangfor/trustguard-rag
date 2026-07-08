@@ -1,0 +1,40 @@
+"""MySQL 连接（SQLAlchemy async）+ 健康检查。
+
+元数据 / 文档 / 分块 / 任务存储的底座，见 §8.1。
+"""
+from __future__ import annotations
+
+import time
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+from app.schemas.api import DependencyStatus
+from app.settings import get_settings
+
+_engine: AsyncEngine | None = None
+
+
+def get_engine() -> AsyncEngine:
+    global _engine
+    if _engine is None:
+        s = get_settings()
+        _engine = create_async_engine(s.mysql_dsn, pool_pre_ping=True, pool_recycle=1800)
+    return _engine
+
+
+async def check() -> DependencyStatus:
+    t0 = time.perf_counter()
+    try:
+        async with get_engine().connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        return DependencyStatus(status="up", latency_ms=round((time.perf_counter() - t0) * 1000, 1))
+    except Exception as e:  # noqa: BLE001
+        return DependencyStatus(status="down", detail=str(e))
+
+
+async def close() -> None:
+    global _engine
+    if _engine is not None:
+        await _engine.dispose()
+        _engine = None

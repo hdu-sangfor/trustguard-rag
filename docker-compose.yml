@@ -1,0 +1,132 @@
+# TrustGuard RAG 平台全栈。宿主机端口统一用 182xx 段，便于与 trustguard-agent 并行运行。
+# 启动：docker compose up -d --build   健康检查：curl http://localhost:18200/health
+name: trustguard-rag
+
+x-optional-env-files: &optional-env-files
+  - path: .env
+    required: false
+
+x-build-args: &build-args
+  DOCKERHUB_REGISTRY: ${DOCKERHUB_REGISTRY:-docker.io}
+  TRUSTGUARD_NETWORK_PROXY: ${TRUSTGUARD_NETWORK_PROXY:-}
+  PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+  PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
+
+x-build-extra-hosts: &build-extra-hosts
+  - "host.docker.internal:host-gateway"
+
+services:
+  rag-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: *build-args
+      extra_hosts: *build-extra-hosts
+      network: host
+    image: ${TRUSTGUARD_IMAGE_PREFIX:-trustguard-}rag-service
+    ports:
+      - "18200:18200"
+    environment:
+      RAG_MYSQL_HOST: mysql
+      RAG_MYSQL_PORT: "3306"
+      RAG_MYSQL_USER: ${MYSQL_USER:-trustguard}
+      RAG_MYSQL_PASSWORD: ${MYSQL_PASSWORD:-trustguard}
+      RAG_MYSQL_DB: ${MYSQL_DATABASE:-trustguard_rag}
+      RAG_QDRANT_HOST: qdrant
+      RAG_QDRANT_PORT: "6333"
+      RAG_REDIS_HOST: redis
+      RAG_REDIS_PORT: "6379"
+      RAG_RABBITMQ_HOST: rabbitmq
+      RAG_RABBITMQ_PORT: "5672"
+      RAG_MINIO_ENABLED: "true"
+      RAG_MINIO_ENDPOINT: minio:9000
+      RAG_MINIO_ACCESS_KEY: minioadmin
+      RAG_MINIO_SECRET_KEY: minioadmin
+      RAG_MINIO_BUCKET: trustguard-rag-artifacts
+      RAG_QDRANT_MOCK: "true"
+      RAG_MODE: ingest
+    env_file: *optional-env-files
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mysql:
+    image: ${MYSQL_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/library/mysql:8.0}
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-trustguard_rag}
+      MYSQL_USER: ${MYSQL_USER:-trustguard}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-trustguard}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    ports:
+      - "18210:3306"
+    volumes:
+      - trustguard_rag_mysql:/var/lib/mysql
+      - ./docker/mysql-init.d:/docker-entrypoint-initdb.d:ro
+      - ./docker/conf.d:/etc/mysql/conf.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: ${REDIS_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/library/redis:7-alpine}
+    ports:
+      - "18211:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: ${RABBITMQ_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/library/rabbitmq:3-management-alpine}
+    ports:
+      - "18212:5672"
+      - "18213:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  qdrant:
+    image: ${QDRANT_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/qdrant/qdrant:latest}
+    ports:
+      - "18214:6333"
+      - "18215:6334"
+    volumes:
+      - trustguard_rag_qdrant:/qdrant/storage
+
+  minio:
+    image: ${MINIO_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/minio/minio:latest}
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "18217:9000"
+      - "18218:9001"
+    volumes:
+      - trustguard_rag_minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  trustguard_rag_mysql:
+  trustguard_rag_qdrant:
+  trustguard_rag_minio:
