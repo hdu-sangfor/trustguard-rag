@@ -1,4 +1,4 @@
-"""Shared MinIO client and bucket bootstrap."""
+"""共享 MinIO 客户端和 bucket 初始化。"""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -10,6 +10,7 @@ from app.settings import get_settings
 
 @lru_cache
 def get_minio_client() -> Minio:
+    """返回根据应用配置创建并缓存的 MinIO 客户端。"""
     s = get_settings()
     return Minio(
         s.minio_endpoint,
@@ -20,6 +21,7 @@ def get_minio_client() -> Minio:
 
 
 def ensure_bucket() -> None:
+    """在配置的 bucket 不存在时创建它。"""
     s = get_settings()
     client = get_minio_client()
     if not client.bucket_exists(s.minio_bucket):
@@ -27,4 +29,5 @@ def ensure_bucket() -> None:
 
 
 def clear_minio_client_cache() -> None:
+    """清空客户端缓存，便于测试或配置变更后重建。"""
     get_minio_client.cache_clear()

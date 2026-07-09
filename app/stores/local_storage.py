@@ -1,4 +1,4 @@
-"""Local storage health check."""
+"""本地存储健康检查。"""
 from __future__ import annotations
 
 import time
@@ -9,6 +9,7 @@ from app.settings import get_settings
 
 
 async def check() -> DependencyStatus:
+    """通过创建并删除小型暂存探针文件验证本地存储。"""
     t0 = time.perf_counter()
     try:
         s = get_settings()

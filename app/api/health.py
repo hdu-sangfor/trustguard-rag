@@ -30,6 +30,7 @@ _CHECKS = {
 
 
 def _ingest_required() -> tuple[str, ...]:
+    """列出入库模式就绪检查必须健康的依赖。"""
     s = get_settings()
     required: list[str] = ["mysql"]
     if s.minio_enabled:
@@ -42,15 +43,18 @@ def _ingest_required() -> tuple[str, ...]:
 
 
 def _ingest_reported() -> tuple[str, ...]:
+    """列出入库模式会报告的依赖，包括可选的 Qdrant 状态。"""
     return _ingest_required() + ("qdrant",)
 
 
 @router.get("/health/live", summary="存活探针")
 async def live() -> dict[str, str]:
+    """返回轻量存活状态，不访问外部依赖。"""
     return {"status": "alive"}
 
 
 async def _gather() -> dict[str, DependencyStatus]:
+    """按当前 RAG 模式执行对应的依赖检查。"""
     s = get_settings()
     if s.rag_mode == "ingest":
         names = list(_ingest_reported())
@@ -69,6 +73,7 @@ async def _gather() -> dict[str, DependencyStatus]:
 
 
 def _overall(deps: dict[str, DependencyStatus]) -> str:
+    """将依赖状态汇总为对外的健康状态。"""
     s = get_settings()
     if s.rag_mode == "ingest":
         for name in _ingest_required():
@@ -80,6 +85,7 @@ def _overall(deps: dict[str, DependencyStatus]) -> str:
 
 
 def _build(deps: dict[str, DependencyStatus]) -> HealthResponse:
+    """组装包含服务元数据和依赖详情的健康检查响应。"""
     s = get_settings()
     return HealthResponse(
         status=_overall(deps),
@@ -92,11 +98,13 @@ def _build(deps: dict[str, DependencyStatus]) -> HealthResponse:
 
 @router.get("/health", response_model=HealthResponse, summary="详细健康检查（含依赖状态）")
 async def health() -> HealthResponse:
+    """返回详细健康信息，不改变 HTTP 状态码。"""
     return _build(await _gather())
 
 
 @router.get("/health/ready", response_model=HealthResponse, summary="就绪探针")
 async def ready(response: Response) -> HealthResponse:
+    """返回就绪状态；必要依赖异常时返回 HTTP 503。"""
     result = _build(await _gather())
     if result.status != "ok":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE

@@ -1,4 +1,4 @@
-"""Ingest publication saga."""
+"""入库发布 Saga。"""
 from __future__ import annotations
 
 import logging
@@ -39,6 +39,7 @@ class IngestPipeline:
         indexer=None,
         compensator: Compensator | None = None,
     ) -> None:
+        """组装流水线依赖，允许测试注入替身对象。"""
         self._jobs = job_store or JobStore()
         self._documents = document_store or DocumentStore()
         self._chunks = chunk_store or ChunkStore()
@@ -54,6 +55,7 @@ class IngestPipeline:
         )
 
     async def run(self, job_id: str) -> None:
+        """执行单个上传文件任务的完整入库流程。"""
         job = await self._jobs.get(job_id)
         if not job:
             return
@@ -177,6 +179,7 @@ class IngestPipeline:
             self._blobs.delete_job_staging(job_id)
 
     async def resolve_conflict(self, job_id: str, keep_document_id: str) -> None:
+        """通过选择待定文档或已有文档来解决冲突任务。"""
         job = await self._jobs.get(job_id)
         if not job or job.status != "conflict":
             raise ValueError("Job is not in conflict state")
@@ -208,6 +211,7 @@ class IngestPipeline:
         original_filename: str,
         job_id: str,
     ) -> None:
+        """按 artifact、分块、嵌入、索引步骤发布暂存的冲突胜出文档。"""
         try:
             await self._documents.update_status(document_id, "indexing")
             blob_path = await self._commit_artifacts(document_id, extracted)
@@ -248,6 +252,7 @@ class IngestPipeline:
             raise
 
     async def _load_upload(self, job) -> tuple[bytes, str, str | None]:
+        """加载任务暂存的上传字节和原始请求元数据。"""
         opts = job.options_json or {}
         original_filename = opts.get("original_filename", "upload.bin")
         mime = opts.get("mime")
@@ -255,6 +260,7 @@ class IngestPipeline:
         return data, original_filename, mime
 
     async def _detect_conflicts(self, job, extracted: ExtractedDocument) -> list[str]:
+        """查找按文件名或来源 URI 冲突的已发布文档。"""
         conflicts: list[str] = []
         if job.source_type == "file" and extracted.metadata.get("original_filename"):
             fname = extracted.metadata["original_filename"]
@@ -271,6 +277,7 @@ class IngestPipeline:
         return []
 
     async def _commit_artifacts(self, document_id: str, extracted: ExtractedDocument) -> str:
+        """将抽取文本、元数据和原始字节写入 blob 存储。"""
         meta = {
             "content_hash": extracted.content_hash,
             "mime": extracted.mime,
@@ -290,4 +297,5 @@ class IngestPipeline:
 
 
 def get_ingest_pipeline() -> IngestPipeline:
+    """使用生产配置的依赖创建入库流水线。"""
     return IngestPipeline()

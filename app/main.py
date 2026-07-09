@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """启动时配置日志，关闭时释放共享客户端。"""
     s = get_settings()
     logging.basicConfig(level=s.log_level)
     logger.info("starting %s v%s (env=%s) on :%s", s.app_name, s.app_version, s.app_env, s.api_port)
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    """构建 FastAPI 应用并注册所有 HTTP 路由。"""
     s = get_settings()
     app = FastAPI(
         title=s.app_name,
@@ -48,6 +50,7 @@ def create_app() -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
+        """将服务根路径重定向到交互式 API 文档。"""
         return RedirectResponse(url="/docs")
 
     return app

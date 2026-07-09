@@ -16,6 +16,7 @@ _engine: AsyncEngine | None = None
 
 
 def get_engine() -> AsyncEngine:
+    """创建或复用进程级 async SQLAlchemy 引擎。"""
     global _engine
     if _engine is None:
         s = get_settings()
@@ -24,6 +25,7 @@ def get_engine() -> AsyncEngine:
 
 
 async def check() -> DependencyStatus:
+    """通过轻量 SELECT 探针验证 MySQL 连通性。"""
     t0 = time.perf_counter()
     try:
         async with get_engine().connect() as conn:
@@ -34,6 +36,7 @@ async def check() -> DependencyStatus:
 
 
 async def close() -> None:
+    """在应用关闭时释放共享 SQLAlchemy 引擎。"""
     global _engine
     if _engine is not None:
         await _engine.dispose()

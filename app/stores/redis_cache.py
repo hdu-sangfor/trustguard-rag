@@ -12,6 +12,7 @@ _client: aioredis.Redis | None = None
 
 
 def get_client() -> "aioredis.Redis":
+    """创建或复用进程级 Redis 客户端。"""
     global _client
     if _client is None:
         s = get_settings()
@@ -20,6 +21,7 @@ def get_client() -> "aioredis.Redis":
 
 
 async def check() -> DependencyStatus:
+    """向 Redis 发送 ping；连接池失效时重置客户端。"""
     t0 = time.perf_counter()
     try:
         await get_client().ping()
@@ -31,6 +33,7 @@ async def check() -> DependencyStatus:
 
 
 async def close() -> None:
+    """在关闭应用或健康检查失败时关闭共享 Redis 客户端。"""
     global _client
     if _client is not None:
         await _client.aclose()

@@ -1,4 +1,4 @@
-"""Document API schemas."""
+"""文档 API 数据结构。"""
 from __future__ import annotations
 
 from datetime import datetime
