@@ -23,6 +23,7 @@ def tmp_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("RAG_LOCAL_STORAGE_DIR", str(storage))
     monkeypatch.setenv("RAG_MODE", "ingest")
     monkeypatch.setenv("RAG_QDRANT_MOCK", "true")
+    monkeypatch.setenv("RAG_EMBEDDING_PROVIDER", "pseudo")
     get_settings.cache_clear()
     return storage
 

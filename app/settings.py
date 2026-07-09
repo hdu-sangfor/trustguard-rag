@@ -95,11 +95,24 @@ class Settings(BaseSettings):
     local_storage_dir: str = "./data/storage"  # minio_enabled=False 时使用
 
     # --- Embedding（启动前需冻结单一模型，维度必须与模型匹配；见 §5.1“嵌入模型冻结”） ---
-    embedding_provider: str = "openai_compatible"  # openai_compatible | local_bge，嵌入提供方
-    embedding_model: str = "bge-m3"
+    embedding_provider: str = "pseudo"  # pseudo | local | api | openai_compatible
+    embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
     embedding_dim: int = 1024
+    embedding_device: str = "auto"
+    embedding_batch_size: int = 16
+    embedding_normalize: bool = True
+    embedding_query_instruction: str = (
+        "Given a cybersecurity search query, retrieve relevant passages that answer the query"
+    )
+    embedding_download_source: str = "huggingface"  # huggingface | modelscope
+    embedding_cache_dir: str | None = None
+    huggingface_endpoint: str | None = None
+    huggingface_hub_url: str | None = None
+    modelscope_endpoint: str | None = None
+    modelscope_cache_dir: str | None = None
     embedding_base_url: str | None = None
     embedding_api_key: str | None = None
+    embedding_api_timeout_seconds: float = 60.0
 
     # --- Rerank ---
     rerank_provider: str = "bge"  # bge | jina | cohere | none，重排提供方

@@ -145,7 +145,11 @@ class IngestPipeline:
                         "embedding_model": settings.embedding_model,
                         "embedding_dim": settings.embedding_dim,
                         "qdrant_point_id": cid,
-                        "metadata": draft.metadata,
+                        "metadata": {
+                            **draft.metadata,
+                            "embedding_provider": settings.embedding_provider,
+                            "embedding_download_source": settings.embedding_download_source,
+                        },
                     }
                 )
 
@@ -233,7 +237,11 @@ class IngestPipeline:
                         "embedding_model": settings.embedding_model,
                         "embedding_dim": settings.embedding_dim,
                         "qdrant_point_id": cid,
-                        "metadata": draft.metadata,
+                        "metadata": {
+                            **draft.metadata,
+                            "embedding_provider": settings.embedding_provider,
+                            "embedding_download_source": settings.embedding_download_source,
+                        },
                     }
                 )
             await self._indexer.upsert_chunks(

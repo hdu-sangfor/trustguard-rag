@@ -44,6 +44,13 @@ class QdrantIndexer:
         """写入分块向量及后续检索需要的 payload 字段。"""
         if len(chunks) != len(vectors):
             raise IngestError(INDEX_FAILED, "Chunk/vector count mismatch")
+        for idx, vector in enumerate(vectors):
+            if len(vector) != self._settings.embedding_dim:
+                raise IngestError(
+                    INDEX_FAILED,
+                    f"Vector dimension mismatch at index {idx}: "
+                    f"expected {self._settings.embedding_dim}, got {len(vector)}",
+                )
         try:
             await self.ensure_collection()
             points = []
@@ -55,6 +62,9 @@ class QdrantIndexer:
                     "page_no": chunk.get("page_no"),
                     "source_uri": source_uri,
                     "original_filename": original_filename,
+                    "embedding_model": self._settings.embedding_model,
+                    "embedding_dim": self._settings.embedding_dim,
+                    "embedding_provider": self._settings.embedding_provider,
                 }
                 points.append(
                     PointStruct(id=_to_point_id(point_id), vector=vector, payload=payload)
