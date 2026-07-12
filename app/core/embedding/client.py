@@ -36,7 +36,7 @@ def _pseudo_vector(text: str, dim: int) -> list[float]:
     return [v / norm for v in out]
 
 
-def _normalize_provider(provider: str) -> str:
+def normalize_embedding_provider(provider: str) -> str:
     """将外部配置的 provider 名称归一化为内部分发值。"""
     value = provider.strip().lower()
     if value in {"api", "openai", "openai_compatible", "remote"}:
@@ -65,7 +65,7 @@ class EmbeddingClient:
     def __init__(self, settings: Settings | None = None) -> None:
         """初始化嵌入客户端并缓存归一化后的提供方类型。"""
         self._settings = settings or get_settings()
-        self._provider = _normalize_provider(self._settings.embedding_provider)
+        self._provider = normalize_embedding_provider(self._settings.embedding_provider)
 
     @property
     def model_name(self) -> str:
@@ -163,7 +163,8 @@ class LocalSentenceTransformerProvider:
         except ImportError as e:
             raise EmbeddingError(
                 "Local embeddings require sentence-transformers. "
-                "Install requirements.txt or switch RAG_EMBEDDING_PROVIDER=api/pseudo."
+                "Run 'uv sync --extra local-embedding' or switch "
+                "RAG_EMBEDDING_PROVIDER=api/pseudo."
             ) from e
 
         model_path = self._resolve_model_path()
@@ -201,7 +202,8 @@ class LocalSentenceTransformerProvider:
         except ImportError as e:
             raise EmbeddingError(
                 "ModelScope downloads require modelscope. "
-                "Install requirements.txt or set RAG_EMBEDDING_DOWNLOAD_SOURCE=huggingface."
+                "Run 'uv sync --extra local-embedding' or set "
+                "RAG_EMBEDDING_DOWNLOAD_SOURCE=huggingface."
             ) from e
         if self._settings.modelscope_endpoint:
             os.environ["MODELSCOPE_DOMAIN"] = self._settings.modelscope_endpoint.rstrip("/")
@@ -232,6 +234,9 @@ def _get_local_provider(settings: Settings) -> LocalSentenceTransformerProvider:
         settings.huggingface_hub_url,
         settings.modelscope_endpoint,
         settings.modelscope_cache_dir,
+        settings.embedding_batch_size,
+        settings.embedding_normalize,
+        settings.embedding_query_instruction,
     )
     if _LOCAL_PROVIDER is None or _LOCAL_PROVIDER_KEY != key:
         _LOCAL_PROVIDER = LocalSentenceTransformerProvider(settings)

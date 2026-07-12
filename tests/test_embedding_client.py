@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.embedding import client as embedding_module
 from app.core.embedding.client import EmbeddingClient, EmbeddingError
-from app.settings import get_settings
+from app.settings import Settings, get_settings
 
 
 @pytest.mark.asyncio
@@ -103,3 +104,48 @@ async def test_embedding_dimension_mismatch_raises(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(EmbeddingError, match="dimension mismatch"):
         await EmbeddingClient().embed_texts(["a"])
+
+
+@pytest.mark.asyncio
+async def test_local_embedding_runs_in_thread_and_validates_dimension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], bool]] = []
+
+    class _Provider:
+        def encode(self, texts: list[str], is_query: bool) -> list[list[float]]:
+            calls.append((texts, is_query))
+            return [[1.0, 0.0]]
+
+    async def _to_thread(func, *args):
+        return func(*args)
+
+    monkeypatch.setattr(embedding_module, "_get_local_provider", lambda settings: _Provider())
+    monkeypatch.setattr(embedding_module.asyncio, "to_thread", _to_thread)
+    settings = Settings(embedding_provider="local", embedding_dim=3)
+
+    with pytest.raises(EmbeddingError, match="dimension mismatch"):
+        await EmbeddingClient(settings).embed_query("local query")
+
+    assert calls == [(["local query"], True)]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("embedding_batch_size", 32),
+        ("embedding_normalize", False),
+        ("embedding_query_instruction", "A different instruction"),
+    ],
+)
+def test_local_provider_cache_tracks_behavior_settings(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: object
+) -> None:
+    monkeypatch.setattr(embedding_module, "_LOCAL_PROVIDER", None)
+    monkeypatch.setattr(embedding_module, "_LOCAL_PROVIDER_KEY", None)
+    settings = Settings(embedding_provider="local")
+
+    original = embedding_module._get_local_provider(settings)
+    changed = settings.model_copy(update={field: value})
+
+    assert embedding_module._get_local_provider(changed) is not original

@@ -1,16 +1,45 @@
-FROM python:3.11-slim
+# syntax=docker/dockerfile:1.7
+ARG DOCKERHUB_REGISTRY=docker.io
+ARG UV_INDEX_URL
+ARG UV_EXTRA_INDEX_URL
+ARG UV_DEFAULT_INDEX
+ARG PIP_INDEX_URL
+ARG PIP_EXTRA_INDEX_URL
+
+FROM ${DOCKERHUB_REGISTRY}/astral/uv:0.11.7 AS uv
+FROM ${DOCKERHUB_REGISTRY}/library/python:3.11-slim
+ARG UV_INDEX_URL
+ARG UV_EXTRA_INDEX_URL
+ARG UV_DEFAULT_INDEX
+ARG PIP_INDEX_URL
+ARG PIP_EXTRA_INDEX_URL
+
+COPY --from=uv /uv /uvx /bin/
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    PATH="/app/.venv/bin:$PATH"
+
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    if [ -n "${UV_DEFAULT_INDEX}" ]; then export UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX}"; fi; \
+    if [ -n "${UV_INDEX_URL}" ]; then export UV_INDEX_URL="${UV_INDEX_URL}"; fi; \
+    if [ -n "${UV_EXTRA_INDEX_URL}" ]; then export UV_EXTRA_INDEX_URL="${UV_EXTRA_INDEX_URL}"; fi; \
+    if [ -n "${PIP_INDEX_URL}" ]; then export PIP_INDEX_URL="${PIP_INDEX_URL}"; fi; \
+    if [ -n "${PIP_EXTRA_INDEX_URL}" ]; then export PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}"; fi; \
+    uv sync --frozen --no-dev --no-install-project
 
 COPY app ./app
 
-ENV RAG_API_HOST=0.0.0.0
-ENV RAG_API_PORT=18200
-ENV RAG_MODE=ingest
-ENV RAG_LOCAL_STORAGE_DIR=/data/storage
+ENV RAG_API_HOST=0.0.0.0 \
+    RAG_API_PORT=18200 \
+    RAG_MODE=ingest \
+    RAG_LOCAL_STORAGE_DIR=/data/storage
 
 RUN mkdir -p /data/storage
 

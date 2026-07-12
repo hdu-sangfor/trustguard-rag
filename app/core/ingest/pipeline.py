@@ -5,25 +5,33 @@ import logging
 from typing import Any
 from uuid import uuid4
 
-from app.core.embedding.client import EmbeddingClient
+from app.core.embedding.client import EmbeddingClient, normalize_embedding_provider
 from app.core.indexing.qdrant_indexer import get_qdrant_indexer
 from app.core.ingest.chunker import chunk_extracted_text
 from app.core.ingest.compensator import Compensator
 from app.core.ingest.errors import (
     ARTIFACT_WRITE_FAILED,
     FILENAME_CONFLICT,
-    SOURCE_CONFLICT,
     IngestError,
 )
 from app.core.ingest.extractors.file import FileExtractor
 from app.core.ingest.models import ExtractedDocument
-from app.settings import get_settings
+from app.settings import Settings, get_settings
 from app.stores.blob_store import BlobStore, get_blob_store
 from app.stores.chunk_store import ChunkStore
 from app.stores.document_store import DocumentStore
 from app.stores.job_store import JobStore
 
 logger = logging.getLogger(__name__)
+
+
+def _embedding_metadata(settings: Settings) -> dict[str, str]:
+    """仅为本地嵌入记录模型下载源，避免远程/伪向量元数据产生歧义。"""
+    provider = normalize_embedding_provider(settings.embedding_provider)
+    metadata = {"embedding_provider": provider}
+    if provider == "local":
+        metadata["embedding_download_source"] = settings.embedding_download_source
+    return metadata
 
 
 class IngestPipeline:
@@ -130,6 +138,7 @@ class IngestPipeline:
             await self._jobs.mark_running(job_id, "embed")
             vectors = await self._embedder.embed_texts([d.text for d in drafts])
             settings = get_settings()
+            embedding_metadata = _embedding_metadata(settings)
 
             chunk_rows: list[dict[str, Any]] = []
             for i, draft in enumerate(drafts):
@@ -147,8 +156,7 @@ class IngestPipeline:
                         "qdrant_point_id": cid,
                         "metadata": {
                             **draft.metadata,
-                            "embedding_provider": settings.embedding_provider,
-                            "embedding_download_source": settings.embedding_download_source,
+                            **embedding_metadata,
                         },
                     }
                 )
@@ -223,6 +231,7 @@ class IngestPipeline:
             drafts = chunk_extracted_text(extracted.text)
             vectors = await self._embedder.embed_texts([d.text for d in drafts])
             settings = get_settings()
+            embedding_metadata = _embedding_metadata(settings)
             chunk_rows: list[dict[str, Any]] = []
             for i, draft in enumerate(drafts):
                 cid = str(uuid4())
@@ -239,8 +248,7 @@ class IngestPipeline:
                         "qdrant_point_id": cid,
                         "metadata": {
                             **draft.metadata,
-                            "embedding_provider": settings.embedding_provider,
-                            "embedding_download_source": settings.embedding_download_source,
+                            **embedding_metadata,
                         },
                     }
                 )
