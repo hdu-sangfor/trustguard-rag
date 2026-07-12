@@ -12,6 +12,7 @@ _client: AsyncOpenSearch | None = None
 
 
 def get_client() -> AsyncOpenSearch:
+    """创建或复用进程级 OpenSearch 异步客户端。"""
     global _client
     if _client is None:
         s = get_settings()
@@ -27,6 +28,7 @@ def get_client() -> AsyncOpenSearch:
 
 
 async def check() -> DependencyStatus:
+    """向 OpenSearch 发送 ping；连接失效时重置客户端。"""
     t0 = time.perf_counter()
     try:
         ok = await get_client().ping()
@@ -41,6 +43,7 @@ async def check() -> DependencyStatus:
 
 
 async def close() -> None:
+    """在关闭应用或健康检查失败时关闭共享 OpenSearch 客户端。"""
     global _client
     if _client is not None:
         await _client.close()

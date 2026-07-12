@@ -1,4 +1,4 @@
-"""Publication rollback / compensation."""
+"""发布回滚与补偿逻辑。"""
 from __future__ import annotations
 
 import logging
@@ -20,12 +20,14 @@ class Compensator:
         blob_store: BlobStore | None = None,
         indexer=None,
     ) -> None:
+        """组装用于撤销部分发布文档的存储和索引器。"""
         self._documents = document_store or DocumentStore()
         self._chunks = chunk_store or ChunkStore()
         self._blobs = blob_store or get_blob_store()
         self._indexer = indexer or get_qdrant_indexer()
 
     async def rollback_document(self, document_id: str) -> None:
+        """删除发布失败文档的 artifacts、分块和向量。"""
         doc = await self._documents.get(document_id)
         if doc and doc.blob_path:
             self._blobs.delete_prefix(doc.blob_path)
@@ -42,6 +44,7 @@ class Compensator:
         await self._documents.update_status(document_id, "failed")
 
     async def supersede_document(self, document_id: str) -> None:
+        """在冲突胜出文档确定后删除旧的已发布文档。"""
         doc = await self._documents.get(document_id)
         if doc and doc.blob_path:
             self._blobs.delete_prefix(doc.blob_path)
@@ -59,4 +62,5 @@ class Compensator:
 
 
 def get_compensator() -> Compensator:
+    """使用已配置的存储和索引器创建补偿器。"""
     return Compensator()

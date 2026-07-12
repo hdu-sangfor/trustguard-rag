@@ -13,14 +13,14 @@ curl http://localhost:18200/health
 ## 本地开发（Linux）
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install -e ".[dev]"
+uv sync
 docker compose up -d mysql qdrant redis rabbitmq minio
-uvicorn app.main:app --reload --port 18200
-pytest
+uv run uvicorn app.main:app --reload --port 18200
+uv run python -m pytest
 ```
+
+依赖统一在 `pyproject.toml` 中声明，并由 `uv.lock` 锁定。修改依赖后运行
+`uv lock` 更新锁文件；CI 或发布环境可用 `uv lock --check` 校验锁文件是否同步。
 
 ## 端口（182xx）
 
@@ -41,6 +41,59 @@ curl -X POST http://localhost:18200/v1/ingest/jobs \
 
 curl http://localhost:18200/v1/ingest/jobs/<job_id>
 curl http://localhost:18200/v1/documents/<document_id>/chunks
+```
+
+## Embedding
+
+默认轻量安装不包含本地推理依赖，`RAG_EMBEDDING_PROVIDER=pseudo` 可用于开发/测试。
+生产建议接入 OpenAI-compatible embedding API；如需本地模型推理，再安装可选依赖：
+
+```bash
+uv sync --extra local-embedding
+```
+
+未设置 embedding 环境变量时，代码默认使用 `pseudo` provider，并按
+`Qwen/Qwen3-Embedding-0.6B` 配置 `1024` 维向量；`.env.example` 则给出生产推荐的
+OpenAI-compatible API 与 `text-embedding-v4` 示例。
+Qdrant collection 会按该维度创建；更换模型或维度后需要重建 collection 并重新入库。
+
+本地 Hugging Face 下载：
+
+```env
+RAG_EMBEDDING_PROVIDER=local
+RAG_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+RAG_EMBEDDING_DIM=1024
+RAG_EMBEDDING_DOWNLOAD_SOURCE=huggingface
+# 网络较慢时可开启镜像
+# RAG_HUGGINGFACE_ENDPOINT=https://hf-mirror.com
+# RAG_EMBEDDING_CACHE_DIR=./data/models/huggingface
+```
+
+本地 ModelScope 下载：
+
+```env
+RAG_EMBEDDING_PROVIDER=local
+RAG_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+RAG_EMBEDDING_DIM=1024
+RAG_EMBEDDING_DOWNLOAD_SOURCE=modelscope
+RAG_MODELSCOPE_ENDPOINT=https://www.modelscope.cn
+RAG_MODELSCOPE_CACHE_DIR=./data/models/modelscope
+```
+
+OpenAI-compatible API：
+
+```env
+RAG_EMBEDDING_PROVIDER=api
+RAG_EMBEDDING_BASE_URL=http://localhost:8080/v1
+RAG_EMBEDDING_API_KEY=
+RAG_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+RAG_EMBEDDING_DIM=1024
+```
+
+无模型的开发/测试环境可使用确定性伪向量：
+
+```env
+RAG_EMBEDDING_PROVIDER=pseudo
 ```
 
 ## 目录结构（概要）

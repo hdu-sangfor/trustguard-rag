@@ -1,4 +1,4 @@
-"""Extractor output models."""
+"""抽取器输出模型。"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

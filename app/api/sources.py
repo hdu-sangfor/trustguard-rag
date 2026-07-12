@@ -1,4 +1,4 @@
-"""Source capabilities API."""
+"""数据源能力 API。"""
 from __future__ import annotations
 
 from fastapi import APIRouter
@@ -10,6 +10,7 @@ router = APIRouter(prefix="/v1/sources", tags=["sources"])
 
 @router.get("/capabilities")
 async def source_capabilities() -> dict:
+    """描述入库 API 支持的数据源类型和上传限制。"""
     settings = get_settings()
     return {
         "sources": [

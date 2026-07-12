@@ -1,4 +1,4 @@
-"""PDF page-aware chunking."""
+"""感知 PDF 页码的文本分块。"""
 from __future__ import annotations
 
 import re
@@ -20,15 +20,18 @@ class ChunkDraft:
 
 
 def estimate_tokens(text: str) -> int:
+    """用字符数启发式估算 token 数。"""
     return max(1, len(text) // 4)
 
 
 def _split_paragraphs(text: str) -> list[str]:
+    """按空行边界切出非空段落。"""
     parts = re.split(r"\n\s*\n", text.strip())
     return [p.strip() for p in parts if p.strip()]
 
 
 def _split_oversized(text: str, page_no: int | None, target_tokens: int) -> list[ChunkDraft]:
+    """将段落合并成目标大小的分块，并硬切过长段落。"""
     if estimate_tokens(text) <= target_tokens:
         return [
             ChunkDraft(
@@ -53,7 +56,10 @@ def _split_oversized(text: str, page_no: int | None, target_tokens: int) -> list
                         page_no=page_no,
                         page_span=str(page_no) if page_no else None,
                         token_count=estimate_tokens(joined),
-                        metadata={"page_no": page_no, "page_span": str(page_no) if page_no else None},
+                        metadata={
+                            "page_no": page_no,
+                            "page_span": str(page_no) if page_no else None,
+                        },
                     )
                 )
                 buf, buf_tokens = [], 0
@@ -103,6 +109,7 @@ def _split_oversized(text: str, page_no: int | None, target_tokens: int) -> list
 
 
 def chunk_extracted_text(text: str) -> list[ChunkDraft]:
+    """将抽取文本切成可用于嵌入的页码感知分块草稿。"""
     settings = get_settings()
     target = settings.chunk_target_tokens
     chunks: list[ChunkDraft] = []

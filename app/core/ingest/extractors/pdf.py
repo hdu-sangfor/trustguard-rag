@@ -1,4 +1,4 @@
-"""PDF text extraction via PyMuPDF."""
+"""基于 PyMuPDF 的 PDF 文本抽取。"""
 from __future__ import annotations
 
 import hashlib
@@ -27,6 +27,7 @@ class PdfExtractor:
         *,
         original_filename: str = "document.pdf",
     ) -> ExtractedDocument:
+        """校验 PDF，并抽取文本、元数据和稳定内容标识。"""
         settings = get_settings()
         if len(data) > settings.ingest_max_pdf_bytes:
             raise IngestError(PDF_TOO_LARGE, "PDF exceeds max byte size")

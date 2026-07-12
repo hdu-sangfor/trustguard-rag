@@ -1,4 +1,4 @@
-"""Chunk metadata store."""
+"""分块元数据存储。"""
 from __future__ import annotations
 
 from typing import Any
@@ -13,6 +13,7 @@ from app.stores.models import ChunkRow
 
 class ChunkStore:
     async def create_many(self, chunks: list[dict[str, Any]]) -> list[ChunkRow]:
+        """插入单个文档的分块行，并返回刷新后的 ORM 对象。"""
         rows = [
             ChunkRow(
                 id=c.get("id") or str(uuid4()),
@@ -37,6 +38,7 @@ class ChunkStore:
         return rows
 
     async def list_for_document(self, document_id: str) -> list[ChunkRow]:
+        """按分块序号返回文档的所有分块。"""
         async with AsyncSession(get_engine()) as session:
             result = await session.execute(
                 select(ChunkRow)
@@ -46,6 +48,7 @@ class ChunkStore:
             return list(result.scalars().all())
 
     async def delete_for_document(self, document_id: str) -> list[str]:
+        """删除文档分块，并返回需要清理的向量点 ID。"""
         async with AsyncSession(get_engine()) as session:
             result = await session.execute(
                 select(ChunkRow.qdrant_point_id).where(ChunkRow.document_id == document_id)
@@ -57,4 +60,5 @@ class ChunkStore:
 
 
 def get_chunk_store() -> ChunkStore:
+    """创建绑定共享数据库引擎的分块存储。"""
     return ChunkStore()

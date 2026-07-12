@@ -12,14 +12,20 @@ _client: AsyncQdrantClient | None = None
 
 
 def get_client() -> AsyncQdrantClient:
+    """创建或复用进程级 Qdrant 异步客户端。"""
     global _client
     if _client is None:
         s = get_settings()
-        _client = AsyncQdrantClient(url=s.qdrant_url, api_key=s.qdrant_api_key, check_compatibility=False)
+        _client = AsyncQdrantClient(
+            url=s.qdrant_url,
+            api_key=s.qdrant_api_key,
+            check_compatibility=False,
+        )
     return _client
 
 
 async def check() -> DependencyStatus:
+    """非 mock 模式下检查 Qdrant 可用性。"""
     s = get_settings()
     if s.qdrant_mock:
         return DependencyStatus(status="disabled", detail="qdrant mock mode (no real index)")
@@ -35,6 +41,7 @@ async def check() -> DependencyStatus:
 
 
 async def close() -> None:
+    """在关闭应用或健康检查失败时关闭共享 Qdrant 客户端。"""
     global _client
     if _client is not None:
         await _client.close()

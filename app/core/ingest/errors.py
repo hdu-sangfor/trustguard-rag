@@ -1,9 +1,10 @@
-"""Ingest error codes and exceptions."""
+"""入库错误码和异常。"""
 from __future__ import annotations
 
 
 class IngestError(Exception):
     def __init__(self, code: str, message: str) -> None:
+        """为入库失败附加稳定错误码。"""
         self.code = code
         self.message = message
         super().__init__(message)

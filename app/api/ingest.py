@@ -1,4 +1,4 @@
-"""Ingest HTTP API."""
+"""入库 HTTP API。"""
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
@@ -13,6 +13,7 @@ router = APIRouter(prefix="/v1/ingest", tags=["ingest"])
 
 
 def _job_response(job) -> IngestJobResponse:
+    """将数据库任务行映射为公开的入库任务响应结构。"""
     return IngestJobResponse(
         id=job.id,
         source_type=job.source_type,
@@ -36,6 +37,7 @@ async def create_ingest_job(
     source_type: str = Form(...),
     file: UploadFile = File(...),
 ) -> IngestJobCreateResponse:
+    """创建文件入库任务，保存上传文件，并加入后台执行队列。"""
     if source_type != "file":
         raise HTTPException(status_code=400, detail="Only source_type=file is supported")
     js = get_job_store()
@@ -55,6 +57,7 @@ async def create_ingest_job(
 
 @router.get("/jobs/{job_id}", response_model=IngestJobResponse)
 async def get_ingest_job(job_id: str) -> IngestJobResponse:
+    """按 ID 查询入库任务，不存在时返回 404。"""
     job = await get_job_store().get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -63,6 +66,7 @@ async def get_ingest_job(job_id: str) -> IngestJobResponse:
 
 @router.post("/jobs/{job_id}/resolve", response_model=IngestJobResponse)
 async def resolve_conflict(job_id: str, body: ConflictResolveRequest) -> IngestJobResponse:
+    """通过发布或丢弃待定文档来解决文件名或来源冲突。"""
     pl = get_ingest_pipeline()
     try:
         await pl.resolve_conflict(job_id, body.keep_document_id)

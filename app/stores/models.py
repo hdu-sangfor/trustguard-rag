@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for ingest."""
+"""入库相关 SQLAlchemy ORM 模型。"""
 from __future__ import annotations
 
 from datetime import datetime

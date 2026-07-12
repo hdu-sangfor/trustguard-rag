@@ -1,4 +1,4 @@
-"""Ingest API schemas."""
+"""入库 API 数据结构。"""
 from __future__ import annotations
 
 from datetime import datetime

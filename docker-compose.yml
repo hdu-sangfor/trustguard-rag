@@ -43,7 +43,7 @@ services:
       RAG_MINIO_ACCESS_KEY: minioadmin
       RAG_MINIO_SECRET_KEY: minioadmin
       RAG_MINIO_BUCKET: trustguard-rag-artifacts
-      RAG_QDRANT_MOCK: "true"
+      RAG_QDRANT_MOCK: "false"
       RAG_MODE: ingest
     env_file: *optional-env-files
     depends_on:

@@ -1,15 +1,27 @@
-"""Embedding client with pseudo-vector fallback."""
+"""入库和检索使用的嵌入提供方。
+
+生产路径可使用本地 Qwen3-Embedding 或 OpenAI 兼容 API。
+测试和离线冒烟运行仍可使用确定性的伪向量。
+"""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import math
+import os
+from typing import Any
 
 import httpx
 
-from app.settings import get_settings
+from app.settings import Settings, get_settings
+
+
+class EmbeddingError(RuntimeError):
+    """嵌入提供方无法产出有效向量时抛出的异常。"""
 
 
 def _pseudo_vector(text: str, dim: int) -> list[float]:
+    """为测试和轻依赖开发环境返回确定性的归一化向量。"""
     seed = hashlib.sha256(text.encode("utf-8")).digest()
     out: list[float] = []
     idx = 0
@@ -24,26 +36,214 @@ def _pseudo_vector(text: str, dim: int) -> list[float]:
     return [v / norm for v in out]
 
 
+def normalize_embedding_provider(provider: str) -> str:
+    """将外部配置的 provider 名称归一化为内部分发值。"""
+    value = provider.strip().lower()
+    if value in {"api", "openai", "openai_compatible", "remote"}:
+        return "api"
+    if value in {"local", "huggingface", "hf", "modelscope"}:
+        return "local"
+    if value in {"pseudo", "mock", "fake"}:
+        return "pseudo"
+    raise EmbeddingError(f"Unsupported embedding provider: {provider}")
+
+
+def _validate_vectors(vectors: list[list[float]], expected_dim: int) -> list[list[float]]:
+    """校验嵌入向量维度是否与配置一致。"""
+    for i, vector in enumerate(vectors):
+        if len(vector) != expected_dim:
+            raise EmbeddingError(
+                f"Embedding dimension mismatch at index {i}: "
+                f"expected {expected_dim}, got {len(vector)}"
+            )
+    return vectors
+
+
 class EmbeddingClient:
+    """将嵌入请求分发到本地、API 或伪向量提供方的门面。"""
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        """初始化嵌入客户端并缓存归一化后的提供方类型。"""
+        self._settings = settings or get_settings()
+        self._provider = normalize_embedding_provider(self._settings.embedding_provider)
+
+    @property
+    def model_name(self) -> str:
+        """返回当前配置的嵌入模型名称。"""
+        return self._settings.embedding_model
+
+    @property
+    def dimension(self) -> int:
+        """返回当前配置的嵌入向量维度。"""
+        return self._settings.embedding_dim
+
+    async def embed_query(self, text: str) -> list[float]:
+        """按配置的查询指令嵌入单条查询文本。"""
+        return (await self._embed([text], is_query=True))[0]
+
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        settings = get_settings()
+        """按输入顺序嵌入文档分块文本。"""
+        return await self._embed(texts, is_query=False)
+
+    async def _embed(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
+        """根据 provider 类型执行实际嵌入，并统一校验向量维度。"""
         if not texts:
             return []
-        if settings.embedding_base_url and settings.embedding_api_key:
-            return await self._remote_embed(texts)
-        return [_pseudo_vector(t, settings.embedding_dim) for t in texts]
+        if self._provider == "api":
+            vectors = await self._remote_embed(texts, is_query=is_query)
+        elif self._provider == "local":
+            vectors = await self._local_embed(texts, is_query=is_query)
+        else:
+            vectors = [_pseudo_vector(t, self._settings.embedding_dim) for t in texts]
+        return _validate_vectors(vectors, self._settings.embedding_dim)
 
-    async def _remote_embed(self, texts: list[str]) -> list[list[float]]:
-        settings = get_settings()
-        url = f"{settings.embedding_base_url.rstrip('/')}/embeddings"
-        headers = {"Authorization": f"Bearer {settings.embedding_api_key}"}
-        payload = {"model": settings.embedding_model, "input": texts}
-        async with httpx.AsyncClient(timeout=60.0) as client:
+    async def _remote_embed(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
+        """调用 OpenAI 兼容的 embeddings 接口。"""
+        if not self._settings.embedding_base_url:
+            raise EmbeddingError("RAG_EMBEDDING_BASE_URL is required for API embeddings")
+        url = f"{self._settings.embedding_base_url.rstrip('/')}/embeddings"
+        headers = {}
+        if self._settings.embedding_api_key:
+            headers["Authorization"] = f"Bearer {self._settings.embedding_api_key}"
+        payload: dict[str, Any] = {
+            "model": self._settings.embedding_model,
+            "input": self._prepare_texts(texts, is_query=is_query),
+        }
+        async with httpx.AsyncClient(timeout=self._settings.embedding_api_timeout_seconds) as client:
             resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                raise EmbeddingError(
+                    f"Embedding API request failed: {resp.status_code} {resp.text}"
+                ) from e
             data = resp.json()["data"]
             return [item["embedding"] for item in sorted(data, key=lambda x: x["index"])]
 
+    async def _local_embed(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
+        """在线程池中调用本地 sentence-transformers 模型。"""
+        provider = _get_local_provider(self._settings)
+        return await asyncio.to_thread(provider.encode, texts, is_query)
+
+    def _prepare_texts(self, texts: list[str], *, is_query: bool) -> list[str]:
+        """在查询嵌入场景下为文本追加模型需要的查询指令。"""
+        if not is_query or not self._settings.embedding_query_instruction:
+            return texts
+        instruction = self._settings.embedding_query_instruction.strip()
+        return [f"Instruct: {instruction}\nQuery: {text}" for text in texts]
+
+
+class LocalSentenceTransformerProvider:
+    """支持 Hugging Face/ModelScope 下载的懒加载本地模型提供方。"""
+
+    def __init__(self, settings: Settings) -> None:
+        """保存配置并延迟加载实际模型。"""
+        self._settings = settings
+        self._model = None
+
+    def encode(self, texts: list[str], is_query: bool) -> list[list[float]]:
+        """使用本地模型编码文本并返回普通 Python 向量列表。"""
+        model = self._load_model()
+        prepared = self._prepare_texts(texts, is_query=is_query)
+        vectors = model.encode(
+            prepared,
+            batch_size=self._settings.embedding_batch_size,
+            normalize_embeddings=self._settings.embedding_normalize,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        )
+        return vectors.tolist()
+
+    def _load_model(self):
+        """首次使用时加载 sentence-transformers 模型并复用实例。"""
+        if self._model is not None:
+            return self._model
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as e:
+            raise EmbeddingError(
+                "Local embeddings require sentence-transformers. "
+                "Run 'uv sync --extra local-embedding' or switch "
+                "RAG_EMBEDDING_PROVIDER=api/pseudo."
+            ) from e
+
+        model_path = self._resolve_model_path()
+        kwargs: dict[str, Any] = {}
+        device = self._settings.embedding_device
+        if device and device != "auto":
+            kwargs["device"] = device
+        if self._settings.embedding_cache_dir:
+            kwargs["cache_folder"] = self._settings.embedding_cache_dir
+        self._model = SentenceTransformer(model_path, **kwargs)
+        return self._model
+
+    def _resolve_model_path(self) -> str:
+        """根据下载源配置解析本地模型路径或远程模型名称。"""
+        source = self._settings.embedding_download_source.strip().lower()
+        if source == "modelscope":
+            return self._download_from_modelscope()
+        if source != "huggingface":
+            raise EmbeddingError(f"Unsupported embedding download source: {source}")
+        self._configure_huggingface_env()
+        return self._settings.embedding_model
+
+    def _configure_huggingface_env(self) -> None:
+        """按配置设置 Hugging Face 下载端点和缓存目录环境变量。"""
+        endpoint = self._settings.huggingface_endpoint or self._settings.huggingface_hub_url
+        if endpoint:
+            os.environ["HF_ENDPOINT"] = endpoint.rstrip("/")
+        if self._settings.embedding_cache_dir:
+            os.environ.setdefault("HF_HOME", self._settings.embedding_cache_dir)
+
+    def _download_from_modelscope(self) -> str:
+        """通过 ModelScope 下载模型并返回本地快照路径。"""
+        try:
+            from modelscope import snapshot_download
+        except ImportError as e:
+            raise EmbeddingError(
+                "ModelScope downloads require modelscope. "
+                "Run 'uv sync --extra local-embedding' or set "
+                "RAG_EMBEDDING_DOWNLOAD_SOURCE=huggingface."
+            ) from e
+        if self._settings.modelscope_endpoint:
+            os.environ["MODELSCOPE_DOMAIN"] = self._settings.modelscope_endpoint.rstrip("/")
+        cache_dir = self._settings.modelscope_cache_dir or self._settings.embedding_cache_dir
+        return snapshot_download(self._settings.embedding_model, cache_dir=cache_dir)
+
+    def _prepare_texts(self, texts: list[str], *, is_query: bool) -> list[str]:
+        """在查询嵌入场景下为本地模型输入追加查询指令。"""
+        if not is_query or not self._settings.embedding_query_instruction:
+            return texts
+        instruction = self._settings.embedding_query_instruction.strip()
+        return [f"Instruct: {instruction}\nQuery: {text}" for text in texts]
+
+
+_LOCAL_PROVIDER_KEY: tuple[Any, ...] | None = None
+_LOCAL_PROVIDER: LocalSentenceTransformerProvider | None = None
+
+
+def _get_local_provider(settings: Settings) -> LocalSentenceTransformerProvider:
+    """按关键配置缓存并复用本地模型提供方。"""
+    global _LOCAL_PROVIDER, _LOCAL_PROVIDER_KEY
+    key = (
+        settings.embedding_model,
+        settings.embedding_device,
+        settings.embedding_download_source,
+        settings.embedding_cache_dir,
+        settings.huggingface_endpoint,
+        settings.huggingface_hub_url,
+        settings.modelscope_endpoint,
+        settings.modelscope_cache_dir,
+        settings.embedding_batch_size,
+        settings.embedding_normalize,
+        settings.embedding_query_instruction,
+    )
+    if _LOCAL_PROVIDER is None or _LOCAL_PROVIDER_KEY != key:
+        _LOCAL_PROVIDER = LocalSentenceTransformerProvider(settings)
+        _LOCAL_PROVIDER_KEY = key
+    return _LOCAL_PROVIDER
+
 
 def get_embedding_client() -> EmbeddingClient:
+    """根据当前应用配置创建嵌入客户端。"""
     return EmbeddingClient()

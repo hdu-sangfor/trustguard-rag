@@ -1,29 +1,37 @@
-"""Ingest publication saga."""
+"""入库发布 Saga。"""
 from __future__ import annotations
 
 import logging
 from typing import Any
 from uuid import uuid4
 
-from app.core.embedding.client import EmbeddingClient
+from app.core.embedding.client import EmbeddingClient, normalize_embedding_provider
 from app.core.indexing.qdrant_indexer import get_qdrant_indexer
 from app.core.ingest.chunker import chunk_extracted_text
 from app.core.ingest.compensator import Compensator
 from app.core.ingest.errors import (
     ARTIFACT_WRITE_FAILED,
     FILENAME_CONFLICT,
-    SOURCE_CONFLICT,
     IngestError,
 )
 from app.core.ingest.extractors.file import FileExtractor
 from app.core.ingest.models import ExtractedDocument
-from app.settings import get_settings
+from app.settings import Settings, get_settings
 from app.stores.blob_store import BlobStore, get_blob_store
 from app.stores.chunk_store import ChunkStore
 from app.stores.document_store import DocumentStore
 from app.stores.job_store import JobStore
 
 logger = logging.getLogger(__name__)
+
+
+def _embedding_metadata(settings: Settings) -> dict[str, str]:
+    """仅为本地嵌入记录模型下载源，避免远程/伪向量元数据产生歧义。"""
+    provider = normalize_embedding_provider(settings.embedding_provider)
+    metadata = {"embedding_provider": provider}
+    if provider == "local":
+        metadata["embedding_download_source"] = settings.embedding_download_source
+    return metadata
 
 
 class IngestPipeline:
@@ -39,6 +47,7 @@ class IngestPipeline:
         indexer=None,
         compensator: Compensator | None = None,
     ) -> None:
+        """组装流水线依赖，允许测试注入替身对象。"""
         self._jobs = job_store or JobStore()
         self._documents = document_store or DocumentStore()
         self._chunks = chunk_store or ChunkStore()
@@ -54,6 +63,7 @@ class IngestPipeline:
         )
 
     async def run(self, job_id: str) -> None:
+        """执行单个上传文件任务的完整入库流程。"""
         job = await self._jobs.get(job_id)
         if not job:
             return
@@ -128,6 +138,7 @@ class IngestPipeline:
             await self._jobs.mark_running(job_id, "embed")
             vectors = await self._embedder.embed_texts([d.text for d in drafts])
             settings = get_settings()
+            embedding_metadata = _embedding_metadata(settings)
 
             chunk_rows: list[dict[str, Any]] = []
             for i, draft in enumerate(drafts):
@@ -143,7 +154,10 @@ class IngestPipeline:
                         "embedding_model": settings.embedding_model,
                         "embedding_dim": settings.embedding_dim,
                         "qdrant_point_id": cid,
-                        "metadata": draft.metadata,
+                        "metadata": {
+                            **draft.metadata,
+                            **embedding_metadata,
+                        },
                     }
                 )
 
@@ -177,6 +191,7 @@ class IngestPipeline:
             self._blobs.delete_job_staging(job_id)
 
     async def resolve_conflict(self, job_id: str, keep_document_id: str) -> None:
+        """通过选择待定文档或已有文档来解决冲突任务。"""
         job = await self._jobs.get(job_id)
         if not job or job.status != "conflict":
             raise ValueError("Job is not in conflict state")
@@ -208,6 +223,7 @@ class IngestPipeline:
         original_filename: str,
         job_id: str,
     ) -> None:
+        """按 artifact、分块、嵌入、索引步骤发布暂存的冲突胜出文档。"""
         try:
             await self._documents.update_status(document_id, "indexing")
             blob_path = await self._commit_artifacts(document_id, extracted)
@@ -215,6 +231,7 @@ class IngestPipeline:
             drafts = chunk_extracted_text(extracted.text)
             vectors = await self._embedder.embed_texts([d.text for d in drafts])
             settings = get_settings()
+            embedding_metadata = _embedding_metadata(settings)
             chunk_rows: list[dict[str, Any]] = []
             for i, draft in enumerate(drafts):
                 cid = str(uuid4())
@@ -229,7 +246,10 @@ class IngestPipeline:
                         "embedding_model": settings.embedding_model,
                         "embedding_dim": settings.embedding_dim,
                         "qdrant_point_id": cid,
-                        "metadata": draft.metadata,
+                        "metadata": {
+                            **draft.metadata,
+                            **embedding_metadata,
+                        },
                     }
                 )
             await self._indexer.upsert_chunks(
@@ -248,6 +268,7 @@ class IngestPipeline:
             raise
 
     async def _load_upload(self, job) -> tuple[bytes, str, str | None]:
+        """加载任务暂存的上传字节和原始请求元数据。"""
         opts = job.options_json or {}
         original_filename = opts.get("original_filename", "upload.bin")
         mime = opts.get("mime")
@@ -255,6 +276,7 @@ class IngestPipeline:
         return data, original_filename, mime
 
     async def _detect_conflicts(self, job, extracted: ExtractedDocument) -> list[str]:
+        """查找按文件名或来源 URI 冲突的已发布文档。"""
         conflicts: list[str] = []
         if job.source_type == "file" and extracted.metadata.get("original_filename"):
             fname = extracted.metadata["original_filename"]
@@ -271,6 +293,7 @@ class IngestPipeline:
         return []
 
     async def _commit_artifacts(self, document_id: str, extracted: ExtractedDocument) -> str:
+        """将抽取文本、元数据和原始字节写入 blob 存储。"""
         meta = {
             "content_hash": extracted.content_hash,
             "mime": extracted.mime,
@@ -290,4 +313,5 @@ class IngestPipeline:
 
 
 def get_ingest_pipeline() -> IngestPipeline:
+    """使用生产配置的依赖创建入库流水线。"""
     return IngestPipeline()

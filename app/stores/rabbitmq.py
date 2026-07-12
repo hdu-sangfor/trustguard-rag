@@ -13,6 +13,7 @@ from app.settings import get_settings
 
 
 async def check() -> DependencyStatus:
+    """通过短连接的打开和关闭验证 RabbitMQ 就绪状态。"""
     t0 = time.perf_counter()
     conn = None
     try:

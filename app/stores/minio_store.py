@@ -10,6 +10,7 @@ from app.stores.minio_client import ensure_bucket, get_minio_client
 
 
 def _check_sync() -> DependencyStatus:
+    """执行异步健康检查中使用的阻塞式 MinIO bucket 探针。"""
     s = get_settings()
     client = get_minio_client()
     ensure_bucket()
@@ -18,6 +19,7 @@ def _check_sync() -> DependencyStatus:
 
 
 async def check() -> DependencyStatus:
+    """启用 MinIO 时检查就绪状态，否则报告为 disabled。"""
     s = get_settings()
     if not s.minio_enabled:
         return DependencyStatus(status="disabled", detail="minio backend disabled")

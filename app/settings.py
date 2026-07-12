@@ -37,11 +37,11 @@ class Settings(BaseSettings):
     # --- 应用 ---
     app_name: str = "trustguard-rag-platform"
     app_version: str = "0.1.0"
-    app_env: str = "dev"  # dev | prod
+    app_env: str = "dev"  # dev | prod，运行环境
     log_level: str = "INFO"
     api_host: str = "0.0.0.0"
     api_port: int = 18200
-    rag_mode: str = "ingest"  # ingest | full
+    rag_mode: str = "ingest"  # ingest | full，健康检查模式
 
     # --- Ingest ---
     ingest_max_pdf_bytes: int = 52_428_800
@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     qdrant_port: int = 6333
     qdrant_api_key: str | None = None
     qdrant_collection_prefix: str = "rag_"
-    qdrant_mock: bool = True  # True = skip real Qdrant; index ops are no-op
+    qdrant_mock: bool = True  # True 表示跳过真实 Qdrant，索引操作为空操作
 
     # --- OpenSearch（BM25 / 全文） ---
     opensearch_host: str = "localhost"
@@ -95,14 +95,27 @@ class Settings(BaseSettings):
     local_storage_dir: str = "./data/storage"  # minio_enabled=False 时使用
 
     # --- Embedding（启动前需冻结单一模型，维度必须与模型匹配；见 §5.1“嵌入模型冻结”） ---
-    embedding_provider: str = "openai_compatible"  # openai_compatible | local_bge
-    embedding_model: str = "bge-m3"
+    embedding_provider: str = "pseudo"  # pseudo | local | api | openai_compatible
+    embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
     embedding_dim: int = 1024
+    embedding_device: str = "auto"
+    embedding_batch_size: int = 16
+    embedding_normalize: bool = True
+    embedding_query_instruction: str = (
+        "Given a cybersecurity search query, retrieve relevant passages that answer the query"
+    )
+    embedding_download_source: str = "huggingface"  # huggingface | modelscope
+    embedding_cache_dir: str | None = None
+    huggingface_endpoint: str | None = None
+    huggingface_hub_url: str | None = None
+    modelscope_endpoint: str | None = None
+    modelscope_cache_dir: str | None = None
     embedding_base_url: str | None = None
     embedding_api_key: str | None = None
+    embedding_api_timeout_seconds: float = 60.0
 
     # --- Rerank ---
-    rerank_provider: str = "bge"  # bge | jina | cohere | none
+    rerank_provider: str = "bge"  # bge | jina | cohere | none，重排提供方
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
 
     # --- 健康检查 ---
@@ -110,10 +123,12 @@ class Settings(BaseSettings):
 
     @property
     def staging_dir(self) -> str:
+        """返回 artifact 提交前使用的本地暂存目录。"""
         return f"{self.local_storage_dir.rstrip('/')}/staging"
 
     @property
     def mysql_dsn(self) -> str:
+        """根据配置构建 SQLAlchemy async MySQL 连接串。"""
         return (
             f"mysql+aiomysql://{self.mysql_user}:{self.mysql_password}"
             f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}?charset=utf8mb4"
@@ -121,15 +136,18 @@ class Settings(BaseSettings):
 
     @property
     def qdrant_url(self) -> str:
+        """构建 Qdrant 客户端使用的基础 URL。"""
         return f"http://{self.qdrant_host}:{self.qdrant_port}"
 
     @property
     def redis_url(self) -> str:
+        """构建 Redis URL，包含配置中的密码和数据库编号。"""
         auth = f":{self.redis_password}@" if self.redis_password else ""
         return f"redis://{auth}{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
     @property
     def rabbitmq_url(self) -> str:
+        """构建 aio-pika 使用的 AMQP URL。"""
         return (
             f"amqp://{self.rabbitmq_user}:{self.rabbitmq_password}"
             f"@{self.rabbitmq_host}:{self.rabbitmq_port}{self.rabbitmq_vhost}"
@@ -138,4 +156,5 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """返回从环境变量加载并缓存的应用配置。"""
     return Settings()
