@@ -4,9 +4,16 @@ from __future__ import annotations
 import mimetypes
 from pathlib import PurePosixPath
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
-from app.schemas.document import ArtifactsResponse, ChunkResponse, DocumentResponse
+from app.core.ingest.compensator import get_compensator
+from app.schemas.document import (
+    ArtifactsResponse,
+    ChunkResponse,
+    DocumentListResponse,
+    DocumentResponse,
+    DocumentUpdateRequest,
+)
 from app.stores.blob_store import get_blob_store
 from app.stores.chunk_store import get_chunk_store
 from app.stores.document_store import get_document_store
@@ -22,6 +29,7 @@ def _document_response(doc) -> DocumentResponse:
         source_uri=doc.source_uri,
         content_hash=doc.content_hash,
         status=doc.status,
+        title=doc.title,
         mime_type=doc.mime_type,
         original_filename=doc.original_filename,
         doc_version=doc.doc_version,
@@ -60,11 +68,73 @@ async def _get_document_or_404(document_id: str):
     return doc
 
 
+@router.get("", response_model=DocumentListResponse)
+async def list_documents(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    status_filter: str | None = Query(default=None, alias="status", max_length=32),
+    query: str | None = Query(default=None, alias="q", max_length=512),
+) -> DocumentListResponse:
+    """分页列出知识库文档，支持状态和关键词筛选。"""
+    rows, total = await get_document_store().list(
+        offset=offset,
+        limit=limit,
+        status=status_filter,
+        query=query.strip() if query and query.strip() else None,
+    )
+    return DocumentListResponse(
+        items=[_document_response(row) for row in rows],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
+
+
 @router.get("/{document_id}", response_model=DocumentResponse)
 async def get_document(document_id: str) -> DocumentResponse:
     """返回单个已入库文档的元数据。"""
     doc = await _get_document_or_404(document_id)
     return _document_response(doc)
+
+
+@router.patch("/{document_id}", response_model=DocumentResponse)
+async def update_document(
+    document_id: str, request: DocumentUpdateRequest
+) -> DocumentResponse:
+    """更新文档标题、原始文件名或业务元数据。"""
+    await _get_document_or_404(document_id)
+    supplied = request.model_fields_set
+    if not supplied:
+        raise HTTPException(status_code=400, detail="At least one editable field is required")
+
+    values = request.model_dump(exclude_unset=True)
+    for key in ("title", "original_filename"):
+        value = values.get(key)
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise HTTPException(status_code=422, detail=f"{key} cannot be blank")
+            values[key] = value
+    if "metadata" in values:
+        values["metadata_json"] = values.pop("metadata")
+
+    doc = await get_document_store().update(document_id, values)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return _document_response(doc)
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(document_id: str) -> Response:
+    """删除文档及其向量、分块和 artifact 文件。"""
+    await _get_document_or_404(document_id)
+    try:
+        deleted = await get_compensator().delete_document(document_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Document cleanup failed: {exc}") from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{document_id}/chunks", response_model=list[ChunkResponse])

@@ -43,6 +43,26 @@ curl http://localhost:18200/v1/ingest/jobs/<job_id>
 curl http://localhost:18200/v1/documents/<document_id>/chunks
 ```
 
+## 知识库文档管理
+
+文档由入库任务创建；入库后可通过文档 API 完成查询、更新和级联删除：
+
+```bash
+# 分页列表、关键词搜索与状态筛选
+curl "http://localhost:18200/v1/documents?offset=0&limit=20&q=安全&status=ready"
+
+# 查询详情
+curl http://localhost:18200/v1/documents/<document_id>
+
+# 更新标题、原始文件名或业务元数据
+curl -X PATCH http://localhost:18200/v1/documents/<document_id> \
+  -H "Content-Type: application/json" \
+  -d '{"title":"企业安全指南","metadata":{"owner":"security"}}'
+
+# 删除文档，并级联清理向量、分块和 artifact 文件
+curl -X DELETE http://localhost:18200/v1/documents/<document_id>
+```
+
 ## Embedding
 
 默认轻量安装不包含本地推理依赖，`RAG_EMBEDDING_PROVIDER=pseudo` 可用于开发/测试。

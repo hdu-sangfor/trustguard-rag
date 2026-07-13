@@ -60,6 +60,24 @@ class Compensator:
 
         await self._documents.update_status(document_id, "superseded")
 
+    async def delete_document(self, document_id: str) -> bool:
+        """删除文档的向量、artifacts、分块和元数据。"""
+        doc = await self._documents.get(document_id)
+        if not doc:
+            return False
+
+        point_ids = await self._chunks.point_ids_for_document(document_id)
+        if point_ids:
+            # CRUD 删除必须显式失败，不能静默留下孤儿向量。
+            await self._indexer.delete_points(point_ids)
+
+        if doc.blob_path:
+            self._blobs.delete_prefix(doc.blob_path)
+        else:
+            self._blobs.delete_prefix(f"artifacts/{document_id}")
+        await self._chunks.delete_for_document(document_id)
+        return await self._documents.delete(document_id)
+
 
 def get_compensator() -> Compensator:
     """使用已配置的存储和索引器创建补偿器。"""

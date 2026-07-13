@@ -80,6 +80,31 @@
       </section>
 
       <section class="view" id="view-documents">
+        <article class="panel library-panel">
+          <div class="panel-header">
+            <div><p class="kicker">KNOWLEDGE BASE</p><h2>知识库文档</h2></div>
+            <span class="format-tag" id="documents-total">0 DOCUMENTS</span>
+          </div>
+          <form class="library-toolbar" id="documents-filter">
+            <input id="documents-query" placeholder="搜索标题、文件名或来源" autocomplete="off">
+            <select id="documents-status" aria-label="按状态筛选">
+              <option value="">全部状态</option>
+              <option value="ready">已发布</option>
+              <option value="staging">处理中</option>
+              <option value="failed">失败</option>
+              <option value="superseded">已替换</option>
+            </select>
+            <button class="primary-button" type="submit">搜索</button>
+            <button class="text-button" type="button" id="refresh-documents">刷新</button>
+          </form>
+          <div id="documents-list" class="documents-list"></div>
+          <div id="documents-empty" class="empty-state" hidden><span>▤</span><h3>没有匹配的文档</h3><p>调整筛选条件，或先在工作台导入 PDF。</p></div>
+          <div class="pagination" id="documents-pagination" hidden>
+            <button class="text-button" id="documents-prev">上一页</button>
+            <span id="documents-page"></span>
+            <button class="text-button" id="documents-next">下一页</button>
+          </div>
+        </article>
         <article class="panel inspector-panel">
           <div class="panel-header">
             <div><p class="kicker">DOCUMENT INSPECTOR</p><h2>查看文档与分块</h2></div>

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.stores.db import get_engine
@@ -57,6 +57,68 @@ class DocumentStore:
         """按主键加载单个文档。"""
         async with AsyncSession(get_engine()) as session:
             return await session.get(DocumentRow, document_id)
+
+    async def list(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 20,
+        status: str | None = None,
+        query: str | None = None,
+    ) -> tuple[list[DocumentRow], int]:
+        """分页列出文档，并可按状态和常用文本字段筛选。"""
+        filters = []
+        if status:
+            filters.append(DocumentRow.status == status)
+        if query:
+            pattern = f"%{query.strip()}%"
+            filters.append(
+                or_(
+                    DocumentRow.title.ilike(pattern),
+                    DocumentRow.original_filename.ilike(pattern),
+                    DocumentRow.source_uri.ilike(pattern),
+                )
+            )
+
+        async with AsyncSession(get_engine()) as session:
+            total_query = select(func.count()).select_from(DocumentRow)
+            rows_query = select(DocumentRow)
+            if filters:
+                total_query = total_query.where(*filters)
+                rows_query = rows_query.where(*filters)
+            total = int((await session.execute(total_query)).scalar_one())
+            result = await session.execute(
+                rows_query.order_by(DocumentRow.created_at.desc(), DocumentRow.id.desc())
+                .offset(offset)
+                .limit(limit)
+            )
+            return list(result.scalars().all()), total
+
+    async def update(self, document_id: str, values: dict[str, Any]) -> DocumentRow | None:
+        """更新允许编辑的文档字段并返回最新记录。"""
+        allowed = {"title", "original_filename", "metadata_json"}
+        safe_values = {key: value for key, value in values.items() if key in allowed}
+        if not safe_values:
+            return await self.get(document_id)
+        safe_values["updated_at"] = _utcnow()
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(
+                update(DocumentRow)
+                .where(DocumentRow.id == document_id)
+                .values(**safe_values)
+            )
+            if not result.rowcount:
+                await session.rollback()
+                return None
+            await session.commit()
+            return await session.get(DocumentRow, document_id)
+
+    async def delete(self, document_id: str) -> bool:
+        """硬删除文档元数据行。关联资源应由上层先完成清理。"""
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(delete(DocumentRow).where(DocumentRow.id == document_id))
+            await session.commit()
+            return bool(result.rowcount)
 
     async def find_by_source(
         self, source_type: str, source_uri: str, content_hash: str
