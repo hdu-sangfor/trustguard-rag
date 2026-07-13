@@ -32,16 +32,18 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     if [ -n "${UV_EXTRA_INDEX_URL}" ]; then export UV_EXTRA_INDEX_URL="${UV_EXTRA_INDEX_URL}"; fi; \
     if [ -n "${PIP_INDEX_URL}" ]; then export PIP_INDEX_URL="${PIP_INDEX_URL}"; fi; \
     if [ -n "${PIP_EXTRA_INDEX_URL}" ]; then export PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}"; fi; \
-    uv sync --frozen --no-dev --no-install-project
+    uv sync --frozen --no-dev --no-install-project --extra local-embedding
 
 COPY app ./app
+COPY frontend ./frontend
 
 ENV RAG_API_HOST=0.0.0.0 \
     RAG_API_PORT=18200 \
     RAG_MODE=ingest \
-    RAG_LOCAL_STORAGE_DIR=/data/storage
+    RAG_LOCAL_STORAGE_DIR=/data/storage \
+    HF_HOME=/models/huggingface
 
-RUN mkdir -p /data/storage
+RUN mkdir -p /data/storage /models/huggingface
 
 EXPOSE 18200
 
