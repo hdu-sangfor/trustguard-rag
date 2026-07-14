@@ -1,4 +1,5 @@
 """Qdrant 模拟索引器；未启用向量库时执行空操作。"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -29,4 +30,8 @@ class MockQdrantIndexer:
 
     async def delete_points(self, point_ids: list[str]) -> None:
         """接受向量点删除请求，但不访问 Qdrant。"""
+        return None
+
+    async def delete_document(self, document_id: str) -> None:
+        """接受文档级向量删除请求，但不访问 Qdrant。"""
         return None

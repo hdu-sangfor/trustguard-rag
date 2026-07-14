@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="TrustGuard RAG 知识库控制台">
+  <title>TrustGuard · 知识库</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#" aria-label="TrustGuard 首页">
+        <span class="brand-mark">T</span>
+        <span><strong>TrustGuard</strong><small>Knowledge Studio</small></span>
+      </a>
+
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-item active" data-view="workspace"><span>⌂</span>工作台</button>
+        <button class="nav-item" data-view="search"><span>⌕</span>知识检索</button>
+        <button class="nav-item" data-view="documents"><span>▤</span>文档检查器</button>
+        <button class="nav-item" data-view="system"><span>◉</span>系统状态</button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="service-pill"><i id="sidebar-dot"></i><span id="sidebar-status">正在连接</span></div>
+        <a href="/docs" target="_blank">API 文档 ↗</a>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">KNOWLEDGE OPERATIONS</p>
+          <h1 id="page-title">知识工作台</h1>
+        </div>
+        <div class="top-actions">
+          <span class="clock" id="clock"></span>
+          <button class="icon-button" id="refresh-all" title="刷新">↻</button>
+        </div>
+      </header>
+
+      <section class="view active" id="view-workspace">
+        <div class="hero-grid">
+          <article class="upload-card">
+            <div class="card-heading">
+              <div><p class="kicker">INGEST</p><h2>导入知识文档</h2></div>
+              <span class="format-tag">PDF</span>
+            </div>
+            <div class="dropzone" id="dropzone" tabindex="0" role="button">
+              <input id="file-input" type="file" accept="application/pdf,.pdf" hidden>
+              <div class="upload-symbol">↑</div>
+              <h3>拖放 PDF 到这里</h3>
+              <p>或点击选择文件 · 最大 50 MB · 需包含文本层</p>
+              <div class="selected-file" id="selected-file" hidden></div>
+            </div>
+            <button class="primary-button" id="upload-button" disabled>
+              <span>开始解析入库</span><b>→</b>
+            </button>
+          </article>
+
+          <aside class="overview-card">
+            <p class="kicker">LIVE OVERVIEW</p>
+            <h2>运行概览</h2>
+            <div class="metric"><span>服务状态</span><strong id="metric-health">检查中</strong></div>
+            <div class="metric"><span>本地记录</span><strong id="metric-jobs">0</strong></div>
+            <div class="metric"><span>成功入库</span><strong id="metric-success">0</strong></div>
+            <div class="metric"><span>向量引擎</span><strong id="metric-qdrant">—</strong></div>
+            <div class="overview-note">数据直接发送至当前 TrustGuard RAG 服务，不经过第三方前端服务。</div>
+          </aside>
+        </div>
+
+        <article class="panel activity-panel">
+          <div class="panel-header">
+            <div><p class="kicker">RECENT ACTIVITY</p><h2>最近入库任务</h2></div>
+            <button class="text-button" id="clear-history">清除本地记录</button>
+          </div>
+          <div id="jobs-list" class="jobs-list"></div>
+          <div id="jobs-empty" class="empty-state"><span>◎</span><h3>还没有入库记录</h3><p>上传第一份 PDF 后，处理进度会显示在这里。</p></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-search">
+        <article class="panel search-panel">
+          <div class="panel-header search-heading">
+            <div><p class="kicker">HYBRID RETRIEVAL</p><h2>检索知识库</h2></div>
+            <span class="format-tag">VECTOR + BM25</span>
+          </div>
+          <p class="search-intro">同时使用语义向量和关键词召回，并通过融合与重排获得更相关的知识片段。</p>
+
+          <form id="search-form" class="search-form">
+            <label class="search-query" for="search-query">
+              <span>检索问题</span>
+              <div>
+                <input id="search-query" type="search" required autocomplete="off" placeholder="例如：如何防御 SQL 注入攻击？">
+                <button class="primary-button" id="search-button" type="submit">开始检索 <b>→</b></button>
+              </div>
+            </label>
+
+            <div class="search-primary-options">
+              <label><span>返回数量</span><input id="search-top-k" type="number" min="1" max="100" value="10"></label>
+              <label><span>融合策略</span><select id="search-fusion"><option value="rrf">RRF 排名融合</option><option value="weighted_score">加权分数融合</option></select></label>
+              <div class="search-switches" role="group" aria-label="检索引擎">
+                <label><input id="search-vector" type="checkbox" checked><span>向量检索</span></label>
+                <label><input id="search-keyword" type="checkbox" checked><span>关键词检索</span></label>
+                <label><input id="search-rerank" type="checkbox" checked><span>结果重排</span></label>
+              </div>
+            </div>
+
+            <details class="search-advanced">
+              <summary>高级参数</summary>
+              <div class="search-advanced-grid">
+                <label><span>向量召回上限</span><input id="search-vector-top-k" type="number" min="1" max="200" placeholder="使用服务默认值"></label>
+                <label><span>关键词召回上限</span><input id="search-keyword-top-k" type="number" min="1" max="200" placeholder="使用服务默认值"></label>
+                <label><span>向量权重</span><input id="search-vector-weight" type="number" min="0" max="1" step="0.05" value="0.7" disabled></label>
+                <label><span>关键词权重</span><input id="search-keyword-weight" type="number" min="0" max="1" step="0.05" value="0.3" disabled></label>
+                <label class="search-source-filter"><span>限定来源 URI</span><input id="search-source-uri" autocomplete="off" placeholder="可选，例如 upload://security-guide.pdf"></label>
+              </div>
+            </details>
+          </form>
+        </article>
+
+        <article class="panel search-output-panel">
+          <div class="search-results-header">
+            <div><p class="kicker">RETRIEVAL RESULTS</p><h2>检索结果</h2></div>
+            <div class="search-summary" id="search-summary" hidden></div>
+          </div>
+          <div id="search-results" class="search-results"></div>
+          <div id="search-empty" class="empty-state"><span>⌕</span><h3>输入问题开始检索</h3><p>结果会显示相关片段、来源文档与各阶段得分。</p></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-documents">
+        <article class="panel library-panel">
+          <div class="panel-header">
+            <div><p class="kicker">KNOWLEDGE BASE</p><h2>知识库文档</h2></div>
+            <span class="format-tag" id="documents-total">0 DOCUMENTS</span>
+          </div>
+          <form class="library-toolbar" id="documents-filter">
+            <input id="documents-query" placeholder="搜索标题、文件名或来源" autocomplete="off">
+            <select id="documents-status" aria-label="按状态筛选">
+              <option value="">全部状态</option>
+              <option value="ready">已发布</option>
+              <option value="staging">处理中</option>
+              <option value="failed">失败</option>
+              <option value="superseded">已替换</option>
+            </select>
+            <button class="primary-button" type="submit">搜索</button>
+            <button class="text-button" type="button" id="refresh-documents">刷新</button>
+          </form>
+          <div id="documents-list" class="documents-list"></div>
+          <div id="documents-empty" class="empty-state" hidden><span>▤</span><h3>没有匹配的文档</h3><p>调整筛选条件，或先在工作台导入 PDF。</p></div>
+          <div class="pagination" id="documents-pagination" hidden>
+            <button class="text-button" id="documents-prev">上一页</button>
+            <span id="documents-page"></span>
+            <button class="text-button" id="documents-next">下一页</button>
+          </div>
+        </article>
+        <article class="panel inspector-panel">
+          <div class="panel-header">
+            <div><p class="kicker">DOCUMENT INSPECTOR</p><h2>查看文档与分块</h2></div>
+          </div>
+          <form class="lookup" id="document-form">
+            <label for="document-id">Document ID</label>
+            <div><input id="document-id" placeholder="输入文档 UUID" autocomplete="off"><button class="primary-button" type="submit">查询</button></div>
+          </form>
+          <div id="document-result"></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-system">
+        <article class="panel">
+          <div class="panel-header">
+            <div><p class="kicker">INFRASTRUCTURE</p><h2>依赖服务状态</h2></div>
+            <button class="text-button" id="refresh-health">立即检查</button>
+          </div>
+          <div class="health-grid" id="health-grid"></div>
+        </article>
+      </section>
+    </main>
+  </div>
+  <div class="toast-stack" id="toasts" aria-live="polite"></div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

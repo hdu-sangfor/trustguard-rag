@@ -1,0 +1,15 @@
+"""文档领域类型。"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+
+class DocumentStatus(StrEnum):
+    """知识库文档的生命周期状态。"""
+
+    STAGING = "staging"
+    INDEXING = "indexing"
+    READY = "ready"
+    FAILED = "failed"
+    SUPERSEDED = "superseded"

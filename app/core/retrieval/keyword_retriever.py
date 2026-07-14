@@ -1,4 +1,5 @@
 """OpenSearch BM25 关键词检索器。"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -130,14 +131,13 @@ class KeywordRetriever:
 
     async def delete_for_document(self, document_id: str) -> None:
         client = opensearch_store.get_client()
-        try:
-            await client.delete_by_query(
-                index=self._index,
-                body={"query": {"term": {"document_id": document_id}}},
-                refresh=True,
-            )
-        except Exception:
-            pass
+        if not await client.indices.exists(index=self._index):
+            return
+        await client.delete_by_query(
+            index=self._index,
+            body={"query": {"term": {"document_id": document_id}}},
+            refresh=True,
+        )
 
 
 class MockKeywordRetriever:

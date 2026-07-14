@@ -1,4 +1,5 @@
 """带暂存和提交语义的本地文件系统 blob 存储。"""
+
 from __future__ import annotations
 
 import json
@@ -78,9 +79,11 @@ class BlobStore:
         target = self._root / prefix if not Path(prefix).is_absolute() else Path(prefix)
         if target.exists():
             if target.is_dir():
-                shutil.rmtree(target, ignore_errors=True)
+                shutil.rmtree(target)
             else:
                 target.unlink(missing_ok=True)
+        if target.exists():
+            raise RuntimeError(f"artifact path still exists after deletion: {target}")
 
     def delete_staging(self, staging_key: str) -> None:
         """在任务成功、失败或丢弃后删除对应暂存子树。"""

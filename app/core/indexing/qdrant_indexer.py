@@ -1,10 +1,19 @@
 """面向分块的 Qdrant 向量索引。"""
+
 from __future__ import annotations
 
 from typing import Any
 from uuid import UUID
 
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    FilterSelector,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
 
 from app.core.ingest.errors import INDEX_FAILED, IngestError
 from app.core.indexing.qdrant_mock import MockQdrantIndexer
@@ -85,6 +94,26 @@ class QdrantIndexer:
         await client.delete(
             collection_name=self._collection,
             points_selector=[_to_point_id(pid) for pid in point_ids],
+        )
+
+    async def delete_document(self, document_id: str) -> None:
+        """按 payload 中的文档 ID 删除全部向量，覆盖 chunks 尚未落库的情况。"""
+        client = qdrant_store.get_client()
+        collections = await client.get_collections()
+        if self._collection not in {item.name for item in collections.collections}:
+            return
+        await client.delete(
+            collection_name=self._collection,
+            points_selector=FilterSelector(
+                filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="doc_id",
+                            match=MatchValue(value=document_id),
+                        )
+                    ]
+                )
+            ),
         )
 
 

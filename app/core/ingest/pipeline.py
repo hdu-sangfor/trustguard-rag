@@ -1,4 +1,5 @@
 """入库发布 Saga。"""
+
 from __future__ import annotations
 
 import logging
@@ -17,6 +18,7 @@ from app.core.ingest.errors import (
 )
 from app.core.ingest.extractors.file import FileExtractor
 from app.core.ingest.models import ExtractedDocument
+from app.domain import DocumentStatus
 from app.settings import Settings, get_settings
 from app.stores.blob_store import BlobStore, get_blob_store
 from app.stores.chunk_store import ChunkStore
@@ -60,6 +62,7 @@ class IngestPipeline:
         self._opensearch_indexer = opensearch_indexer or get_opensearch_indexer()
         self._compensator = compensator or Compensator(
             document_store=self._documents,
+            job_store=self._jobs,
             chunk_store=self._chunks,
             blob_store=self._blobs,
             indexer=self._indexer,
@@ -88,10 +91,8 @@ class IngestPipeline:
             existing = await self._documents.find_by_source(
                 job.source_type, extracted.source_uri, extracted.content_hash
             )
-            if existing and existing.status == "ready":
-                await self._jobs.finish(
-                    job_id, "deduplicated", document_id=existing.id
-                )
+            if existing and existing.status == DocumentStatus.READY:
+                await self._jobs.finish(job_id, "deduplicated", document_id=existing.id)
                 self._blobs.delete_job_staging(job_id)
                 return
 
@@ -103,7 +104,7 @@ class IngestPipeline:
                     source_type=job.source_type,
                     source_uri=extracted.source_uri,
                     content_hash=extracted.content_hash,
-                    status="staging",
+                    status=DocumentStatus.STAGING,
                     mime_type=extracted.mime,
                     original_filename=original_filename,
                     metadata=extracted.metadata,
@@ -125,14 +126,16 @@ class IngestPipeline:
                 source_type=job.source_type,
                 source_uri=extracted.source_uri,
                 content_hash=extracted.content_hash,
-                status="indexing",
+                status=DocumentStatus.INDEXING,
                 mime_type=extracted.mime,
                 original_filename=original_filename,
                 metadata=extracted.metadata,
                 document_id=document_id,
             )
             blob_path = await self._commit_artifacts(doc.id, extracted)
-            await self._documents.update_status(doc.id, "indexing", blob_path=blob_path)
+            await self._documents.update_status(
+                doc.id, DocumentStatus.INDEXING, blob_path=blob_path
+            )
 
             await self._jobs.mark_running(job_id, "chunk")
             drafts = chunk_extracted_text(extracted.text)
@@ -184,19 +187,19 @@ class IngestPipeline:
                     original_filename=original_filename,
                 )
             except Exception:
-                logger.warning("OpenSearch indexing failed for %s, continuing", doc.id, exc_info=True)
+                logger.warning(
+                    "OpenSearch indexing failed for %s, continuing", doc.id, exc_info=True
+                )
 
             await self._jobs.mark_running(job_id, "publish")
-            await self._documents.update_status(doc.id, "ready")
+            await self._documents.update_status(doc.id, DocumentStatus.READY)
             await self._jobs.finish(job_id, "succeeded", document_id=doc.id)
             self._blobs.delete_job_staging(job_id)
         except IngestError as e:
             logger.warning("ingest job %s failed: %s", job_id, e.code)
             if document_id:
                 await self._compensator.rollback_document(document_id)
-            await self._jobs.finish(
-                job_id, "failed", error_code=e.code, error_message=e.message
-            )
+            await self._jobs.finish(job_id, "failed", error_code=e.code, error_message=e.message)
             self._blobs.delete_job_staging(job_id)
         except Exception as e:
             logger.exception("ingest job %s unexpected error", job_id)
@@ -240,9 +243,11 @@ class IngestPipeline:
     ) -> None:
         """按 artifact、分块、嵌入、索引步骤发布暂存的冲突胜出文档。"""
         try:
-            await self._documents.update_status(document_id, "indexing")
+            await self._documents.update_status(document_id, DocumentStatus.INDEXING)
             blob_path = await self._commit_artifacts(document_id, extracted)
-            await self._documents.update_status(document_id, "indexing", blob_path=blob_path)
+            await self._documents.update_status(
+                document_id, DocumentStatus.INDEXING, blob_path=blob_path
+            )
             drafts = chunk_extracted_text(extracted.text)
             vectors = await self._embedder.embed_texts([d.text for d in drafts])
             settings = get_settings()
@@ -283,8 +288,10 @@ class IngestPipeline:
                     original_filename=original_filename,
                 )
             except Exception:
-                logger.warning("OpenSearch indexing failed for conflict resolve %s", document_id, exc_info=True)
-            await self._documents.update_status(document_id, "ready")
+                logger.warning(
+                    "OpenSearch indexing failed for conflict resolve %s", document_id, exc_info=True
+                )
+            await self._documents.update_status(document_id, DocumentStatus.READY)
             await self._jobs.finish(job_id, "succeeded", document_id=document_id)
             self._blobs.delete_job_staging(job_id)
         except Exception:

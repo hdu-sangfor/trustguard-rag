@@ -1,16 +1,21 @@
 """Publication rollback when Qdrant indexing fails."""
+
 from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
 
 from app.core.ingest.errors import INDEX_FAILED, IngestError
-from app.stores.blob_store import BlobStore
+from app.domain import DocumentStatus
+from app.stores.chunk_store import ChunkStore
 from app.stores.document_store import DocumentStore
 from pdf_fixtures import make_pdf_bytes
 
 
 class FailingIndexer:
+    def __init__(self) -> None:
+        self.deleted_documents: list[str] = []
+
     async def ensure_collection(self) -> None:
         return None
 
@@ -20,14 +25,27 @@ class FailingIndexer:
     async def delete_points(self, point_ids: list[str]) -> None:
         return None
 
+    async def delete_document(self, document_id: str) -> None:
+        self.deleted_documents.append(document_id)
+
+
+class RecordingIndexer(FailingIndexer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.upserted_documents: list[str] = []
+
+    async def upsert_chunks(self, **kwargs) -> None:
+        self.upserted_documents.append(kwargs["document_id"])
+
 
 @pytest.mark.asyncio
 async def test_publication_rollback_on_index_failure(
     client: AsyncClient, tmp_storage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    indexer = FailingIndexer()
     monkeypatch.setattr(
         "app.core.ingest.pipeline.get_qdrant_indexer",
-        lambda: FailingIndexer(),
+        lambda: indexer,
     )
 
     pdf = make_pdf_bytes(["Rollback test content"])
@@ -42,9 +60,37 @@ async def test_publication_rollback_on_index_failure(
     assert job["error_code"] == INDEX_FAILED
 
     ds = DocumentStore()
-    docs = await ds.list_by_status("ready")
+    docs = await ds.list_by_status(DocumentStatus.READY)
     assert not docs
+    failed_docs = await ds.list_by_status(DocumentStatus.FAILED)
+    assert indexer.deleted_documents == [failed_docs[0].id]
 
-    bs = BlobStore()
     staging = tmp_storage / "staging" / "jobs" / job_id
     assert not staging.exists()
+
+
+@pytest.mark.asyncio
+async def test_rollback_deletes_vectors_when_chunk_insert_fails(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    indexer = RecordingIndexer()
+    monkeypatch.setattr(
+        "app.core.ingest.pipeline.get_qdrant_indexer",
+        lambda: indexer,
+    )
+
+    async def fail_chunk_insert(self, chunks) -> None:
+        raise RuntimeError("database write failed")
+
+    monkeypatch.setattr(ChunkStore, "create_many", fail_chunk_insert)
+
+    pdf = make_pdf_bytes(["Vector cleanup after chunk failure"])
+    response = await client.post(
+        "/v1/ingest/jobs",
+        data={"source_type": "file"},
+        files={"file": ("orphan.pdf", pdf, "application/pdf")},
+    )
+    job = (await client.get(f"/v1/ingest/jobs/{response.json()['job_id']}")).json()
+
+    assert job["status"] == "failed"
+    assert indexer.deleted_documents == indexer.upserted_documents
