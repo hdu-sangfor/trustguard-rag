@@ -57,6 +57,7 @@ class QdrantIndexer:
             for chunk, vector in zip(chunks, vectors):
                 point_id = chunk["id"]
                 payload = {
+                    "chunk_text": chunk["text"],
                     "doc_id": document_id,
                     "chunk_index": chunk["chunk_index"],
                     "page_no": chunk.get("page_no"),

@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
-from app.api import documents, health, ingest, sources
+from app.api import documents, health, ingest, search, sources
 from app.settings import get_settings
 from app.stores import db, opensearch_store, qdrant_store, redis_cache
 
@@ -47,6 +47,7 @@ def create_app() -> FastAPI:
     app.include_router(ingest.router)
     app.include_router(documents.router)
     app.include_router(sources.router)
+    app.include_router(search.router)
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:

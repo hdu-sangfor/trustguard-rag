@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.core.embedding.client import EmbeddingClient, normalize_embedding_provider
+from app.core.indexing.opensearch_indexer import OpenSearchIndexer, get_opensearch_indexer
 from app.core.indexing.qdrant_indexer import get_qdrant_indexer
 from app.core.ingest.chunker import chunk_extracted_text
 from app.core.ingest.compensator import Compensator
@@ -46,6 +47,7 @@ class IngestPipeline:
         embedder: EmbeddingClient | None = None,
         indexer=None,
         compensator: Compensator | None = None,
+        opensearch_indexer: OpenSearchIndexer | None = None,
     ) -> None:
         """组装流水线依赖，允许测试注入替身对象。"""
         self._jobs = job_store or JobStore()
@@ -55,11 +57,13 @@ class IngestPipeline:
         self._extractor = extractor or FileExtractor()
         self._embedder = embedder or EmbeddingClient()
         self._indexer = indexer or get_qdrant_indexer()
+        self._opensearch_indexer = opensearch_indexer or get_opensearch_indexer()
         self._compensator = compensator or Compensator(
             document_store=self._documents,
             chunk_store=self._chunks,
             blob_store=self._blobs,
             indexer=self._indexer,
+            opensearch_indexer=self._opensearch_indexer,
         )
 
     async def run(self, job_id: str) -> None:
@@ -171,6 +175,17 @@ class IngestPipeline:
             )
             await self._chunks.create_many(chunk_rows)
 
+            await self._jobs.mark_running(job_id, "opensearch_index")
+            try:
+                await self._opensearch_indexer.ensure_index()
+                await self._opensearch_indexer.index_chunks(
+                    chunk_rows,
+                    source_uri=extracted.source_uri,
+                    original_filename=original_filename,
+                )
+            except Exception:
+                logger.warning("OpenSearch indexing failed for %s, continuing", doc.id, exc_info=True)
+
             await self._jobs.mark_running(job_id, "publish")
             await self._documents.update_status(doc.id, "ready")
             await self._jobs.finish(job_id, "succeeded", document_id=doc.id)
@@ -260,6 +275,15 @@ class IngestPipeline:
                 original_filename=original_filename,
             )
             await self._chunks.create_many(chunk_rows)
+            try:
+                await self._opensearch_indexer.ensure_index()
+                await self._opensearch_indexer.index_chunks(
+                    chunk_rows,
+                    source_uri=extracted.source_uri,
+                    original_filename=original_filename,
+                )
+            except Exception:
+                logger.warning("OpenSearch indexing failed for conflict resolve %s", document_id, exc_info=True)
             await self._documents.update_status(document_id, "ready")
             await self._jobs.finish(job_id, "succeeded", document_id=document_id)
             self._blobs.delete_job_staging(job_id)

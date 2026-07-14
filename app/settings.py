@@ -117,6 +117,22 @@ class Settings(BaseSettings):
     # --- Rerank ---
     rerank_provider: str = "bge"  # bge | jina | cohere | none，重排提供方
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_top_k: int = 10  # rerank 前传入的候选数量
+    rerank_device: str = "auto"
+    rerank_batch_size: int = 16
+    rerank_normalize: bool = True
+    rerank_query_max_length: int = 512
+    rerank_passage_max_length: int = 8192
+
+    # --- 混合检索 ---
+    search_top_k: int = 10  # 最终返回的结果数量
+    search_vector_top_k: int = 30  # 向量检索引擎初始召回数量
+    search_keyword_top_k: int = 30  # 关键词检索引擎初始召回数量
+    search_fusion_method: str = "rrf"  # rrf | weighted_score，融合策略
+    search_rrf_k: int = 60  # RRF 融合常数，越小则排名靠前的权重越高
+    search_vector_weight: float = 0.6  # weighted_score 模式下向量检索权重
+    search_keyword_weight: float = 0.4  # weighted_score 模式下关键词检索权重
+    search_opensearch_mock: bool = True  # True 时使用内存模拟 BM25（PseudoKeywordRetriever），无需真实 OpenSearch
 
     # --- 健康检查 ---
     health_check_timeout_seconds: float = 3.0
