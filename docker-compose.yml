@@ -34,6 +34,11 @@ services:
       RAG_MYSQL_DB: ${MYSQL_DATABASE:-trustguard_rag}
       RAG_QDRANT_HOST: qdrant
       RAG_QDRANT_PORT: "6333"
+      RAG_OPENSEARCH_HOST: opensearch
+      RAG_OPENSEARCH_PORT: "9200"
+      RAG_OPENSEARCH_USE_SSL: "false"
+      RAG_OPENSEARCH_VERIFY_CERTS: "false"
+      RAG_SEARCH_OPENSEARCH_MOCK: "false"
       RAG_REDIS_HOST: redis
       RAG_REDIS_PORT: "6379"
       RAG_RABBITMQ_HOST: rabbitmq
@@ -59,6 +64,8 @@ services:
         condition: service_started
       qdrant:
         condition: service_started
+      opensearch:
+        condition: service_healthy
       redis:
         condition: service_healthy
       rabbitmq:
@@ -114,6 +121,31 @@ services:
     volumes:
       - trustguard_rag_qdrant:/qdrant/storage
 
+  opensearch:
+    image: ${OPENSEARCH_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/opensearchproject/opensearch:2.19.1}
+    environment:
+      discovery.type: single-node
+      bootstrap.memory_lock: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+    ports:
+      - "18216:9200"
+    volumes:
+      - trustguard_rag_opensearch:/usr/share/opensearch/data
+    mem_limit: ${OPENSEARCH_MEM_LIMIT:-1g}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    healthcheck:
+      test: ["CMD-SHELL", "curl --silent --fail 'http://localhost:9200/_cluster/health?wait_for_status=yellow' >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
   minio:
     image: ${MINIO_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/minio/minio:latest}
     command: server /data --console-address ":9001"
@@ -135,5 +167,6 @@ services:
 volumes:
   trustguard_rag_mysql:
   trustguard_rag_qdrant:
+  trustguard_rag_opensearch:
   trustguard_rag_minio:
   trustguard_rag_models:

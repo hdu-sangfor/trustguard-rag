@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -71,6 +70,8 @@ class Settings(BaseSettings):
     opensearch_use_ssl: bool = False
     opensearch_verify_certs: bool = False
     opensearch_index_prefix: str = "rag_"
+    opensearch_backfill_on_startup: bool = True
+    cleanup_resume_on_startup: bool = True
 
     # --- Redis（缓存 / 限流 / 任务心跳） ---
     redis_host: str = "localhost"
@@ -115,7 +116,7 @@ class Settings(BaseSettings):
     embedding_api_timeout_seconds: float = 60.0
 
     # --- Rerank ---
-    rerank_provider: str = "bge"  # bge | jina | cohere | none，重排提供方
+    rerank_provider: str = "none"  # none | local | api，重排提供方
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
     rerank_top_k: int = 10  # rerank 前传入的候选数量
     rerank_device: str = "auto"
@@ -123,6 +124,10 @@ class Settings(BaseSettings):
     rerank_normalize: bool = True
     rerank_query_max_length: int = 512
     rerank_passage_max_length: int = 8192
+    rerank_base_url: str | None = None
+    rerank_api_key: str | None = None
+    rerank_api_timeout_seconds: float = 60.0
+    rerank_instruction: str | None = None
 
     # --- 混合检索 ---
     search_top_k: int = 10  # 最终返回的结果数量

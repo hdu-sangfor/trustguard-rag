@@ -12,4 +12,6 @@ class DocumentStatus(StrEnum):
     INDEXING = "indexing"
     READY = "ready"
     FAILED = "failed"
+    DELETING = "deleting"
+    SUPERSEDING = "superseeding"
     SUPERSEDED = "superseded"

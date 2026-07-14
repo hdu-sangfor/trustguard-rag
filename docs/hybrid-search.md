@@ -14,7 +14,7 @@ RAG_SEARCH_KEYWORD_TOP_K=30
 RAG_SEARCH_FUSION_METHOD=rrf          # rrf | weighted_score
 RAG_SEARCH_RRF_K=60
 RAG_SEARCH_OPENSEARCH_MOCK=true       # true=本地模拟, false=真实OpenSearch
-RAG_RERANK_PROVIDER=none              # none | bge
+RAG_RERANK_PROVIDER=none              # none | local | api
 ```
 
 ### 2. 搜索 API
@@ -85,7 +85,8 @@ curl -X POST http://localhost:18200/v1/search \
   "components": {
     "vector": 8,
     "keyword": 12
-  }
+  },
+  "degraded_components": []
 }
 ```
 
@@ -105,7 +106,7 @@ curl -X POST http://localhost:18200/v1/search \
                         │
                         ▼
                    Reranker
-                 (BGE / none)
+              (BGE / 百炼 / none)
                         │
                         ▼
                    Top-K 结果
@@ -142,9 +143,25 @@ pip install FlagEmbedding
 ```
 
 ```bash
-RAG_RERANK_PROVIDER=bge
+RAG_RERANK_PROVIDER=local
 RAG_RERANK_MODEL=BAAI/bge-reranker-v2-m3
 ```
+
+### 百炼 API（推荐 qwen3-rerank）
+
+```bash
+RAG_RERANK_PROVIDER=api
+RAG_RERANK_MODEL=qwen3-rerank
+RAG_RERANK_BASE_URL=https://YOUR_WORKSPACE_ID.cn-beijing.maas.aliyuncs.com/compatible-api/v1
+RAG_RERANK_API_KEY=YOUR_BAILIAN_API_KEY
+# 可选：自定义排序任务，建议使用英文
+RAG_RERANK_INSTRUCTION=Given a web search query, retrieve relevant passages that answer the query.
+```
+
+也可以使用百炼标准环境变量 `DASHSCOPE_API_KEY` 代替
+`RAG_RERANK_API_KEY`。调用失败时会记录 warning，并回退到融合后的原始排序。
+兼容旧习惯：`bge` 会归一化为 `local`，`bailian`、`dashscope`、
+`openai_compatible` 和 `remote` 会归一化为 `api`。
 
 ### None (直通)
 
@@ -173,7 +190,7 @@ RAG_OPENSEARCH_PORT=9200
 
 ## 入库时自动索引 OpenSearch
 
-文档入库流水线会自动将分块文本写入 OpenSearch（失败不影响主流程）：
+文档入库流水线会自动将分块文本写入 Qdrant 和 OpenSearch；两侧都成功后才发布：
 
 ```
 ingest pipeline:
@@ -183,6 +200,12 @@ ingest pipeline:
 ```
 
 回滚/冲突删除时会自动清理 OpenSearch 中的文档。
+任一索引写入失败都会触发 Saga 补偿，文档进入 `failed` 而不是 `ready`。删除和替换分别
+使用 `deleting`、`superseeding` 中间状态；Qdrant/OpenSearch 双删会独立执行并支持幂等
+重试。检索结果还会根据 MySQL 中的 `ready` 状态做权威过滤，防止清理期间的孤儿索引泄漏。
+应用启动时还会把 MySQL 中所有 ready 文档的 active 分块幂等回填到 OpenSearch，
+用于处理后接入 OpenSearch、索引卷重建以及历史写入失败等情况。搜索时若发现业务索引
+不存在，也会自动创建并触发回填。
 
 ## 配置参考
 
@@ -196,7 +219,13 @@ ingest pipeline:
 | `RAG_SEARCH_VECTOR_WEIGHT` | 0.6 | 加权融合向量权重 |
 | `RAG_SEARCH_KEYWORD_WEIGHT` | 0.4 | 加权融合关键词权重 |
 | `RAG_SEARCH_OPENSEARCH_MOCK` | true | 本地模拟 OpenSearch |
-| `RAG_RERANK_PROVIDER` | bge | bge 或 none |
+| `RAG_OPENSEARCH_BACKFILL_ON_STARTUP` | true | 启动时回填历史 ready 文档 |
+| `RAG_CLEANUP_RESUME_ON_STARTUP` | true | 启动时续跑 deleting/superseeding/failed 清理 |
+| `RAG_RERANK_PROVIDER` | none | none、local 或 api |
 | `RAG_RERANK_MODEL` | BAAI/bge-reranker-v2-m3 | 重排序模型 |
 | `RAG_RERANK_TOP_K` | 10 | 重排候选数 |
 | `RAG_RERANK_DEVICE` | auto | 设备选择 |
+| `RAG_RERANK_BASE_URL` | - | OpenAI-compatible rerank API 地址 |
+| `RAG_RERANK_API_KEY` | - | API Key，百炼也可使用 DASHSCOPE_API_KEY |
+| `RAG_RERANK_API_TIMEOUT_SECONDS` | 60 | API 请求超时时间 |
+| `RAG_RERANK_INSTRUCTION` | - | qwen3-rerank 排序任务指令 |

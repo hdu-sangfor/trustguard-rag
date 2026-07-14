@@ -14,7 +14,7 @@ curl http://localhost:18200/health
 
 ```bash
 uv sync
-docker compose up -d mysql qdrant redis rabbitmq minio
+docker compose up -d mysql qdrant opensearch redis rabbitmq minio
 uv run uvicorn app.main:app --reload --port 18200
 uv run python -m pytest
 ```
@@ -31,6 +31,18 @@ uv run python -m pytest
 | redis | 18211 |
 | rabbitmq | 18212 / 18213 |
 | qdrant | 18214 / 18215 |
+| opensearch | 18216 |
+| minio | 18217 / 18218 |
+
+本地 Compose 使用单节点 OpenSearch，并关闭安全插件，不能直接作为生产配置使用。
+应用启动时会幂等地把 MySQL 中已有的 ready 文档分块回填到 OpenSearch，因而支持
+在已有知识库之后再接入或重建 OpenSearch。可通过
+`RAG_OPENSEARCH_BACKFILL_ON_STARTUP=false` 关闭启动回填。
+若 Linux 上 OpenSearch 因 `vm.max_map_count` 过小而启动失败，可执行：
+
+```bash
+sudo sysctl -w vm.max_map_count=262144
+```
 
 ## 入库（PDF）
 
@@ -63,10 +75,14 @@ curl -X PATCH http://localhost:18200/v1/documents/<document_id> \
 curl -X DELETE http://localhost:18200/v1/documents/<document_id>
 ```
 
-处于 `staging` 或 `indexing` 状态的文档仍由入库任务持有，删除请求会返回 `409`；
+处于 `staging`、`indexing` 或 `superseeding` 状态的文档仍由后台流程持有，删除请求会返回 `409`；
 待文档进入终态后再执行删除，避免与向量和分块写入发生竞争。
 删除成功时还会清理入库任务中的文档引用；清理失败会返回带 reference ID 的 `502`，
-完整错误仅记录在服务端日志中。
+完整错误仅记录在服务端日志中。删除开始后文档先进入 `deleting`，Qdrant 和 OpenSearch
+会被独立尝试删除；任一失败都会保留该状态，允许重复 DELETE 或应用启动时自动续跑。
+
+文档只有在 Qdrant 与 OpenSearch 都写入成功后才会进入 `ready`。任一索引写入失败会将
+任务标记为失败，并补偿删除另一侧索引、分块和 artifact，避免发布半成品文档。
 
 ## Embedding
 
@@ -121,6 +137,20 @@ RAG_EMBEDDING_DIM=1024
 RAG_EMBEDDING_PROVIDER=pseudo
 ```
 
+## Rerank
+
+默认关闭重排，避免轻量安装环境依赖未安装的本地 BGE 模型。使用百炼
+`qwen3-rerank` 时配置：
+
+```env
+RAG_RERANK_PROVIDER=api
+RAG_RERANK_MODEL=qwen3-rerank
+RAG_RERANK_BASE_URL=https://YOUR_WORKSPACE_ID.cn-beijing.maas.aliyuncs.com/compatible-api/v1
+RAG_RERANK_API_KEY=YOUR_BAILIAN_API_KEY
+```
+
+完整配置参见 [`docs/hybrid-search.md`](docs/hybrid-search.md)。
+
 ## 目录结构（概要）
 
 ```
@@ -141,4 +171,4 @@ tests/
 
 - `GET /health/live` — 存活
 - `GET /health` — 依赖详情
-- `GET /health/ready` — ingest 模式下检查 mysql、qdrant、本地存储
+- `GET /health/ready` — ingest 模式下检查 mysql、真实启用的 qdrant/opensearch，以及对象或本地存储

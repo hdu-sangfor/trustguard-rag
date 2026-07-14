@@ -8,6 +8,7 @@ from qdrant_client.models import Filter, FieldCondition, MatchValue
 from app.core.embedding.client import EmbeddingClient
 from app.settings import get_settings
 from app.stores import qdrant_store
+from app.stores.chunk_store import get_chunk_store
 
 
 class VectorRetriever:
@@ -34,18 +35,30 @@ class VectorRetriever:
         qdrant_filter = _build_qdrant_filter(filters)
         client = qdrant_store.get_client()
 
-        results = await client.search(
+        response = await client.query_points(
             collection_name=self._collection,
-            query_vector=query_vector,
+            query=query_vector,
             limit=top_k,
             with_payload=True,
             query_filter=qdrant_filter,
         )
+        results = response.points
+
+        missing_text_ids = [
+            str(point.id)
+            for point in results
+            if not point.payload or not point.payload.get("chunk_text")
+        ]
+        fallback_text = {
+            row.id: row.text for row in await get_chunk_store().get_many(missing_text_ids)
+        }
 
         return [
             {
                 "chunk_id": r.id,
-                "text": r.payload.get("chunk_text") if r.payload else None,
+                "text": (
+                    r.payload.get("chunk_text") if r.payload else None
+                ) or fallback_text.get(str(r.id), ""),
                 "score": float(r.score),
                 "doc_id": r.payload.get("doc_id") if r.payload else None,
                 "chunk_index": r.payload.get("chunk_index") if r.payload else None,

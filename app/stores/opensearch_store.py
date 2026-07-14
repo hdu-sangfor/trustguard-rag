@@ -29,12 +29,22 @@ def get_client() -> AsyncOpenSearch:
 
 async def check() -> DependencyStatus:
     """向 OpenSearch 发送 ping；连接失效时重置客户端。"""
+    s = get_settings()
+    if s.search_opensearch_mock:
+        return DependencyStatus(
+            status="disabled",
+            detail="opensearch mock mode (in-memory keyword index)",
+        )
+
     t0 = time.perf_counter()
     try:
         ok = await get_client().ping()
         if not ok:
             await close()
             return DependencyStatus(status="down", detail="ping returned False")
+        index_name = f"{s.opensearch_index_prefix}chunks"
+        if not await get_client().indices.exists(index=index_name):
+            return DependencyStatus(status="down", detail=f"missing index: {index_name}")
         return DependencyStatus(status="up", latency_ms=round((time.perf_counter() - t0) * 1000, 1))
     except Exception as e:  # noqa: BLE001
         # 依赖重启后旧连接可能失效；丢弃旧连接，下次自动重连

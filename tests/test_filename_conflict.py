@@ -4,7 +4,20 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
+from app.domain import DocumentStatus
+from app.stores.document_store import DocumentStore
 from pdf_fixtures import make_pdf_bytes
+
+
+class _FailingOpenSearchIndexer:
+    async def ensure_index(self) -> None:
+        raise RuntimeError("opensearch down")
+
+    async def index_chunks(self, *args, **kwargs) -> None:
+        raise AssertionError("unexpected index call")
+
+    async def delete_for_document(self, document_id: str) -> None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -66,3 +79,39 @@ async def test_deduplicated_upload(client: AsyncClient) -> None:
     job2 = (await client.get(f"/v1/ingest/jobs/{r2.json()['job_id']}")).json()
     assert job2["status"] == "deduplicated"
     assert job2["document_id"] == doc1
+
+
+@pytest.mark.asyncio
+async def test_conflict_new_publish_failure_keeps_old_document_ready(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = await client.post(
+        "/v1/ingest/jobs",
+        data={"source_type": "file"},
+        files={"file": ("protected.pdf", make_pdf_bytes(["old"]), "application/pdf")},
+    )
+    first_job = (await client.get(f"/v1/ingest/jobs/{first.json()['job_id']}")).json()
+    old_id = first_job["document_id"]
+
+    second = await client.post(
+        "/v1/ingest/jobs",
+        data={"source_type": "file"},
+        files={"file": ("protected.pdf", make_pdf_bytes(["new"]), "application/pdf")},
+    )
+    second_job_id = second.json()["job_id"]
+    conflict = (await client.get(f"/v1/ingest/jobs/{second_job_id}")).json()
+    pending_id = conflict["pending_document_id"]
+    monkeypatch.setattr(
+        "app.core.ingest.pipeline.get_opensearch_indexer",
+        lambda: _FailingOpenSearchIndexer(),
+    )
+
+    resolved = await client.post(
+        f"/v1/ingest/jobs/{second_job_id}/resolve",
+        json={"keep_document_id": pending_id},
+    )
+
+    assert resolved.status_code == 200
+    assert resolved.json()["status"] == "failed"
+    assert (await DocumentStore().get(old_id)).status == DocumentStatus.READY
+    assert (await DocumentStore().get(pending_id)).status == DocumentStatus.FAILED

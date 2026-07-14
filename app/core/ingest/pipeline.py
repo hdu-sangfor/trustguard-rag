@@ -14,6 +14,7 @@ from app.core.ingest.compensator import Compensator
 from app.core.ingest.errors import (
     ARTIFACT_WRITE_FAILED,
     FILENAME_CONFLICT,
+    INDEX_FAILED,
     IngestError,
 )
 from app.core.ingest.extractors.file import FileExtractor
@@ -179,17 +180,11 @@ class IngestPipeline:
             await self._chunks.create_many(chunk_rows)
 
             await self._jobs.mark_running(job_id, "opensearch_index")
-            try:
-                await self._opensearch_indexer.ensure_index()
-                await self._opensearch_indexer.index_chunks(
-                    chunk_rows,
-                    source_uri=extracted.source_uri,
-                    original_filename=original_filename,
-                )
-            except Exception:
-                logger.warning(
-                    "OpenSearch indexing failed for %s, continuing", doc.id, exc_info=True
-                )
+            await self._index_opensearch(
+                chunk_rows,
+                source_uri=extracted.source_uri,
+                original_filename=original_filename,
+            )
 
             await self._jobs.mark_running(job_id, "publish")
             await self._documents.update_status(doc.id, DocumentStatus.READY)
@@ -219,14 +214,44 @@ class IngestPipeline:
             raise ValueError("No pending document for conflict job")
 
         if keep_document_id == pending_id:
-            for old_id in candidates:
-                if old_id != pending_id:
-                    await self._compensator.supersede_document(old_id)
             file_bytes, original_filename, mime = await self._load_upload(job)
             extracted = self._extractor.extract(
                 file_bytes, original_filename=original_filename, mime=mime
             )
-            await self._publish_pending(pending_id, extracted, original_filename, job_id)
+            try:
+                await self._publish_pending(pending_id, extracted, original_filename)
+            except Exception as e:  # noqa: BLE001
+                if isinstance(e, IngestError):
+                    error_code, error_message = e.code, e.message
+                else:
+                    error_code, error_message = "INTERNAL", str(e)
+                await self._jobs.finish(
+                    job_id,
+                    "failed",
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+                self._blobs.delete_job_staging(job_id)
+                return
+
+            cleanup_pending: list[str] = []
+            for old_id in candidates:
+                if old_id == pending_id:
+                    continue
+                try:
+                    await self._compensator.supersede_document(old_id)
+                except Exception:  # noqa: BLE001
+                    cleanup_pending.append(old_id)
+                    logger.warning("supersede cleanup pending for %s", old_id, exc_info=True)
+            if cleanup_pending:
+                await self._jobs.append_step_log(
+                    job_id,
+                    "supersede_cleanup",
+                    "pending",
+                    detail=f"{len(cleanup_pending)} document(s) pending startup retry",
+                )
+            await self._jobs.finish(job_id, "succeeded", document_id=pending_id)
+            self._blobs.delete_job_staging(job_id)
         elif keep_document_id in candidates:
             await self._compensator.rollback_document(pending_id)
             await self._jobs.finish(job_id, "discarded", document_id=keep_document_id)
@@ -239,7 +264,6 @@ class IngestPipeline:
         document_id: str,
         extracted: ExtractedDocument,
         original_filename: str,
-        job_id: str,
     ) -> None:
         """按 artifact、分块、嵌入、索引步骤发布暂存的冲突胜出文档。"""
         try:
@@ -280,23 +304,33 @@ class IngestPipeline:
                 original_filename=original_filename,
             )
             await self._chunks.create_many(chunk_rows)
-            try:
-                await self._opensearch_indexer.ensure_index()
-                await self._opensearch_indexer.index_chunks(
-                    chunk_rows,
-                    source_uri=extracted.source_uri,
-                    original_filename=original_filename,
-                )
-            except Exception:
-                logger.warning(
-                    "OpenSearch indexing failed for conflict resolve %s", document_id, exc_info=True
-                )
+            await self._index_opensearch(
+                chunk_rows,
+                source_uri=extracted.source_uri,
+                original_filename=original_filename,
+            )
             await self._documents.update_status(document_id, DocumentStatus.READY)
-            await self._jobs.finish(job_id, "succeeded", document_id=document_id)
-            self._blobs.delete_job_staging(job_id)
         except Exception:
             await self._compensator.rollback_document(document_id)
             raise
+
+    async def _index_opensearch(
+        self,
+        chunks: list[dict[str, Any]],
+        *,
+        source_uri: str,
+        original_filename: str | None,
+    ) -> None:
+        """把 OpenSearch 视为发布必需步骤，失败时触发 Saga 回滚。"""
+        try:
+            await self._opensearch_indexer.ensure_index()
+            await self._opensearch_indexer.index_chunks(
+                chunks,
+                source_uri=source_uri,
+                original_filename=original_filename,
+            )
+        except Exception as e:
+            raise IngestError(INDEX_FAILED, "OpenSearch indexing failed") from e
 
     async def _load_upload(self, job) -> tuple[bytes, str, str | None]:
         """加载任务暂存的上传字节和原始请求元数据。"""

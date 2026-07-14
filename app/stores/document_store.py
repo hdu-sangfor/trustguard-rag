@@ -185,6 +185,19 @@ class DocumentStore:
             result = await session.execute(select(DocumentRow).where(DocumentRow.status == status))
             return list(result.scalars().all())
 
+    async def ready_ids(self, document_ids: list[str]) -> set[str]:
+        """返回候选中仍处于 ready 状态的文档 ID，作为检索结果的权威过滤。"""
+        if not document_ids:
+            return set()
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(
+                select(DocumentRow.id).where(
+                    DocumentRow.id.in_(document_ids),
+                    DocumentRow.status == DocumentStatus.READY,
+                )
+            )
+            return set(result.scalars().all())
+
 
 def get_document_store() -> DocumentStore:
     """创建绑定共享数据库引擎的文档存储。"""

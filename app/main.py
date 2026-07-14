@@ -14,6 +14,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import documents, health, ingest, search, sources
+from app.core.ingest.compensator import get_compensator
+from app.core.indexing.opensearch_backfill import backfill_ready_documents
 from app.settings import get_settings
 from app.stores import db, opensearch_store, qdrant_store, redis_cache
 
@@ -26,6 +28,22 @@ async def lifespan(app: FastAPI):
     s = get_settings()
     logging.basicConfig(level=s.log_level)
     logger.info("starting %s v%s (env=%s) on :%s", s.app_name, s.app_version, s.app_env, s.api_port)
+    if s.cleanup_resume_on_startup:
+        try:
+            resumed = await get_compensator().resume_pending_cleanups()
+            logger.info("pending cleanup recovery complete: %s", resumed)
+        except Exception:  # noqa: BLE001
+            logger.warning("pending cleanup recovery failed", exc_info=True)
+    if not s.search_opensearch_mock and s.opensearch_backfill_on_startup:
+        try:
+            result = await backfill_ready_documents()
+            logger.info(
+                "OpenSearch backfill complete: documents=%s chunks=%s",
+                result.documents,
+                result.chunks,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("OpenSearch startup backfill failed", exc_info=True)
     yield
     # 优雅关闭各连接
     for closer in (db.close, qdrant_store.close, opensearch_store.close, redis_cache.close):

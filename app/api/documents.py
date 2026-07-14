@@ -26,7 +26,12 @@ router = APIRouter(prefix="/v1/documents", tags=["documents"])
 logger = logging.getLogger(__name__)
 
 _DELETABLE_DOCUMENT_STATUSES = frozenset(
-    {DocumentStatus.READY, DocumentStatus.FAILED, DocumentStatus.SUPERSEDED}
+    {
+        DocumentStatus.READY,
+        DocumentStatus.FAILED,
+        DocumentStatus.DELETING,
+        DocumentStatus.SUPERSEDED,
+    }
 )
 
 

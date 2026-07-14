@@ -50,3 +50,7 @@ class SearchResponse(BaseModel):
     fusion_method: str
     retrieval_time_ms: float
     components: dict[str, int] = Field(default_factory=dict, description="各检索引擎召回数量")
+    degraded_components: list[str] = Field(
+        default_factory=list,
+        description="本次请求中发生故障并已降级的召回引擎",
+    )

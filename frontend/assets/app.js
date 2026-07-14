@@ -1,7 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 const state = { file: null, jobs: JSON.parse(localStorage.getItem("tg-jobs") || "[]"), timers: new Map(), documents: [], documentOffset: 0, documentLimit: 10, documentTotal: 0 };
 const terminal = new Set(["succeeded", "failed", "deduplicated", "discarded", "conflict"]);
-const deletableDocumentStatuses = new Set(["ready", "failed", "superseded"]);
+const deletableDocumentStatuses = new Set(["ready", "failed", "deleting", "superseded"]);
 const statusLabel = { queued:"排队中", running:"处理中", succeeded:"已完成", failed:"失败", deduplicated:"已去重", conflict:"待处理", discarded:"已丢弃" };
 const stepLabel = { validate:"文件校验", extract:"解析文本", dedup:"内容去重", conflict_check:"冲突检查", commit_artifacts:"保存产物", chunk:"文本分块", embed:"生成向量", index:"写入索引", publish:"发布文档" };
 
@@ -82,11 +82,12 @@ async function loadDocuments(reset=false){
 
 function renderSearchResults(data){
   const results=$("#search-results"), empty=$("#search-empty"), summary=$("#search-summary");
+  const degraded=Array.isArray(data.degraded_components)?data.degraded_components:[];
   results.innerHTML="";
   empty.hidden=data.results.length>0;
-  if(!data.results.length){empty.querySelector("h3").textContent="没有找到相关内容";empty.querySelector("p").textContent="尝试更换关键词、增加召回数量或启用另一种检索方式。";}
+  if(!data.results.length){empty.querySelector("h3").textContent="没有找到相关内容";empty.querySelector("p").textContent=degraded.length?`部分检索引擎不可用：${degraded.join("、")}。请稍后重试。`:"尝试更换关键词、增加召回数量或启用另一种检索方式。";}
   summary.hidden=false;
-  summary.innerHTML=`<span><strong>${data.total}</strong> 条结果</span><span><strong>${Number(data.retrieval_time_ms).toFixed(1)}</strong> ms</span><span>${escapeHtml(data.fusion_method.toUpperCase())}</span><span>向量 ${data.components?.vector??0} · 关键词 ${data.components?.keyword??0}</span>`;
+  summary.innerHTML=`<span><strong>${data.total}</strong> 条结果</span><span><strong>${Number(data.retrieval_time_ms).toFixed(1)}</strong> ms</span><span>${escapeHtml(data.fusion_method.toUpperCase())}</span><span>向量 ${data.components?.vector??0} · 关键词 ${data.components?.keyword??0}</span>${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}`;
   data.results.forEach((item,index)=>{
     const source=item.source||{};
     const card=document.createElement("article");

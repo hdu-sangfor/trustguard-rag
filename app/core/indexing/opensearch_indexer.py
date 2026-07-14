@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 class OpenSearchIndexer:
     """将分块文本索引入 OpenSearch 以支持 BM25 关键词检索。"""
 
-    def __init__(self) -> None:
-        self._retriever = get_keyword_retriever()
+    def __init__(self, retriever=None) -> None:
+        self._retriever = retriever or get_keyword_retriever()
 
     async def ensure_index(self) -> None:
         await self._retriever.ensure_index()

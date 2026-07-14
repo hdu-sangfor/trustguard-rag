@@ -235,6 +235,22 @@ class TestRRFFusion:
         assert v2_items[0].get("vector_score") is not None
         assert v2_items[0].get("keyword_score") is not None
 
+    def test_fusion_fills_fields_missing_from_first_retriever(self) -> None:
+        vector = [{"chunk_id": "shared", "text": None, "score": 0.8}]
+        keyword = [
+            {
+                "chunk_id": "shared",
+                "text": "关键词召回文本",
+                "document_id": "doc-1",
+                "score": 2.0,
+            }
+        ]
+
+        merged = _rrf_fusion(vector, keyword)
+
+        assert merged[0]["text"] == "关键词召回文本"
+        assert merged[0]["document_id"] == "doc-1"
+
     def test_empty_vector(self, sample_keyword_results) -> None:
         merged = _rrf_fusion([], sample_keyword_results)
         assert len(merged) == len(sample_keyword_results)

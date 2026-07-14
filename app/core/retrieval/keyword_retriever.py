@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from app.settings import get_settings
 from app.stores import opensearch_store
+
+_INDEX_INIT_LOCK = asyncio.Lock()
 
 
 class KeywordRetriever:
@@ -19,35 +22,38 @@ class KeywordRetriever:
     def index_name(self) -> str:
         return self._index
 
-    async def ensure_index(self) -> None:
+    async def ensure_index(self) -> bool:
+        """确保业务索引存在，并返回本次调用是否创建了索引。"""
         client = opensearch_store.get_client()
         exists = await client.indices.exists(index=self._index)
-        if not exists:
-            await client.indices.create(
-                index=self._index,
-                body={
-                    "settings": {
-                        "index": {"number_of_shards": 1, "number_of_replicas": 0},
-                        "analysis": {
-                            "analyzer": {
-                                "default": {"type": "standard"},
-                            }
-                        },
-                    },
-                    "mappings": {
-                        "properties": {
-                            "chunk_id": {"type": "keyword"},
-                            "document_id": {"type": "keyword"},
-                            "chunk_index": {"type": "integer"},
-                            "text": {"type": "text", "analyzer": "standard"},
-                            "source_uri": {"type": "keyword"},
-                            "original_filename": {"type": "keyword"},
-                            "page_no": {"type": "integer"},
-                            "metadata": {"type": "object", "enabled": False},
+        if exists:
+            return False
+        await client.indices.create(
+            index=self._index,
+            body={
+                "settings": {
+                    "index": {"number_of_shards": 1, "number_of_replicas": 0},
+                    "analysis": {
+                        "analyzer": {
+                            "default": {"type": "standard"},
                         }
                     },
                 },
-            )
+                "mappings": {
+                    "properties": {
+                        "chunk_id": {"type": "keyword"},
+                        "document_id": {"type": "keyword"},
+                        "chunk_index": {"type": "integer"},
+                        "text": {"type": "text", "analyzer": "standard"},
+                        "source_uri": {"type": "keyword"},
+                        "original_filename": {"type": "keyword"},
+                        "page_no": {"type": "integer"},
+                        "metadata": {"type": "object", "enabled": False},
+                    }
+                },
+            },
+        )
+        return True
 
     async def index_chunk(
         self,
@@ -84,7 +90,14 @@ class KeywordRetriever:
             body.append({"index": {"_index": self._index, "_id": c["chunk_id"]}})
             body.append(c["body"])
         if body:
-            await client.bulk(body=body, refresh=True)
+            response = await client.bulk(body=body, refresh=True)
+            if response.get("errors"):
+                failed = [
+                    item
+                    for item in response.get("items", [])
+                    if item.get("index", {}).get("error")
+                ]
+                raise RuntimeError(f"OpenSearch bulk indexing failed for {len(failed)} chunks")
 
     async def retrieve(
         self,
@@ -99,17 +112,21 @@ class KeywordRetriever:
             for key, value in filters.items():
                 must_clauses.append({"term": {key: value}})
 
+        async with _INDEX_INIT_LOCK:
+            created = await self.ensure_index()
+            if created:
+                from app.core.indexing.opensearch_backfill import backfill_ready_documents
+
+                await backfill_ready_documents(retriever=self, ensure_index=False)
+
         client = opensearch_store.get_client()
-        try:
-            response = await client.search(
-                index=self._index,
-                body={
-                    "query": {"bool": {"must": must_clauses}},
-                    "size": top_k,
-                },
-            )
-        except Exception:
-            return []
+        response = await client.search(
+            index=self._index,
+            body={
+                "query": {"bool": {"must": must_clauses}},
+                "size": top_k,
+            },
+        )
 
         results = []
         for hit in response["hits"]["hits"]:
@@ -143,8 +160,8 @@ class KeywordRetriever:
 class MockKeywordRetriever:
     """mock 模式下返回空结果。"""
 
-    async def ensure_index(self) -> None:
-        pass
+    async def ensure_index(self) -> bool:
+        return False
 
     async def index_chunk(
         self,

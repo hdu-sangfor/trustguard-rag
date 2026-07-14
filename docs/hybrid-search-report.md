@@ -9,7 +9,7 @@
 | 向量检索 | `app/core/retrieval/vector_retriever.py` | Qdrant 稠密向量语义检索 |
 | 关键词检索 | `app/core/retrieval/keyword_retriever.py` | OpenSearch BM25 + Pseudo 模拟模式 |
 | 融合算法 | `app/core/retrieval/search.py` | RRF + 加权分数融合 |
-| 重排序 | `app/core/retrieval/reranker.py` | BGE Reranker V2-M3 + none 直通模式 |
+| 重排序 | `app/core/retrieval/reranker.py` | BGE 本地模型 + 百炼 qwen3-rerank API + none 直通模式 |
 | 搜索 API | `app/api/search.py` | `POST /v1/search` 端点 |
 | 文本索引 | `app/core/indexing/opensearch_indexer.py` | 入库同步写入 OpenSearch |
 | 补偿清理 | `app/core/ingest/compensator.py` | 回滚时清理 OpenSearch 文档 |
@@ -34,7 +34,8 @@ HybridSearch.search()
       │
       ├──► RRF / WeightedScore Fusion                     (融合策略)
       │
-      └──► Reranker ──► BGE FlagReranker                 (重排序)
+      └──► Reranker ──┬──► BGE FlagReranker             (本地重排序)
+                      └──► 百炼 qwen3-rerank API          (远程重排序)
 ```
 
 ### 融合策略
@@ -68,21 +69,24 @@ HybridSearch.search()
 | `RAG_SEARCH_VECTOR_WEIGHT` | 0.6 | 加权融合向量权重 |
 | `RAG_SEARCH_KEYWORD_WEIGHT` | 0.4 | 加权融合关键词权重 |
 | `RAG_SEARCH_OPENSEARCH_MOCK` | true | true=本地模拟，false=真实 OpenSearch |
+| `RAG_RERANK_PROVIDER` | none | none / local / api |
 | `RAG_RERANK_TOP_K` | 10 | 重排传入候选数 |
 | `RAG_RERANK_DEVICE` | auto | 重排设备 |
 | `RAG_RERANK_BATCH_SIZE` | 16 | 重排批量大小 |
+| `RAG_RERANK_BASE_URL` | - | OpenAI-compatible rerank API 地址 |
+| `RAG_RERANK_API_KEY` | - | API Key |
 
 ---
 
 ## 识别到的改进点
 
-### 1. ⚠️ OpenSearch 索引容错策略（已实现）
-**问题**: OpenSearch 入库失败不应阻塞主流程。
-**方案**: 已使用 `try/except` 包裹，OpenSearch 索引失败时记录 warning 并继续。
+### 1. OpenSearch 双写一致性（已实现）
+**问题**: OpenSearch 入库失败后仍发布会产生半成品 ready 文档。
+**方案**: Qdrant 与 OpenSearch 都成功后才发布；任一失败触发 Saga 补偿并将文档置为 failed。
 
 ### 2. ⚠️ 补偿器需清理 OpenSearch（已实现）
 **问题**: 原始 `Compensator` 仅清理 Qdrant 向量。
-**方案**: 已在 `rollback_document` 和 `supersede_document` 中加入 `delete_for_document`。
+**方案**: 回滚、替换和显式删除都会独立尝试双删；失败持久化为中间状态并在启动时续跑。
 
 ### 3. ✨ 建议: 向量检索增加 chunk_text 到 Qdrant payload
 **问题**: 当前 `QdrantIndexer.upsert_chunks()` 的 payload 不包含 `chunk_text` 字段，
