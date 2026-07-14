@@ -1,4 +1,5 @@
 """文档元数据存储。"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -8,6 +9,7 @@ from uuid import uuid4
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain import DocumentStatus
 from app.stores.db import get_engine
 from app.stores.models import DocumentRow
 
@@ -24,7 +26,7 @@ class DocumentStore:
         source_type: str,
         source_uri: str,
         content_hash: str,
-        status: str = "staging",
+        status: DocumentStatus = DocumentStatus.STAGING,
         title: str | None = None,
         mime_type: str | None = None,
         original_filename: str | None = None,
@@ -63,7 +65,7 @@ class DocumentStore:
         *,
         offset: int = 0,
         limit: int = 20,
-        status: str | None = None,
+        status: DocumentStatus | None = None,
         query: str | None = None,
     ) -> tuple[list[DocumentRow], int]:
         """分页列出文档，并可按状态和常用文本字段筛选。"""
@@ -103,9 +105,7 @@ class DocumentStore:
         safe_values["updated_at"] = _utcnow()
         async with AsyncSession(get_engine()) as session:
             result = await session.execute(
-                update(DocumentRow)
-                .where(DocumentRow.id == document_id)
-                .values(**safe_values)
+                update(DocumentRow).where(DocumentRow.id == document_id).values(**safe_values)
             )
             if not result.rowcount:
                 await session.rollback()
@@ -140,7 +140,7 @@ class DocumentStore:
             result = await session.execute(
                 select(DocumentRow).where(
                     DocumentRow.original_filename == original_filename,
-                    DocumentRow.status == "ready",
+                    DocumentRow.status == DocumentStatus.READY,
                 )
             )
             return list(result.scalars().all())
@@ -152,7 +152,7 @@ class DocumentStore:
         async with AsyncSession(get_engine()) as session:
             q = select(DocumentRow).where(
                 DocumentRow.source_uri == source_uri,
-                DocumentRow.status == "ready",
+                DocumentRow.status == DocumentStatus.READY,
             )
             if exclude_hash:
                 q = q.where(DocumentRow.content_hash != exclude_hash)
@@ -162,7 +162,7 @@ class DocumentStore:
     async def update_status(
         self,
         document_id: str,
-        status: str,
+        status: DocumentStatus,
         *,
         blob_path: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -179,7 +179,7 @@ class DocumentStore:
             )
             await session.commit()
 
-    async def list_by_status(self, status: str) -> list[DocumentRow]:
+    async def list_by_status(self, status: DocumentStatus) -> list[DocumentRow]:
         """列出处于指定生命周期状态的文档。"""
         async with AsyncSession(get_engine()) as session:
             result = await session.execute(select(DocumentRow).where(DocumentRow.status == status))

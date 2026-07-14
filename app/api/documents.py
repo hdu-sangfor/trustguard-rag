@@ -1,12 +1,16 @@
 """文档查询 HTTP API。"""
+
 from __future__ import annotations
 
+import logging
 import mimetypes
 from pathlib import PurePosixPath
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from app.core.ingest.compensator import get_compensator
+from app.domain import DocumentStatus
 from app.schemas.document import (
     ArtifactsResponse,
     ChunkResponse,
@@ -19,6 +23,11 @@ from app.stores.chunk_store import get_chunk_store
 from app.stores.document_store import get_document_store
 
 router = APIRouter(prefix="/v1/documents", tags=["documents"])
+logger = logging.getLogger(__name__)
+
+_DELETABLE_DOCUMENT_STATUSES = frozenset(
+    {DocumentStatus.READY, DocumentStatus.FAILED, DocumentStatus.SUPERSEDED}
+)
 
 
 def _document_response(doc) -> DocumentResponse:
@@ -72,7 +81,7 @@ async def _get_document_or_404(document_id: str):
 async def list_documents(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
-    status_filter: str | None = Query(default=None, alias="status", max_length=32),
+    status_filter: DocumentStatus | None = Query(default=None, alias="status"),
     query: str | None = Query(default=None, alias="q", max_length=512),
 ) -> DocumentListResponse:
     """分页列出知识库文档，支持状态和关键词筛选。"""
@@ -98,9 +107,7 @@ async def get_document(document_id: str) -> DocumentResponse:
 
 
 @router.patch("/{document_id}", response_model=DocumentResponse)
-async def update_document(
-    document_id: str, request: DocumentUpdateRequest
-) -> DocumentResponse:
+async def update_document(document_id: str, request: DocumentUpdateRequest) -> DocumentResponse:
     """更新文档标题、原始文件名或业务元数据。"""
     await _get_document_or_404(document_id)
     supplied = request.model_fields_set
@@ -127,11 +134,25 @@ async def update_document(
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(document_id: str) -> Response:
     """删除文档及其向量、分块和 artifact 文件。"""
-    await _get_document_or_404(document_id)
+    doc = await _get_document_or_404(document_id)
+    if doc.status not in _DELETABLE_DOCUMENT_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Document cannot be deleted while status is {doc.status}",
+        )
     try:
         deleted = await get_compensator().delete_document(document_id)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Document cleanup failed: {exc}") from exc
+        error_id = uuid4().hex
+        logger.exception(
+            "document cleanup failed document_id=%s reference=%s",
+            document_id,
+            error_id,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Document cleanup failed; reference={error_id}",
+        ) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail="Document not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

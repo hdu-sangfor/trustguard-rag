@@ -1,4 +1,5 @@
 """入库任务存储。"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -111,6 +112,29 @@ class JobStore:
             await session.execute(
                 update(IngestJobRow).where(IngestJobRow.id == job_id).values(**values)
             )
+            await session.commit()
+
+    async def clear_document_references(self, document_id: str) -> None:
+        """清空任务中的文档外键式引用，并从冲突候选中移除该文档。"""
+        async with AsyncSession(get_engine()) as session:
+            await session.execute(
+                update(IngestJobRow)
+                .where(IngestJobRow.document_id == document_id)
+                .values(document_id=None)
+            )
+            await session.execute(
+                update(IngestJobRow)
+                .where(IngestJobRow.pending_document_id == document_id)
+                .values(pending_document_id=None)
+            )
+            result = await session.execute(
+                select(IngestJobRow).where(IngestJobRow.conflict_candidates_json.is_not(None))
+            )
+            for job in result.scalars():
+                candidates = list(job.conflict_candidates_json or [])
+                filtered = [candidate for candidate in candidates if candidate != document_id]
+                if filtered != candidates:
+                    job.conflict_candidates_json = filtered
             await session.commit()
 
 

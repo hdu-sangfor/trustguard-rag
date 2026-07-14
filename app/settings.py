@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     local_storage_dir: str = "./data/storage"  # minio_enabled=False 时使用
 
     # --- Embedding（启动前需冻结单一模型，维度必须与模型匹配；见 §5.1“嵌入模型冻结”） ---
-    embedding_provider: str = "local"  # pseudo | local | api | openai_compatible
+    embedding_provider: str = "pseudo"  # pseudo | local | api | openai_compatible
     embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
     embedding_dim: int = 1024
     embedding_device: str = "auto"

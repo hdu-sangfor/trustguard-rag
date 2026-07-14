@@ -1,4 +1,5 @@
 """Embedding provider tests."""
+
 from __future__ import annotations
 
 import pytest
@@ -6,6 +7,16 @@ import pytest
 from app.core.embedding import client as embedding_module
 from app.core.embedding.client import EmbeddingClient, EmbeddingError
 from app.settings import Settings, get_settings
+
+
+def test_default_embedding_provider_keeps_lightweight_install_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RAG_EMBEDDING_PROVIDER", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.embedding_provider == "pseudo"
 
 
 @pytest.mark.asyncio

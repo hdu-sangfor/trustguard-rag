@@ -63,18 +63,23 @@ curl -X PATCH http://localhost:18200/v1/documents/<document_id> \
 curl -X DELETE http://localhost:18200/v1/documents/<document_id>
 ```
 
+处于 `staging` 或 `indexing` 状态的文档仍由入库任务持有，删除请求会返回 `409`；
+待文档进入终态后再执行删除，避免与向量和分块写入发生竞争。
+删除成功时还会清理入库任务中的文档引用；清理失败会返回带 reference ID 的 `502`，
+完整错误仅记录在服务端日志中。
+
 ## Embedding
 
-默认轻量安装不包含本地推理依赖，`RAG_EMBEDDING_PROVIDER=pseudo` 可用于开发/测试。
-生产建议接入 OpenAI-compatible embedding API；如需本地模型推理，再安装可选依赖：
+代码在未设置 embedding 环境变量时默认使用 `pseudo` provider，确保执行 `uv sync`
+的轻量本地开发环境可以直接运行。`.env.example` 为 Docker 部署选择本地模型，Docker
+镜像会安装对应的可选依赖；在宿主机使用本地模型时需显式安装：
 
 ```bash
 uv sync --extra local-embedding
 ```
 
-未设置 embedding 环境变量时，代码默认使用 `pseudo` provider，并按
-`Qwen/Qwen3-Embedding-0.6B` 配置 `1024` 维向量；`.env.example` 则给出生产推荐的
-OpenAI-compatible API 与 `text-embedding-v4` 示例。
+`pseudo` provider 与本地 `Qwen/Qwen3-Embedding-0.6B` 均按 `1024` 维配置；
+`.env.example` 默认选择该本地模型。生产环境也可按下文配置 OpenAI-compatible API。
 Qdrant collection 会按该维度创建；更换模型或维度后需要重建 collection 并重新入库。
 
 本地 Hugging Face 下载：
@@ -128,7 +133,7 @@ app/
   workers/      run_ingest_job
 docker/
   mysql-init.d/ 001_init.sql, 001_ingest.sql
-frontend/       reserved for future UI
+frontend/       知识库 Web 控制台
 tests/
 ```
 

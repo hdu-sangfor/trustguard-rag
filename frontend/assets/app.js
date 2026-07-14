@@ -1,6 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 const state = { file: null, jobs: JSON.parse(localStorage.getItem("tg-jobs") || "[]"), timers: new Map(), documents: [], documentOffset: 0, documentLimit: 10, documentTotal: 0 };
 const terminal = new Set(["succeeded", "failed", "deduplicated", "discarded", "conflict"]);
+const deletableDocumentStatuses = new Set(["ready", "failed", "superseded"]);
 const statusLabel = { queued:"排队中", running:"处理中", succeeded:"已完成", failed:"失败", deduplicated:"已去重", conflict:"待处理", discarded:"已丢弃" };
 const stepLabel = { validate:"文件校验", extract:"解析文本", dedup:"内容去重", conflict_check:"冲突检查", commit_artifacts:"保存产物", chunk:"文本分块", embed:"生成向量", index:"写入索引", publish:"发布文档" };
 
@@ -54,7 +55,10 @@ function renderDocuments(){
     row.innerHTML=`<button class="document-main" type="button"><span class="document-symbol">PDF</span><span class="document-name"><strong>${escapeHtml(doc.title||doc.original_filename||"未命名文档")}</strong><small>${escapeHtml(doc.original_filename||doc.source_uri)} · ${formatTime(doc.created_at)}</small></span></button><span class="status ${escapeHtml(doc.status)}">${escapeHtml(doc.status)}</span><div class="document-actions"><button class="text-button edit-document" type="button">编辑</button><button class="text-button danger delete-document" type="button">删除</button></div>`;
     row.querySelector(".document-main").onclick=()=>openDocument(doc.id);
     row.querySelector(".edit-document").onclick=()=>editDocument(doc);
-    row.querySelector(".delete-document").onclick=()=>deleteDocument(doc);
+    const deleteButton=row.querySelector(".delete-document");
+    deleteButton.disabled=!deletableDocumentStatuses.has(doc.status);
+    deleteButton.title=deleteButton.disabled?"文档仍在处理中，暂时不能删除":"";
+    deleteButton.onclick=()=>deleteDocument(doc);
     list.append(row);
   });
   const pages=Math.max(1,Math.ceil(state.documentTotal/state.documentLimit)); const page=Math.floor(state.documentOffset/state.documentLimit)+1;
@@ -83,9 +87,10 @@ async function editDocument(doc){
 }
 
 async function deleteDocument(doc){
+  if(!deletableDocumentStatuses.has(doc.status)){toast("文档仍在处理中，暂时不能删除",true);return;}
   const name=doc.title||doc.original_filename||doc.id;
   if(!window.confirm(`确定删除“${name}”吗？\n分块、向量和产物文件也会被永久删除。`))return;
-  try{await api(`/v1/documents/${doc.id}`,{method:"DELETE"});toast("文档及关联数据已删除");if($("#document-id").value===doc.id){$("#document-id").value="";$("#document-result").innerHTML="";}if(state.documentOffset>0&&state.documents.length===1)state.documentOffset=Math.max(0,state.documentOffset-state.documentLimit);await loadDocuments();}
+  try{await api(`/v1/documents/${doc.id}`,{method:"DELETE"});toast("文档及关联数据已删除");state.jobs.forEach(job=>{if(job.document_id===doc.id)job.document_id=null;if(job.pending_document_id===doc.id)job.pending_document_id=null;if(Array.isArray(job.conflict_candidates))job.conflict_candidates=job.conflict_candidates.filter(id=>id!==doc.id)});persist();renderJobs();if($("#document-id").value===doc.id){$("#document-id").value="";$("#document-result").innerHTML="";}if(state.documentOffset>0&&state.documents.length===1)state.documentOffset=Math.max(0,state.documentOffset-state.documentLimit);await loadDocuments();}
   catch(error){toast(`删除失败：${error.message}`,true);}
 }
 
@@ -93,7 +98,7 @@ async function openDocument(id){
   switchView("documents"); $("#document-id").value=id; const target=$("#document-result"); target.innerHTML='<div class="loading">正在读取文档与分块…</div>';
   try{
     const [doc,chunks,artifacts]=await Promise.all([api(`/v1/documents/${id}`),api(`/v1/documents/${id}/chunks`),api(`/v1/documents/${id}/artifacts`)]);
-    target.innerHTML=`<div class="doc-card"><div class="panel-header"><div><p class="kicker">${escapeHtml(doc.status)}</p><h2>${escapeHtml(doc.title||doc.original_filename||"未命名文档")}</h2></div><span class="format-tag">${chunks.length} CHUNKS</span></div><div class="doc-meta"><div class="meta-box"><span>文档 ID</span><strong>${escapeHtml(doc.id)}</strong></div><div class="meta-box"><span>页数</span><strong>${doc.metadata?.page_count??"—"}</strong></div><div class="meta-box"><span>产物文件</span><strong>${artifacts.files.length}</strong></div></div><div class="chunks">${chunks.map(c=>`<article class="chunk"><div class="chunk-head"><span>CHUNK ${c.chunk_index+1}</span><span>PAGE ${c.page_no??"—"} · ${c.token_count} TOKENS</span></div><p>${escapeHtml(c.text)}</p></article>`).join("")}</div></div>`;
+    target.innerHTML=`<div class="doc-card"><div class="panel-header"><div><p class="kicker">${escapeHtml(doc.status)}</p><h2>${escapeHtml(doc.title||doc.original_filename||"未命名文档")}</h2></div><span class="format-tag">${chunks.length} CHUNKS</span></div><div class="doc-meta"><div class="meta-box"><span>文档 ID</span><strong>${escapeHtml(doc.id)}</strong></div><div class="meta-box"><span>页数</span><strong>${escapeHtml(String(doc.metadata?.page_count??"—"))}</strong></div><div class="meta-box"><span>产物文件</span><strong>${artifacts.files.length}</strong></div></div><div class="chunks">${chunks.map(c=>`<article class="chunk"><div class="chunk-head"><span>CHUNK ${c.chunk_index+1}</span><span>PAGE ${c.page_no??"—"} · ${c.token_count} TOKENS</span></div><p>${escapeHtml(c.text)}</p></article>`).join("")}</div></div>`;
   }catch(error){target.innerHTML="";toast(`文档查询失败：${error.message}`,true)}
 }
 
