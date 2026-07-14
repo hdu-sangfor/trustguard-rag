@@ -58,6 +58,14 @@ class ChunkStore:
             await session.commit()
         return point_ids
 
+    async def point_ids_for_document(self, document_id: str) -> list[str]:
+        """返回文档关联的向量点 ID，不修改任何数据。"""
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(
+                select(ChunkRow.qdrant_point_id).where(ChunkRow.document_id == document_id)
+            )
+            return [point_id for point_id in result.scalars().all() if point_id]
+
 
 def get_chunk_store() -> ChunkStore:
     """创建绑定共享数据库引擎的分块存储。"""

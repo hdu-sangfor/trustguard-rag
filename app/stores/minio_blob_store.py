@@ -1,4 +1,5 @@
 """带暂存和提交语义的 MinIO/S3 兼容 blob 存储。"""
+
 from __future__ import annotations
 
 import io
@@ -11,6 +12,8 @@ from minio.error import S3Error
 
 from app.settings import get_settings
 from app.stores.minio_client import ensure_bucket, get_minio_client
+
+_NOT_FOUND_CODES = frozenset({"NoSuchKey", "NoSuchObject", "NotFound"})
 
 
 class MinioBlobStore:
@@ -86,20 +89,23 @@ class MinioBlobStore:
     def delete_prefix(self, prefix: str) -> None:
         """删除前缀下所有对象；没有子对象时尝试删除单个对象。"""
         key_prefix = self._key(prefix).rstrip("/") + "/"
-        objects = list(
-            self._client.list_objects(self._bucket, prefix=key_prefix, recursive=True)
-        )
+        objects = list(self._client.list_objects(self._bucket, prefix=key_prefix, recursive=True))
         if not objects:
             single = self._key(prefix)
             try:
                 self._client.remove_object(self._bucket, single)
-            except S3Error:
-                pass
+            except S3Error as exc:
+                if exc.code not in _NOT_FOUND_CODES:
+                    raise
             return
         deletes = [DeleteObject(obj.object_name) for obj in objects]
         errors = self._client.remove_objects(self._bucket, deletes)
         for err in errors:
             raise RuntimeError(f"failed to delete {err.name}: {err}")
+        remaining = list(self._client.list_objects(self._bucket, prefix=key_prefix, recursive=True))
+        if remaining:
+            names = ", ".join(obj.object_name for obj in remaining[:3])
+            raise RuntimeError(f"artifact objects still exist after deletion: {names}")
 
     def delete_staging(self, staging_key: str) -> None:
         """在任务进入终态后删除对应暂存子树。"""

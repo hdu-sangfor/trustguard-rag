@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api import documents, health, ingest, sources
 from app.settings import get_settings
@@ -48,10 +50,13 @@ def create_app() -> FastAPI:
     app.include_router(documents.router)
     app.include_router(sources.router)
 
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+    app.mount("/assets", StaticFiles(directory=frontend_dir / "assets"), name="assets")
+
     @app.get("/", include_in_schema=False)
-    async def root() -> RedirectResponse:
+    async def root() -> FileResponse:
         """将服务根路径重定向到交互式 API 文档。"""
-        return RedirectResponse(url="/docs")
+        return FileResponse(frontend_dir / "index.html")
 
     return app
 
