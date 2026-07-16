@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.domain import EffectiveSearchMode, SearchStatus
 
@@ -29,6 +29,35 @@ class SearchResult(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+FilterScalar = str | int | float | bool
+
+
+class SearchFilters(BaseModel):
+    """两个召回引擎共同支持的过滤条件。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: str | None = Field(default=None, min_length=1, max_length=36)
+    source_uri: str | None = Field(default=None, min_length=1, max_length=2048)
+    original_filename: str | None = Field(default=None, min_length=1, max_length=512)
+    chunk_index: int | None = Field(default=None, ge=0)
+    page_no: int | None = Field(default=None, ge=1)
+    metadata: dict[str, FilterScalar] | None = None
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata_keys(
+        cls, value: dict[str, FilterScalar] | None
+    ) -> dict[str, FilterScalar] | None:
+        """限制元数据键，避免生成含歧义的嵌套字段路径。"""
+        if value is None:
+            return None
+        for key in value:
+            if not key or len(key) > 64 or not key.replace("_", "").replace("-", "").isalnum():
+                raise ValueError("metadata keys may contain only letters, numbers, '_' and '-'")
+        return value
+
+
 class SearchRequest(BaseModel):
     """混合检索请求体。"""
     query: str = Field(description="搜索查询文本", min_length=1)
@@ -41,7 +70,7 @@ class SearchRequest(BaseModel):
     enable_rerank: bool = Field(default=True, description="是否启用重排序")
     enable_vector: bool = Field(default=True, description="是否启用向量检索")
     enable_keyword: bool = Field(default=True, description="是否启用关键词检索")
-    filters: dict[str, Any] | None = Field(default=None, description="元数据过滤条件")
+    filters: SearchFilters | None = Field(default=None, description="双引擎统一过滤条件")
 
 
 class SearchResponse(BaseModel):

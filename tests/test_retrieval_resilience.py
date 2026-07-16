@@ -33,7 +33,12 @@ async def test_vector_retriever_uses_current_qdrant_query_api(monkeypatch) -> No
     point = SimpleNamespace(
         id="chunk-1",
         score=0.9,
-        payload={"chunk_text": "内容", "doc_id": "doc-1", "chunk_index": 0},
+        payload={
+            "chunk_text": "内容",
+            "document_id": "doc-1",
+            "chunk_index": 0,
+            "metadata": {"category": "security"},
+        },
     )
     client = SimpleNamespace(
         query_points=AsyncMock(return_value=SimpleNamespace(points=[point]))
@@ -62,7 +67,7 @@ async def test_vector_retriever_hydrates_text_missing_from_old_payload(monkeypat
     point = SimpleNamespace(
         id="chunk-1",
         score=0.9,
-        payload={"doc_id": "doc-1", "chunk_index": 0},
+        payload={"document_id": "doc-1", "chunk_index": 0},
     )
     client = SimpleNamespace(
         query_points=AsyncMock(return_value=SimpleNamespace(points=[point]))
@@ -240,7 +245,7 @@ async def test_hybrid_search_reports_rerank_degradation(search_settings) -> None
                     "chunk_id": "chunk-1",
                     "text": "召回内容",
                     "score": 0.9,
-                    "doc_id": "doc-1",
+                    "document_id": "doc-1",
                 }
             ]
         )
@@ -270,13 +275,13 @@ async def test_hybrid_search_filters_non_ready_documents(search_settings) -> Non
                     "chunk_id": "ready-chunk",
                     "text": "可检索",
                     "score": 0.9,
-                    "doc_id": "ready-doc",
+                    "document_id": "ready-doc",
                 },
                 {
                     "chunk_id": "deleting-chunk",
                     "text": "不应返回",
                     "score": 0.8,
-                    "doc_id": "deleting-doc",
+                    "document_id": "deleting-doc",
                 },
             ]
         )

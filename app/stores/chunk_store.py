@@ -74,6 +74,28 @@ class ChunkStore:
             )
             return [point_id for point_id in result.scalars().all() if point_id]
 
+    async def update_embedding_configuration(
+        self,
+        chunk_ids: list[str],
+        *,
+        model: str,
+        dimension: int,
+        provider: str,
+    ) -> None:
+        """在索引重建后同步分块的嵌入配置和元数据。"""
+        if not chunk_ids:
+            return
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(select(ChunkRow).where(ChunkRow.id.in_(chunk_ids)))
+            for row in result.scalars().all():
+                row.embedding_model = model
+                row.embedding_dim = dimension
+                row.metadata_json = {
+                    **(row.metadata_json or {}),
+                    "embedding_provider": provider,
+                }
+            await session.commit()
+
 
 def get_chunk_store() -> ChunkStore:
     """创建绑定共享数据库引擎的分块存储。"""

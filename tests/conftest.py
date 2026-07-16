@@ -59,6 +59,7 @@ def mock_qdrant(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
         return_value=MagicMock(collections=[MagicMock(name="rag_chunks")])
     )
     client.create_collection = AsyncMock()
+    client.create_payload_index = AsyncMock()
     client.upsert = AsyncMock()
     client.delete = AsyncMock()
     monkeypatch.setattr("app.stores.qdrant_store.get_client", lambda: client)

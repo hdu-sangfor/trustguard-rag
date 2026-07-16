@@ -123,16 +123,16 @@ class HybridSearch:
         )
         document_ids = list(
             {
-                str(item.get("doc_id") or item.get("document_id"))
+                str(item.get("document_id"))
                 for item in merged
-                if item.get("doc_id") or item.get("document_id")
+                if item.get("document_id")
             }
         )
         ready_ids = await self._documents.ready_ids(document_ids)
         merged = [
             item
             for item in merged
-            if str(item.get("doc_id") or item.get("document_id")) in ready_ids
+            if str(item.get("document_id")) in ready_ids
         ]
 
         if enable_rerank and merged:
@@ -260,7 +260,7 @@ def _format_results(merged: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "keyword_score": item.get("keyword_score"),
             "rerank_score": item.get("rerank_score"),
             "source": {
-                "document_id": item.get("doc_id") or item.get("document_id", ""),
+                "document_id": item.get("document_id", ""),
                 "source_uri": item.get("source_uri", ""),
                 "original_filename": item.get("original_filename"),
                 "chunk_index": item.get("chunk_index", 0),
