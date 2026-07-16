@@ -26,7 +26,7 @@ class EmbeddingError(RuntimeError):
 
 
 def _provider_batch_limit(error_text: str) -> int | None:
-    """Extract an advertised provider batch limit from compatible API errors."""
+    """从兼容 API 的错误信息中提取提供方声明的批量上限。"""
     if "batch size" not in error_text.lower():
         return None
     match = re.search(r"not be larger than\s+(\d+)", error_text, flags=re.IGNORECASE)
@@ -50,7 +50,7 @@ def _pseudo_vector(text: str, dim: int) -> list[float]:
 
 
 def normalize_embedding_provider(provider: str) -> str:
-    """将外部配置的 provider 名称归一化为内部分发值。"""
+    """将外部配置的提供方名称归一化为内部分发值。"""
     value = provider.strip().lower()
     if value in {"api", "openai", "openai_compatible", "remote"}:
         return "api"
@@ -99,7 +99,7 @@ class EmbeddingClient:
         return await self._embed(texts, is_query=False)
 
     async def _embed(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
-        """根据 provider 类型执行实际嵌入，并统一校验向量维度。"""
+        """根据提供方类型执行实际嵌入，并统一校验向量维度。"""
         if not texts:
             return []
         if self._provider == "api":
@@ -111,7 +111,7 @@ class EmbeddingClient:
         return _validate_vectors(vectors, self._settings.embedding_dim)
 
     async def _remote_embed(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
-        """调用 OpenAI 兼容的 embeddings 接口。"""
+        """调用兼容 OpenAI 协议的嵌入接口。"""
         if not self._settings.embedding_base_url:
             raise EmbeddingError("RAG_EMBEDDING_BASE_URL is required for API embeddings")
         url = f"{self._settings.embedding_base_url.rstrip('/')}/embeddings"
@@ -168,7 +168,7 @@ class EmbeddingClient:
         return vectors
 
     async def _local_embed(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
-        """在线程池中调用本地 sentence-transformers 模型。"""
+        """在线程池中调用本地 Sentence Transformers 模型。"""
         provider = _get_local_provider(self._settings)
         return await asyncio.to_thread(provider.encode, texts, is_query)
 
@@ -189,7 +189,7 @@ class LocalSentenceTransformerProvider:
         self._model = None
 
     def encode(self, texts: list[str], is_query: bool) -> list[list[float]]:
-        """使用本地模型编码文本并返回普通 Python 向量列表。"""
+        """使用本地模型编码文本并返回普通的 Python 向量列表。"""
         model = self._load_model()
         prepared = self._prepare_texts(texts, is_query=is_query)
         vectors = model.encode(
@@ -202,7 +202,7 @@ class LocalSentenceTransformerProvider:
         return vectors.tolist()
 
     def _load_model(self):
-        """首次使用时加载 sentence-transformers 模型并复用实例。"""
+        """首次使用时加载 Sentence Transformers 模型并复用实例。"""
         if self._model is not None:
             return self._model
         try:

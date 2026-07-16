@@ -1,4 +1,4 @@
-"""Shared pytest fixtures."""
+"""共享的 pytest 测试夹具。"""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator

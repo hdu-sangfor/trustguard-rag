@@ -82,7 +82,7 @@ async def get_ingest_job(job_id: str) -> IngestJobResponse:
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def resolve_conflict(job_id: str, body: ConflictResolveRequest) -> IngestJobResponse:
-    """Persist a conflict choice and enqueue asynchronous resolution."""
+    """持久化冲突处理选择，并将异步解决命令加入队列。"""
     try:
         _, event = await get_job_store().request_resolution(job_id, body.keep_document_id)
     except ValueError as e:

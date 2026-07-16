@@ -34,6 +34,8 @@ async def search(request: SearchRequest) -> SearchResponse:
 
     return SearchResponse(
         query=request.query,
+        search_status=result["search_status"],
+        effective_mode=result["effective_mode"],
         results=result["results"],
         total=result["total"],
         fusion_method=result["fusion_method"],

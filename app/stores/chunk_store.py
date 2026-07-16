@@ -13,7 +13,7 @@ from app.stores.models import ChunkRow
 
 class ChunkStore:
     async def create_many(self, chunks: list[dict[str, Any]]) -> list[ChunkRow]:
-        """插入单个文档的分块行，并返回刷新后的 ORM 对象。"""
+        """插入单个文档的分块记录，并返回刷新后的对象关系映射对象。"""
         rows = [
             ChunkRow(
                 id=c.get("id") or str(uuid4()),
@@ -48,7 +48,7 @@ class ChunkStore:
             return list(result.scalars().all())
 
     async def get_many(self, chunk_ids: list[str]) -> list[ChunkRow]:
-        """批量加载指定分块，用于修复旧向量 payload 中缺失的文本字段。"""
+        """批量加载指定分块，用于修复旧向量载荷中缺失的文本字段。"""
         if not chunk_ids:
             return []
         async with AsyncSession(get_engine()) as session:

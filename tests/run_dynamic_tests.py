@@ -1,8 +1,8 @@
-"""Dynamic integration test runner.
+"""动态集成测试运行器。
 
-Usage:
-  python tests/run_dynamic_tests.py              # live service at 127.0.0.1:18200
-  python tests/run_dynamic_tests.py --in-process # ASGI app + sqlite (no docker)
+用法：
+  python tests/run_dynamic_tests.py              # 测试 127.0.0.1:18200 上运行的服务
+  python tests/run_dynamic_tests.py --in-process # 使用 ASGI 应用和 SQLite，不依赖 Docker
 """
 from __future__ import annotations
 

@@ -1,5 +1,5 @@
--- RabbitMQ transactional outbox. This script is applied automatically only
--- when MySQL initializes a new data volume. Apply it manually to existing DBs.
+-- RabbitMQ 事务性 Outbox。仅在 MySQL 初始化新数据卷时自动执行此脚本；
+-- 对现有数据库需要手动执行。
 
 CREATE TABLE IF NOT EXISTS outbox_events (
     id CHAR(36) NOT NULL PRIMARY KEY,

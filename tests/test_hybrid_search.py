@@ -343,6 +343,8 @@ class TestHybridSearch:
         assert "fusion_method" in result
         assert "retrieval_time_ms" in result
         assert "components" in result
+        assert result["search_status"] == "ok"
+        assert result["effective_mode"] == "keyword_only"
         assert isinstance(result["results"], list)
         assert result["total"] == len(result["results"])
 
@@ -422,6 +424,8 @@ class TestSearchAPI:
         assert "total" in data
         assert "fusion_method" in data
         assert "retrieval_time_ms" in data
+        assert data["search_status"] == "ok"
+        assert data["effective_mode"] == "keyword_only"
 
     async def test_search_endpoint_invalid_fusion(self, client) -> None:
         response = await client.post(

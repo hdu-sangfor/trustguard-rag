@@ -1,4 +1,4 @@
-"""MySQL 连接（SQLAlchemy async）+ 健康检查。
+"""MySQL 连接（SQLAlchemy 异步）和健康检查。
 
 元数据 / 文档 / 分块 / 任务存储的底座，见 §8.1。
 """
@@ -16,7 +16,7 @@ _engine: AsyncEngine | None = None
 
 
 def get_engine() -> AsyncEngine:
-    """创建或复用进程级 async SQLAlchemy 引擎。"""
+    """创建或复用进程级异步 SQLAlchemy 引擎。"""
     global _engine
     if _engine is None:
         s = get_settings()

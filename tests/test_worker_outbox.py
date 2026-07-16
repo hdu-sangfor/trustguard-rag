@@ -1,4 +1,4 @@
-"""Reliable Worker, Outbox and idempotent command tests."""
+"""可靠 Worker、Outbox 和幂等命令测试。"""
 
 from __future__ import annotations
 

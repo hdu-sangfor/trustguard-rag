@@ -1,4 +1,4 @@
-"""Publication rollback when Qdrant indexing fails."""
+"""Qdrant 索引失败时的发布回滚测试。"""
 
 from __future__ import annotations
 
@@ -81,7 +81,7 @@ async def test_publication_rollback_on_index_failure(
     assert indexer.deleted_documents == [failed_docs[0].id]
 
     staging = tmp_storage / "staging" / "jobs" / job_id
-    assert staging.exists()  # Retryable jobs retain the source upload for the next delivery.
+    assert staging.exists()  # 可重试任务保留源上传文件，供下一次投递使用。
 
 
 @pytest.mark.asyncio

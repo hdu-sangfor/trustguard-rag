@@ -25,7 +25,7 @@ async def backfill_ready_documents(
     chunk_store: ChunkStore | None = None,
     ensure_index: bool = True,
 ) -> BackfillResult:
-    """按稳定 chunk ID 重建 ready 文档索引，可安全重复执行。"""
+    """按稳定分块 ID 重建就绪文档索引，可安全重复执行。"""
     keyword_retriever = retriever or KeywordRetriever()
     if ensure_index:
         await keyword_retriever.ensure_index()

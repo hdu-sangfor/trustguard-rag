@@ -198,7 +198,7 @@ class DocumentStore:
             return list(result.scalars().all())
 
     async def ready_ids(self, document_ids: list[str]) -> set[str]:
-        """返回候选中仍处于 ready 状态的文档 ID，作为检索结果的权威过滤。"""
+        """返回候选中仍处于就绪状态的文档 ID，作为检索结果的权威过滤。"""
         if not document_ids:
             return set()
         async with AsyncSession(get_engine()) as session:
@@ -211,7 +211,7 @@ class DocumentStore:
             return set(result.scalars().all())
 
     async def request_delete(self, document_id: str) -> OutboxEvent:
-        """Atomically mark a document deleting and enqueue external cleanup."""
+        """以原子方式将文档标记为删除中，并将外部清理命令加入队列。"""
         async with AsyncSession(get_engine(), expire_on_commit=False) as session:
             doc = await session.get(DocumentRow, document_id, with_for_update=True)
             if not doc:
@@ -254,7 +254,7 @@ class DocumentStore:
             return event_from_row(event_row)
 
     async def enqueue_pending_cleanups(self) -> list[OutboxEvent]:
-        """Enqueue persisted Saga cleanup states when a Worker starts."""
+        """Worker 启动时，将已持久化的 Saga 清理状态重新加入队列。"""
         actions = {
             DocumentStatus.DELETING: CleanupAction.DELETE,
             DocumentStatus.SUPERSEDING: CleanupAction.SUPERSEDE,
@@ -277,7 +277,7 @@ class DocumentStore:
         return events
 
     async def recover_orphan_publications(self) -> list[OutboxEvent]:
-        """Fail and enqueue cleanup for stale partial documents with no resumable job."""
+        """将没有可恢复任务的过期半成品文档标记失败，并加入清理队列。"""
         now = _utcnow()
         stale_before = now - timedelta(
             seconds=get_settings().worker_indexing_stale_seconds

@@ -1,4 +1,4 @@
-"""PdfExtractor unit tests."""
+"""PDF 抽取器单元测试。"""
 from __future__ import annotations
 
 import pytest

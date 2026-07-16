@@ -1,4 +1,4 @@
-"""可靠 Worker 和 Outbox 使用的领域协议值。"""
+"""可靠任务执行器和 Outbox 使用的领域协议值。"""
 
 from __future__ import annotations
 
@@ -21,4 +21,3 @@ class OutboxStatus(StrEnum):
 class ClaimOutcome(StrEnum):
     BUSY = "busy"
     TERMINAL = "terminal"
-

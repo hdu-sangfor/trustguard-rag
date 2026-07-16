@@ -1,4 +1,4 @@
-"""Versioned command envelope shared by the Outbox relay and consumers."""
+"""Outbox 中继与消费者共用的版本化命令信封。"""
 
 from __future__ import annotations
 

@@ -72,7 +72,7 @@ class VectorRetriever:
 
 
 class MockVectorRetriever:
-    """mock 模式下返回空结果。"""
+    """模拟模式下返回空结果。"""
 
     async def retrieve(
         self,

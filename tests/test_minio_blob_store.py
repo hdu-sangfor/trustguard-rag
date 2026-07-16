@@ -1,4 +1,4 @@
-"""MinIO blob store unit tests (mocked client)."""
+"""使用模拟客户端的 MinIO 对象存储单元测试。"""
 
 from __future__ import annotations
 

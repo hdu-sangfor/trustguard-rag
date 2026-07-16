@@ -1,4 +1,4 @@
-"""Embedding provider tests."""
+"""嵌入提供方测试。"""
 
 from __future__ import annotations
 

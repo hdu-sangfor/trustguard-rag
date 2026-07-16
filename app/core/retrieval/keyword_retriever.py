@@ -158,7 +158,7 @@ class KeywordRetriever:
 
 
 class MockKeywordRetriever:
-    """mock 模式下返回空结果。"""
+    """模拟模式下返回空结果。"""
 
     async def ensure_index(self) -> bool:
         return False
@@ -205,7 +205,7 @@ def _fake_score_from_text(text: str, query: str) -> float:
 
 
 class PseudoKeywordRetriever:
-    """基于原始文本模拟 BM25，无外部依赖，用于 dev/test 场景。"""
+    """基于原始文本模拟 BM25，无外部依赖，用于开发和测试场景。"""
 
     def __init__(self) -> None:
         self._settings = get_settings()

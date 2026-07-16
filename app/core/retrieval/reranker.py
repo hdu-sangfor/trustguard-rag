@@ -1,8 +1,7 @@
-"""重排序模块：local / api / none providers。"""
+"""重排序模块：支持本地、API 和禁用三种提供方。"""
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from typing import Any
 
@@ -10,15 +9,12 @@ import httpx
 
 from app.settings import Settings, get_settings
 
-logger = logging.getLogger(__name__)
-
-
 class RerankError(RuntimeError):
     """重排序提供方无法返回有效结果。"""
 
 
 def normalize_rerank_provider(provider: str) -> str:
-    """将外部 provider 名称归一化为与 Embedding 一致的分发值。"""
+    """将外部提供方名称归一化为与嵌入模块一致的分发值。"""
     value = provider.strip().lower()
     if value in {"api", "openai", "openai_compatible", "remote", "bailian", "dashscope"}:
         return "api"
@@ -30,7 +26,7 @@ def normalize_rerank_provider(provider: str) -> str:
 
 
 class Reranker:
-    """重排序门面：支持 BGE 本地模型、百炼 API 和 none 透传。"""
+    """重排序门面：支持 BGE 本地模型、百炼 API 和禁用时透传。"""
 
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
@@ -65,19 +61,17 @@ class Reranker:
             model = _get_bge_reranker(self._settings)
             pairs = [[query, c.get("text") or ""] for c in candidates]
             scores = await asyncio.to_thread(model.compute_score, pairs)
+            if isinstance(scores, float):
+                scores = [scores]
+
+            scored = list(zip(scores, candidates))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            top = scored[:top_k]
+            for score, candidate in top:
+                candidate["rerank_score"] = float(score)
+            return [candidate for _, candidate in top]
         except Exception as e:
-            logger.warning("bge reranker unavailable: %s, returning unranked results", e)
-            return candidates[:top_k]
-
-        if isinstance(scores, float):
-            scores = [scores]
-
-        scored = list(zip(scores, candidates))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top = scored[:top_k]
-        for s, c in top:
-            c["rerank_score"] = float(s)
-        return [c for _, c in top]
+            raise RerankError("BGE reranker is unavailable") from e
 
     async def _api_rerank(
         self,
@@ -85,12 +79,13 @@ class Reranker:
         candidates: list[dict[str, Any]],
         top_k: int,
     ) -> list[dict[str, Any]]:
-        """调用百炼 OpenAI-compatible rerank API，并按原始索引映射候选结果。"""
+        """调用百炼兼容 OpenAI 协议的重排序 API，并按原始索引映射候选结果。"""
         try:
             return await self._call_api(query, candidates, top_k)
+        except RerankError:
+            raise
         except Exception as e:  # noqa: BLE001
-            logger.warning("API reranker unavailable: %s, returning unranked results", e)
-            return candidates[:top_k]
+            raise RerankError("API reranker is unavailable") from e
 
     async def _call_api(
         self,

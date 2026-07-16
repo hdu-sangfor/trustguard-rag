@@ -64,7 +64,7 @@ def _chunk_response(chunk) -> ChunkResponse:
 
 
 def _safe_artifact_name(filename: str) -> str:
-    """读取 artifact 前拒绝路径穿越和空文件名。"""
+    """读取产物文件前拒绝路径穿越和空文件名。"""
     path = PurePosixPath(filename)
     if path.name != filename or filename in {"", ".", ".."}:
         raise HTTPException(status_code=400, detail="Invalid artifact filename")
@@ -135,7 +135,7 @@ async def update_document(document_id: str, request: DocumentUpdateRequest) -> D
 
 @router.delete("/{document_id}", status_code=status.HTTP_202_ACCEPTED)
 async def delete_document(document_id: str) -> Response:
-    """Mark a document deleting and enqueue idempotent dual-index cleanup."""
+    """将文档标记为删除中，并将幂等的双索引清理命令加入队列。"""
     doc = await _get_document_or_404(document_id)
     if doc.status not in _DELETABLE_DOCUMENT_STATUSES:
         raise HTTPException(
@@ -162,7 +162,7 @@ async def list_document_chunks(document_id: str) -> list[ChunkResponse]:
 
 @router.get("/{document_id}/artifacts", response_model=ArtifactsResponse)
 async def list_document_artifacts(document_id: str) -> ArtifactsResponse:
-    """列出文档 artifact 包中已提交的文件。"""
+    """列出文档产物包中已提交的文件。"""
     doc = await _get_document_or_404(document_id)
     files = get_blob_store().list_artifacts(document_id, doc.doc_version)
     return ArtifactsResponse(document_id=document_id, files=files, blob_path=doc.blob_path)
@@ -170,7 +170,7 @@ async def list_document_artifacts(document_id: str) -> ArtifactsResponse:
 
 @router.get("/{document_id}/artifacts/{filename}")
 async def download_document_artifact(document_id: str, filename: str) -> Response:
-    """校验文档和文件名后返回单个 artifact 文件。"""
+    """校验文档和文件名后返回单个产物文件。"""
     filename = _safe_artifact_name(filename)
     doc = await _get_document_or_404(document_id)
     blob_path = doc.blob_path or f"artifacts/{document_id}/v{doc.doc_version}"

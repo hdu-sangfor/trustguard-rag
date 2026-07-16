@@ -1,4 +1,4 @@
-"""文档知识库 CRUD API 的集成测试。"""
+"""文档知识库增删改查 API 的集成测试。"""
 
 from __future__ import annotations
 

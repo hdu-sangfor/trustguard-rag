@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.domain import EffectiveSearchMode, SearchStatus
+
 
 class SourceInfo(BaseModel):
     """搜索结果来源文档的元数据。"""
@@ -45,6 +47,8 @@ class SearchRequest(BaseModel):
 class SearchResponse(BaseModel):
     """混合检索响应体。"""
     query: str
+    search_status: SearchStatus
+    effective_mode: EffectiveSearchMode
     results: list[SearchResult]
     total: int
     fusion_method: str

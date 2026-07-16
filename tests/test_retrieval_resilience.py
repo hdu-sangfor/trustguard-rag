@@ -4,10 +4,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 
 from app.core.indexing.opensearch_backfill import backfill_ready_documents
 from app.core.retrieval.keyword_retriever import KeywordRetriever
+from app.core.retrieval.reranker import RerankError
 from app.core.retrieval.search import HybridSearch, SearchUnavailableError
+from app.domain import EffectiveSearchMode, SearchStatus
+from app.settings import Settings
 from app.core.retrieval.vector_retriever import VectorRetriever
 from app.settings import get_settings
 from app.stores import opensearch_store, qdrant_store
@@ -191,6 +195,68 @@ async def test_hybrid_search_reports_partial_degradation(search_settings) -> Non
 
     assert result["total"] == 1
     assert result["degraded_components"] == ["vector"]
+    assert result["search_status"] is SearchStatus.DEGRADED
+    assert result["effective_mode"] is EffectiveSearchMode.KEYWORD_ONLY
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_fails_when_partial_degradation_has_no_result(
+    search_settings,
+) -> None:
+    engine = HybridSearch()
+    engine._vector = SimpleNamespace(
+        retrieve=AsyncMock(side_effect=RuntimeError("vector"))
+    )
+    engine._keyword = SimpleNamespace(retrieve=AsyncMock(return_value=[]))
+
+    with pytest.raises(SearchUnavailableError, match="no reliable result"):
+        await engine.search("查询", enable_rerank=False)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_returns_true_empty_when_backends_are_healthy(
+    search_settings,
+) -> None:
+    engine = HybridSearch()
+    engine._vector = SimpleNamespace(retrieve=AsyncMock(return_value=[]))
+    engine._keyword = SimpleNamespace(retrieve=AsyncMock(return_value=[]))
+    engine._documents = SimpleNamespace(ready_ids=AsyncMock(return_value=set()))
+
+    result = await engine.search("查询", enable_rerank=False)
+
+    assert result["total"] == 0
+    assert result["search_status"] is SearchStatus.OK
+    assert result["effective_mode"] is EffectiveSearchMode.HYBRID
+    assert result["degraded_components"] == []
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_reports_rerank_degradation(search_settings) -> None:
+    engine = HybridSearch()
+    engine._vector = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                {
+                    "chunk_id": "chunk-1",
+                    "text": "召回内容",
+                    "score": 0.9,
+                    "doc_id": "doc-1",
+                }
+            ]
+        )
+    )
+    engine._documents = SimpleNamespace(ready_ids=AsyncMock(return_value={"doc-1"}))
+    engine._reranker = SimpleNamespace(
+        rerank=AsyncMock(side_effect=RerankError("reranker unavailable"))
+    )
+
+    result = await engine.search("查询", enable_keyword=False, enable_rerank=True)
+
+    assert result["total"] == 1
+    assert result["results"][0]["chunk_id"] == "chunk-1"
+    assert result["search_status"] is SearchStatus.DEGRADED
+    assert result["effective_mode"] is EffectiveSearchMode.VECTOR_ONLY
+    assert result["degraded_components"] == ["rerank"]
 
 
 @pytest.mark.asyncio
@@ -223,3 +289,41 @@ async def test_hybrid_search_filters_non_ready_documents(search_settings) -> Non
     )
 
     assert [item["source"]["document_id"] for item in result["results"]] == ["ready-doc"]
+
+
+def test_production_rejects_mock_retrieval_backends() -> None:
+    with pytest.raises(ValidationError, match="Production cannot enable mock"):
+        Settings(
+            _env_file=None,
+            app_env="prod",
+            qdrant_mock=True,
+            search_opensearch_mock=False,
+        )
+
+    with pytest.raises(ValidationError, match="Production cannot enable mock"):
+        Settings(
+            _env_file=None,
+            app_env="prod",
+            qdrant_mock=False,
+            search_opensearch_mock=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_search_api_returns_503_when_no_reliable_result(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = HybridSearch()
+    engine._vector = SimpleNamespace(
+        retrieve=AsyncMock(side_effect=RuntimeError("vector"))
+    )
+    engine._keyword = SimpleNamespace(retrieve=AsyncMock(return_value=[]))
+    monkeypatch.setattr("app.api.search.get_hybrid_search", lambda: engine)
+
+    response = await client.post(
+        "/v1/search",
+        json={"query": "查询", "enable_rerank": False},
+    )
+
+    assert response.status_code == 503
+    assert "no reliable result" in response.json()["detail"]

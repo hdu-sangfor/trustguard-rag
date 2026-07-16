@@ -3,6 +3,7 @@ const state = { file: null, jobs: JSON.parse(localStorage.getItem("tg-jobs") || 
 const JobStatus = Object.freeze({ QUEUED:"queued", RUNNING:"running", CONFLICT:"conflict", RESOLVING:"resolving", INGEST_RETRYING:"ingest_retrying", RESOLVE_RETRYING:"resolve_retrying", SUCCEEDED:"succeeded", DEDUPLICATED:"deduplicated", FAILED:"failed", CANCELLED:"cancelled", DISCARDED:"discarded" });
 const DocumentStatus = Object.freeze({ STAGING:"staging", INDEXING:"indexing", READY:"ready", FAILED:"failed", DELETING:"deleting", SUPERSEDED:"superseded" });
 const IngestStep = Object.freeze({ QUEUED:"queued", RECOVER:"recover", VALIDATE:"validate", EXTRACT:"extract", DEDUP:"dedup", CONFLICT_CHECK:"conflict_check", COMMIT_ARTIFACTS:"commit_artifacts", CHUNK:"chunk", EMBED:"embed", INDEX:"index", OPENSEARCH_INDEX:"opensearch_index", PUBLISH:"publish", RETRY_WAIT:"retry_wait", RESOLVE:"resolve", RESOLVE_SUPERSEDE:"resolve_supersede", SUPERSEDE_CLEANUP:"supersede_cleanup", RESOLVE_PUBLISH:"resolve_publish", RESOLVE_DISCARD:"resolve_discard", CANCELLED:"cancelled", FAILED:"failed" });
+const EffectiveSearchMode = Object.freeze({ HYBRID:"hybrid", VECTOR_ONLY:"vector_only", KEYWORD_ONLY:"keyword_only" });
 const terminal = new Set([JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.DEDUPLICATED, JobStatus.DISCARDED, JobStatus.CONFLICT]);
 const retrying = new Set([JobStatus.INGEST_RETRYING, JobStatus.RESOLVE_RETRYING]);
 const successful = new Set([JobStatus.SUCCEEDED, JobStatus.DEDUPLICATED]);
@@ -98,11 +99,12 @@ async function loadDocuments(reset=false){
 function renderSearchResults(data){
   const results=$("#search-results"), empty=$("#search-empty"), summary=$("#search-summary");
   const degraded=Array.isArray(data.degraded_components)?data.degraded_components:[];
+  const modeLabel={ [EffectiveSearchMode.HYBRID]:"混合检索", [EffectiveSearchMode.VECTOR_ONLY]:"仅向量检索", [EffectiveSearchMode.KEYWORD_ONLY]:"仅关键词检索" }[data.effective_mode]||data.effective_mode;
   results.innerHTML="";
   empty.hidden=data.results.length>0;
   if(!data.results.length){empty.querySelector("h3").textContent="没有找到相关内容";empty.querySelector("p").textContent=degraded.length?`部分检索引擎不可用：${degraded.join("、")}。请稍后重试。`:"尝试更换关键词、增加召回数量或启用另一种检索方式。";}
   summary.hidden=false;
-  summary.innerHTML=`<span><strong>${data.total}</strong> 条结果</span><span><strong>${Number(data.retrieval_time_ms).toFixed(1)}</strong> ms</span><span>${escapeHtml(data.fusion_method.toUpperCase())}</span><span>向量 ${data.components?.vector??0} · 关键词 ${data.components?.keyword??0}</span>${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}`;
+  summary.innerHTML=`<span><strong>${data.total}</strong> 条结果</span><span><strong>${Number(data.retrieval_time_ms).toFixed(1)}</strong> ms</span><span>${escapeHtml(modeLabel||"")}</span><span>${escapeHtml(data.fusion_method.toUpperCase())}</span><span>向量 ${data.components?.vector??0} · 关键词 ${data.components?.keyword??0}</span>${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}`;
   data.results.forEach((item,index)=>{
     const source=item.source||{};
     const card=document.createElement("article");

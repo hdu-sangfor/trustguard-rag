@@ -1,4 +1,4 @@
-"""带暂存和提交语义的本地文件系统 blob 存储。"""
+"""带暂存和提交语义的本地文件系统对象存储。"""
 
 from __future__ import annotations
 
@@ -12,18 +12,18 @@ from app.settings import get_settings
 
 class BlobStore:
     def __init__(self, root: Path | None = None) -> None:
-        """初始化本地 blob 根目录和暂存目录。"""
+        """初始化本地对象存储根目录和暂存目录。"""
         s = get_settings()
         self._root = root or Path(s.local_storage_dir)
         self._staging = Path(s.staging_dir)
 
     @property
     def root(self) -> Path:
-        """返回已提交 artifacts 的本地文件系统根目录。"""
+        """返回已提交产物的本地文件系统根目录。"""
         return self._root
 
     def artifact_dir(self, document_id: str, version: int = 1) -> Path:
-        """返回某个文档版本的已提交 artifact 目录。"""
+        """返回某个文档版本的已提交产物目录。"""
         return self._root / "artifacts" / document_id / f"v{version}"
 
     def job_upload_path(self, job_id: str) -> Path:
@@ -58,7 +58,7 @@ class BlobStore:
         extracted_text: str,
         meta: dict[str, Any],
     ) -> str:
-        """为文档原子提交原始文件、抽取文本和元数据 artifacts。"""
+        """为文档原子提交原始文件、抽取文本和元数据产物。"""
         bundle_dir = self.artifact_dir(document_id, version)
         bundle_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -96,19 +96,19 @@ class BlobStore:
         self.delete_staging(f"jobs/{job_id}")
 
     def read(self, relative_path: str) -> bytes:
-        """按相对 blob 根目录的路径读取已提交 artifact 字节。"""
+        """按相对对象存储根目录的路径读取已提交产物字节。"""
         return (self._root / relative_path).read_bytes()
 
     def read_text(self, relative_path: str) -> str:
-        """读取已提交的 UTF-8 文本 artifact。"""
+        """读取已提交的 UTF-8 文本产物。"""
         return (self._root / relative_path).read_text(encoding="utf-8")
 
     def exists(self, relative_path: str) -> bool:
-        """返回已提交 artifact 路径是否存在。"""
+        """返回已提交产物路径是否存在。"""
         return (self._root / relative_path).exists()
 
     def list_artifacts(self, document_id: str, version: int = 1) -> list[str]:
-        """列出已提交文档 artifact 包中的文件名。"""
+        """列出已提交文档产物包中的文件名。"""
         bundle = self.artifact_dir(document_id, version)
         if not bundle.exists():
             return []
@@ -116,7 +116,7 @@ class BlobStore:
 
 
 def get_blob_store() -> BlobStore:
-    """选择当前配置的 blob 存储后端。"""
+    """选择当前配置的对象存储后端。"""
     s = get_settings()
     if s.minio_enabled:
         from app.stores.minio_blob_store import MinioBlobStore

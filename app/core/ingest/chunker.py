@@ -20,7 +20,7 @@ class ChunkDraft:
 
 
 def estimate_tokens(text: str) -> int:
-    """用字符数启发式估算 token 数。"""
+    """用字符数启发式估算词元数量。"""
     return max(1, len(text) // 4)
 
 

@@ -1,4 +1,4 @@
-"""Embedding metadata tests."""
+"""嵌入元数据测试。"""
 from __future__ import annotations
 
 import pytest

@@ -1,4 +1,4 @@
-"""共享 MinIO 客户端和 bucket 初始化。"""
+"""共享 MinIO 客户端和存储桶初始化。"""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -21,7 +21,7 @@ def get_minio_client() -> Minio:
 
 
 def ensure_bucket() -> None:
-    """在配置的 bucket 不存在时创建它。"""
+    """在配置的存储桶不存在时创建它。"""
     s = get_settings()
     client = get_minio_client()
     if not client.bucket_exists(s.minio_bucket):

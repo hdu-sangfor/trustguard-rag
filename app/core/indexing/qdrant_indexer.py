@@ -50,7 +50,7 @@ class QdrantIndexer:
         source_uri: str,
         original_filename: str | None,
     ) -> None:
-        """写入分块向量及后续检索需要的 payload 字段。"""
+        """写入分块向量及后续检索需要的载荷字段。"""
         if len(chunks) != len(vectors):
             raise IngestError(INDEX_FAILED, "Chunk/vector count mismatch")
         for idx, vector in enumerate(vectors):
@@ -100,7 +100,7 @@ class QdrantIndexer:
         )
 
     async def delete_document(self, document_id: str) -> None:
-        """按 payload 中的文档 ID 删除全部向量，覆盖 chunks 尚未落库的情况。"""
+        """按载荷中的文档 ID 删除全部向量，覆盖分块尚未落库的情况。"""
         client = qdrant_store.get_client()
         collections = await client.get_collections()
         if self._collection not in {item.name for item in collections.collections}:
@@ -121,7 +121,7 @@ class QdrantIndexer:
 
 
 def _to_point_id(value: str) -> str:
-    """将 UUID 字符串规范化为 Qdrant point ID。"""
+    """将 UUID 字符串规范化为 Qdrant 向量点 ID。"""
     return str(UUID(value))
 
 
