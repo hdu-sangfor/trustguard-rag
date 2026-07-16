@@ -220,7 +220,8 @@ ingest pipeline:
 | `RAG_SEARCH_KEYWORD_WEIGHT` | 0.4 | 加权融合关键词权重 |
 | `RAG_SEARCH_OPENSEARCH_MOCK` | true | 本地模拟 OpenSearch |
 | `RAG_OPENSEARCH_BACKFILL_ON_STARTUP` | true | 启动时回填历史 ready 文档 |
-| `RAG_CLEANUP_RESUME_ON_STARTUP` | true | 启动时续跑 deleting/superseeding/failed 清理 |
+| `RAG_RABBITMQ_RETRY_DELAYS_MS` | 10000,60000,300000 | Worker 延迟重试队列 |
+| `RAG_WORKER_JOB_LEASE_SECONDS` | 1800 | 运行中任务的失效抢占时间 |
 | `RAG_RERANK_PROVIDER` | none | none、local 或 api |
 | `RAG_RERANK_MODEL` | BAAI/bge-reranker-v2-m3 | 重排序模型 |
 | `RAG_RERANK_TOP_K` | 10 | 重排候选数 |

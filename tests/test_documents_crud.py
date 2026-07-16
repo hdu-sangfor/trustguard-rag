@@ -106,7 +106,7 @@ async def test_delete_cleans_artifacts_chunks_and_document(
     assert blobs.artifact_dir(document.id).exists()
 
     response = await client.delete(f"/v1/documents/{document.id}")
-    assert response.status_code == 204
+    assert response.status_code == 202
     assert await DocumentStore().get(document.id) is None
     assert await ChunkStore().list_for_document(document.id) == []
     cleaned_job = await JobStore().get(job.id)
@@ -148,7 +148,7 @@ async def test_list_rejects_unknown_document_status(client: AsyncClient) -> None
 
 
 @pytest.mark.asyncio
-async def test_delete_hides_internal_cleanup_error(
+async def test_delete_queues_retry_when_cleanup_fails(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     document = await _create_document(filename="cleanup-error.pdf")
@@ -157,11 +157,35 @@ async def test_delete_hides_internal_cleanup_error(
         async def delete_document(self, document_id: str) -> bool:
             raise RuntimeError("secret storage endpoint")
 
-    monkeypatch.setattr("app.api.documents.get_compensator", lambda: _FailingCompensator())
+    monkeypatch.setattr("app.workers.handlers.get_compensator", lambda: _FailingCompensator())
 
     response = await client.delete(f"/v1/documents/{document.id}")
 
-    assert response.status_code == 502
-    assert "secret storage endpoint" not in response.text
-    assert "reference=" in response.json()["detail"]
-    assert await DocumentStore().get(document.id) is not None
+    assert response.status_code == 202
+    persisted = await DocumentStore().get(document.id)
+    assert persisted is not None
+    assert persisted.status == DocumentStatus.DELETING
+
+
+@pytest.mark.asyncio
+async def test_delete_failed_document_cancels_its_retrying_job(
+    client: AsyncClient,
+) -> None:
+    document = await _create_document(
+        filename="retrying.pdf",
+        status=DocumentStatus.FAILED,
+    )
+    job = await JobStore().create(
+        source_type="file",
+        source="retrying.pdf",
+        status="ingest_retrying",
+    )
+    await JobStore().set_document_id(job.id, document.id)
+
+    response = await client.delete(f"/v1/documents/{document.id}")
+
+    assert response.status_code == 202
+    persisted_job = await JobStore().get(job.id)
+    assert persisted_job is not None
+    assert persisted_job.status == "cancelled"
+    assert persisted_job.error_code == "CANCELLED"

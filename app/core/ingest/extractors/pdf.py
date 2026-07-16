@@ -78,5 +78,9 @@ class PdfExtractor:
                 raw_filename="raw.pdf",
                 metadata=meta,
             )
+        except IngestError:
+            raise
+        except Exception as e:
+            raise IngestError(CORRUPT_FILE, f"Cannot parse PDF: {e}") from e
         finally:
             doc.close()

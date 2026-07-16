@@ -22,7 +22,7 @@ def test_ingest_health_requires_real_search_backends(monkeypatch) -> None:
         "qdrant",
         "opensearch",
     )
-    assert _ingest_reported() == _ingest_required()
+    assert _ingest_reported() == (*_ingest_required(), "rabbitmq")
 
     get_settings.cache_clear()
 
@@ -39,6 +39,7 @@ def test_ingest_health_reports_disabled_search_backends_once(monkeypatch) -> Non
         "local_storage",
         "qdrant",
         "opensearch",
+        "rabbitmq",
     )
 
     get_settings.cache_clear()

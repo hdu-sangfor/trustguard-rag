@@ -53,9 +53,14 @@ CREATE TABLE IF NOT EXISTS ingest_jobs (
     step_logs JSON NULL,
     created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     started_at DATETIME(6) NULL,
+    lease_owner VARCHAR(128) NULL,
+    lease_token CHAR(36) NULL,
+    lease_expires_at DATETIME(6) NULL,
+    heartbeat_at DATETIME(6) NULL,
     finished_at DATETIME(6) NULL,
     KEY idx_jobs_status (status),
-    KEY idx_jobs_document (document_id)
+    KEY idx_jobs_document (document_id),
+    KEY idx_jobs_lease (status, lease_expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS ingest_cursors (

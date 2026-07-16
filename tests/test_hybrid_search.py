@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.core.retrieval.search import (
     HybridSearch,
@@ -10,7 +9,7 @@ from app.core.retrieval.search import (
     _rrf_fusion,
     _weighted_score_fusion,
 )
-from app.core.retrieval.vector_retriever import VectorRetriever, MockVectorRetriever
+from app.core.retrieval.vector_retriever import MockVectorRetriever
 from app.core.retrieval.keyword_retriever import (
     PseudoKeywordRetriever,
     get_keyword_retriever,

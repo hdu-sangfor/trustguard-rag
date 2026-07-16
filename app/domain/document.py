@@ -15,3 +15,15 @@ class DocumentStatus(StrEnum):
     DELETING = "deleting"
     SUPERSEDING = "superseeding"
     SUPERSEDED = "superseded"
+
+
+DELETABLE_DOCUMENT_STATUSES = frozenset(
+    {
+        DocumentStatus.STAGING,
+        DocumentStatus.INDEXING,
+        DocumentStatus.READY,
+        DocumentStatus.FAILED,
+        DocumentStatus.DELETING,
+        DocumentStatus.SUPERSEDED,
+    }
+)

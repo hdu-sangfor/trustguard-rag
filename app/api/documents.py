@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 import mimetypes
 from pathlib import PurePosixPath
-from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 
-from app.core.ingest.compensator import get_compensator
 from app.domain import DocumentStatus
 from app.schemas.document import (
     ArtifactsResponse,
@@ -21,9 +18,9 @@ from app.schemas.document import (
 from app.stores.blob_store import get_blob_store
 from app.stores.chunk_store import get_chunk_store
 from app.stores.document_store import get_document_store
+from app.workers.eager import dispatch_eager
 
 router = APIRouter(prefix="/v1/documents", tags=["documents"])
-logger = logging.getLogger(__name__)
 
 _DELETABLE_DOCUMENT_STATUSES = frozenset(
     {
@@ -136,9 +133,9 @@ async def update_document(document_id: str, request: DocumentUpdateRequest) -> D
     return _document_response(doc)
 
 
-@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{document_id}", status_code=status.HTTP_202_ACCEPTED)
 async def delete_document(document_id: str) -> Response:
-    """删除文档及其向量、分块和 artifact 文件。"""
+    """Mark a document deleting and enqueue idempotent dual-index cleanup."""
     doc = await _get_document_or_404(document_id)
     if doc.status not in _DELETABLE_DOCUMENT_STATUSES:
         raise HTTPException(
@@ -146,21 +143,13 @@ async def delete_document(document_id: str) -> Response:
             detail=f"Document cannot be deleted while status is {doc.status}",
         )
     try:
-        deleted = await get_compensator().delete_document(document_id)
-    except Exception as exc:
-        error_id = uuid4().hex
-        logger.exception(
-            "document cleanup failed document_id=%s reference=%s",
-            document_id,
-            error_id,
-        )
-        raise HTTPException(
-            status_code=502,
-            detail=f"Document cleanup failed; reference={error_id}",
-        ) from exc
-    if not deleted:
+        event = await get_document_store().request_delete(document_id)
+    except LookupError:
         raise HTTPException(status_code=404, detail="Document not found")
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await dispatch_eager(event)
+    return Response(status_code=status.HTTP_202_ACCEPTED)
 
 
 @router.get("/{document_id}/chunks", response_model=list[ChunkResponse])

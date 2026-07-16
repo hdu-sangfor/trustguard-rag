@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
-from app.core.ingest.errors import INDEX_FAILED, IngestError
+from app.core.embedding.client import EmbeddingClient, EmbeddingError
+from app.core.ingest.errors import EMBEDDING_FAILED, INDEX_FAILED, IngestError
 from app.domain import DocumentStatus
 from app.stores.chunk_store import ChunkStore
 from app.stores.document_store import DocumentStore
@@ -70,7 +71,7 @@ async def test_publication_rollback_on_index_failure(
     )
     job_id = resp.json()["job_id"]
     job = (await client.get(f"/v1/ingest/jobs/{job_id}")).json()
-    assert job["status"] == "failed"
+    assert job["status"] == "ingest_retrying"
     assert job["error_code"] == INDEX_FAILED
 
     ds = DocumentStore()
@@ -80,7 +81,7 @@ async def test_publication_rollback_on_index_failure(
     assert indexer.deleted_documents == [failed_docs[0].id]
 
     staging = tmp_storage / "staging" / "jobs" / job_id
-    assert not staging.exists()
+    assert staging.exists()  # Retryable jobs retain the source upload for the next delivery.
 
 
 @pytest.mark.asyncio
@@ -106,7 +107,7 @@ async def test_rollback_deletes_vectors_when_chunk_insert_fails(
     )
     job = (await client.get(f"/v1/ingest/jobs/{response.json()['job_id']}")).json()
 
-    assert job["status"] == "failed"
+    assert job["status"] == "ingest_retrying"
     assert indexer.deleted_documents == indexer.upserted_documents
 
 
@@ -134,7 +135,7 @@ async def test_opensearch_failure_rolls_back_qdrant_and_never_publishes_ready(
     )
     job = (await client.get(f"/v1/ingest/jobs/{response.json()['job_id']}")).json()
 
-    assert job["status"] == "failed"
+    assert job["status"] == "ingest_retrying"
     assert job["error_code"] == INDEX_FAILED
     assert await DocumentStore().list_by_status(DocumentStatus.READY) == []
     failed = await DocumentStore().list_by_status(DocumentStatus.FAILED)
@@ -142,3 +143,30 @@ async def test_opensearch_failure_rolls_back_qdrant_and_never_publishes_ready(
     assert qdrant.deleted_documents == [failed[0].id]
     assert opensearch.deleted_documents == [failed[0].id]
     assert await ChunkStore().list_for_document(failed[0].id) == []
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_embedding_error_fails_immediately(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_embedding(self, texts):
+        raise EmbeddingError("invalid embedding request", retryable=False)
+
+    monkeypatch.setattr(EmbeddingClient, "embed_texts", fail_embedding)
+    response = await client.post(
+        "/v1/ingest/jobs",
+        data={"source_type": "file"},
+        files={
+            "file": (
+                "invalid-embedding.pdf",
+                make_pdf_bytes(["Embedding request should fail once"]),
+                "application/pdf",
+            )
+        },
+    )
+
+    job = (await client.get(f"/v1/ingest/jobs/{response.json()['job_id']}")).json()
+    assert job["status"] == "failed"
+    assert job["attempt"] == 1
+    assert job["error_code"] == EMBEDDING_FAILED

@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import DateTime, Enum as SqlEnum, Integer, JSON, String, Text, func
+from sqlalchemy import DateTime, Enum as SqlEnum, Index, Integer, JSON, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from app.domain import DocumentStatus
+from app.domain import DocumentStatus, IngestJobStatus, IngestStep, OutboxStatus
 
 
-def _document_status_values(enum_type: type[DocumentStatus]) -> list[str]:
+def _enum_values(enum_type: type[StrEnum]) -> list[str]:
     """让 SQLAlchemy 持久化枚举值而不是成员名。"""
     return [member.value for member in enum_type]
 
@@ -34,7 +35,7 @@ class DocumentRow(Base):
     status: Mapped[DocumentStatus] = mapped_column(
         SqlEnum(
             DocumentStatus,
-            values_callable=_document_status_values,
+            values_callable=_enum_values,
             native_enum=False,
             length=32,
         )
@@ -70,13 +71,29 @@ class ChunkRow(Base):
 
 class IngestJobRow(Base):
     __tablename__ = "ingest_jobs"
+    __table_args__ = (Index("idx_jobs_lease", "status", "lease_expires_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     source_type: Mapped[str] = mapped_column(String(32))
     source: Mapped[str] = mapped_column(Text)
     options_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    status: Mapped[str] = mapped_column(String(32))
-    current_step: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status: Mapped[IngestJobStatus] = mapped_column(
+        SqlEnum(
+            IngestJobStatus,
+            values_callable=_enum_values,
+            native_enum=False,
+            length=32,
+        )
+    )
+    current_step: Mapped[IngestStep | None] = mapped_column(
+        SqlEnum(
+            IngestStep,
+            values_callable=_enum_values,
+            native_enum=False,
+            length=32,
+        ),
+        nullable=True,
+    )
     document_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     pending_document_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     conflict_candidates_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
@@ -89,4 +106,46 @@ class IngestJobRow(Base):
         DateTime(timezone=False), server_default=func.now()
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+
+
+class OutboxEventRow(Base):
+    """等待可靠发布到 RabbitMQ 的领域命令。"""
+
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        Index("idx_outbox_dispatch", "status", "next_attempt_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    aggregate_id: Mapped[str] = mapped_column(String(64))
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    status: Mapped[OutboxStatus] = mapped_column(
+        SqlEnum(
+            OutboxStatus,
+            values_callable=_enum_values,
+            native_enum=False,
+            length=32,
+        ),
+        default=OutboxStatus.PENDING,
+    )
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=20)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)

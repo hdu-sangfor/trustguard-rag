@@ -49,7 +49,7 @@ async def test_filename_conflict_resolve_keep_new(client: AsyncClient) -> None:
         f"/v1/ingest/jobs/{job2_id}/resolve",
         json={"keep_document_id": pending_id},
     )
-    assert resolved.status_code == 200
+    assert resolved.status_code == 202
     assert resolved.json()["status"] == "succeeded"
 
     old_doc = (await client.get(f"/v1/documents/{old_doc_id}")).json()
@@ -111,7 +111,7 @@ async def test_conflict_new_publish_failure_keeps_old_document_ready(
         json={"keep_document_id": pending_id},
     )
 
-    assert resolved.status_code == 200
-    assert resolved.json()["status"] == "failed"
+    assert resolved.status_code == 202
+    assert resolved.json()["status"] == "resolve_retrying"
     assert (await DocumentStore().get(old_id)).status == DocumentStatus.READY
     assert (await DocumentStore().get(pending_id)).status == DocumentStatus.FAILED

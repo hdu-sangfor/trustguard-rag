@@ -15,7 +15,7 @@ async def test_ingest_pdf_e2e(client: AsyncClient, tmp_storage) -> None:
         data={"source_type": "file"},
         files={"file": ("report.pdf", pdf, "application/pdf")},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     job_id = resp.json()["job_id"]
 
     job_resp = await client.get(f"/v1/ingest/jobs/{job_id}")

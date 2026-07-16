@@ -133,7 +133,9 @@ MySQL 事务写入文档、Chunk、Outbox Event
               状态确认与重试
 ```
 
-当前 RabbitMQ 仅用于健康检查，入库任务仍运行在 FastAPI `BackgroundTasks` 中。服务重启时，进程内任务可能丢失。
+> 修复状态（2026-07-16）：已实现 MySQL Transactional Outbox、RabbitMQ durable
+> command/retry/dead-letter 队列和独立 Worker。入库、删除、冲突解决不再依赖 FastAPI
+> `BackgroundTasks`；API 原子提交状态与事件，Worker 使用现有 Saga 幂等执行和延迟重试。
 
 ### 3.4 删除与冲突替换缺少事务语义
 
@@ -460,7 +462,7 @@ P50 / P95 / P99 延迟
 
 ### 第三阶段：可靠性与性能
 
-1. 使用 Outbox + RabbitMQ Worker。
+1. ~~使用 Outbox + RabbitMQ Worker。~~（已于 2026-07-16 完成）
 2. 增加索引版本、重试和一致性巡检。
 3. 使用 OpenSearch Alias 和 Qdrant Collection Alias。
 4. 增加超时、熔断、并发限制和模型预热。

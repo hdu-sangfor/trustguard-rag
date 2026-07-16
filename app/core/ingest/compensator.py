@@ -100,6 +100,8 @@ class Compensator:
         doc = await self._documents.get(document_id)
         if not doc:
             return
+        if doc.status == DocumentStatus.SUPERSEDED:
+            return
         if doc.status != DocumentStatus.SUPERSEDING:
             await self._documents.update_status(document_id, DocumentStatus.SUPERSEDING)
         point_ids = await self._chunks.point_ids_for_document(document_id)

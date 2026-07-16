@@ -71,7 +71,6 @@ class Settings(BaseSettings):
     opensearch_verify_certs: bool = False
     opensearch_index_prefix: str = "rag_"
     opensearch_backfill_on_startup: bool = True
-    cleanup_resume_on_startup: bool = True
 
     # --- Redis（缓存 / 限流 / 任务心跳） ---
     redis_host: str = "localhost"
@@ -85,6 +84,19 @@ class Settings(BaseSettings):
     rabbitmq_user: str = "guest"
     rabbitmq_password: str = "guest"
     rabbitmq_vhost: str = "/"
+    rabbitmq_exchange: str = "rag.commands"
+    rabbitmq_dead_exchange: str = "rag.dead"
+    rabbitmq_prefetch_count: int = 1
+    rabbitmq_consumer_max_retries: int = 5
+    rabbitmq_retry_delays_ms: str = "10000,60000,300000"
+    worker_outbox_poll_seconds: float = 1.0
+    worker_outbox_batch_size: int = 50
+    worker_outbox_lease_seconds: int = 60
+    worker_job_lease_seconds: int = 120
+    worker_heartbeat_seconds: float = 30.0
+    worker_recovery_scan_seconds: float = 15.0
+    worker_indexing_stale_seconds: int = 300
+    worker_eager: bool = False
 
     # --- 对象存储（MVP 可选：默认本地文件后端，见 §3 / §5.1） ---
     minio_enabled: bool = False
@@ -100,7 +112,7 @@ class Settings(BaseSettings):
     embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
     embedding_dim: int = 1024
     embedding_device: str = "auto"
-    embedding_batch_size: int = 16
+    embedding_batch_size: int = 10
     embedding_normalize: bool = True
     embedding_query_instruction: str = (
         "Given a cybersecurity search query, retrieve relevant passages that answer the query"
@@ -173,6 +185,16 @@ class Settings(BaseSettings):
             f"amqp://{self.rabbitmq_user}:{self.rabbitmq_password}"
             f"@{self.rabbitmq_host}:{self.rabbitmq_port}{self.rabbitmq_vhost}"
         )
+
+    @property
+    def rabbitmq_retry_delays(self) -> tuple[int, ...]:
+        """解析消费者重试队列使用的毫秒级退避时间。"""
+        values = tuple(
+            int(value.strip())
+            for value in self.rabbitmq_retry_delays_ms.split(",")
+            if value.strip()
+        )
+        return values or (30_000,)
 
 
 @lru_cache

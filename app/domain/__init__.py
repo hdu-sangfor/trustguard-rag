@@ -1,5 +1,30 @@
 """领域模型。"""
 
-from app.domain.document import DocumentStatus
+from app.domain.document import DELETABLE_DOCUMENT_STATUSES, DocumentStatus
+from app.domain.ingest import (
+    CANCELLABLE_JOB_STATUSES,
+    INGEST_CLAIMABLE_STATUSES,
+    RESOLVE_CLAIMABLE_STATUSES,
+    RESUMABLE_JOB_STATUSES,
+    TERMINAL_JOB_STATUSES,
+    IngestJobStatus,
+    IngestStep,
+    PipelineResult,
+)
+from app.domain.worker import ClaimOutcome, CleanupAction, OutboxStatus
 
-__all__ = ["DocumentStatus"]
+__all__ = [
+    "CANCELLABLE_JOB_STATUSES",
+    "INGEST_CLAIMABLE_STATUSES",
+    "RESOLVE_CLAIMABLE_STATUSES",
+    "RESUMABLE_JOB_STATUSES",
+    "TERMINAL_JOB_STATUSES",
+    "ClaimOutcome",
+    "CleanupAction",
+    "DELETABLE_DOCUMENT_STATUSES",
+    "DocumentStatus",
+    "IngestJobStatus",
+    "IngestStep",
+    "OutboxStatus",
+    "PipelineResult",
+]

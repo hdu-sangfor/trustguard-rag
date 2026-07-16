@@ -46,7 +46,7 @@ def _ingest_required() -> tuple[str, ...]:
 
 def _ingest_reported() -> tuple[str, ...]:
     """列出入库模式会报告的依赖，包括可选的检索后端状态。"""
-    return tuple(dict.fromkeys((*_ingest_required(), "qdrant", "opensearch")))
+    return tuple(dict.fromkeys((*_ingest_required(), "qdrant", "opensearch", "rabbitmq")))
 
 
 @router.get("/health/live", summary="存活探针")

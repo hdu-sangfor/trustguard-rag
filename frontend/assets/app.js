@@ -1,12 +1,17 @@
 const $ = (selector) => document.querySelector(selector);
 const state = { file: null, jobs: JSON.parse(localStorage.getItem("tg-jobs") || "[]"), timers: new Map(), documents: [], documentOffset: 0, documentLimit: 10, documentTotal: 0 };
-const terminal = new Set(["succeeded", "failed", "deduplicated", "discarded", "conflict"]);
-const deletableDocumentStatuses = new Set(["ready", "failed", "deleting", "superseded"]);
-const statusLabel = { queued:"排队中", running:"处理中", succeeded:"已完成", failed:"失败", deduplicated:"已去重", conflict:"待处理", discarded:"已丢弃" };
-const stepLabel = { validate:"文件校验", extract:"解析文本", dedup:"内容去重", conflict_check:"冲突检查", commit_artifacts:"保存产物", chunk:"文本分块", embed:"生成向量", index:"写入索引", publish:"发布文档" };
+const JobStatus = Object.freeze({ QUEUED:"queued", RUNNING:"running", CONFLICT:"conflict", RESOLVING:"resolving", INGEST_RETRYING:"ingest_retrying", RESOLVE_RETRYING:"resolve_retrying", SUCCEEDED:"succeeded", DEDUPLICATED:"deduplicated", FAILED:"failed", CANCELLED:"cancelled", DISCARDED:"discarded" });
+const DocumentStatus = Object.freeze({ STAGING:"staging", INDEXING:"indexing", READY:"ready", FAILED:"failed", DELETING:"deleting", SUPERSEDED:"superseded" });
+const IngestStep = Object.freeze({ QUEUED:"queued", RECOVER:"recover", VALIDATE:"validate", EXTRACT:"extract", DEDUP:"dedup", CONFLICT_CHECK:"conflict_check", COMMIT_ARTIFACTS:"commit_artifacts", CHUNK:"chunk", EMBED:"embed", INDEX:"index", OPENSEARCH_INDEX:"opensearch_index", PUBLISH:"publish", RETRY_WAIT:"retry_wait", RESOLVE:"resolve", RESOLVE_SUPERSEDE:"resolve_supersede", SUPERSEDE_CLEANUP:"supersede_cleanup", RESOLVE_PUBLISH:"resolve_publish", RESOLVE_DISCARD:"resolve_discard", CANCELLED:"cancelled", FAILED:"failed" });
+const terminal = new Set([JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.DEDUPLICATED, JobStatus.DISCARDED, JobStatus.CONFLICT]);
+const retrying = new Set([JobStatus.INGEST_RETRYING, JobStatus.RESOLVE_RETRYING]);
+const successful = new Set([JobStatus.SUCCEEDED, JobStatus.DEDUPLICATED]);
+const deletableDocumentStatuses = new Set([DocumentStatus.STAGING, DocumentStatus.INDEXING, DocumentStatus.READY, DocumentStatus.FAILED, DocumentStatus.DELETING, DocumentStatus.SUPERSEDED]);
+const statusLabel = { [JobStatus.QUEUED]:"排队中", [JobStatus.RUNNING]:"处理中", [JobStatus.RESOLVING]:"等待冲突处理", [JobStatus.INGEST_RETRYING]:"等待入库重试", [JobStatus.RESOLVE_RETRYING]:"等待冲突重试", [JobStatus.SUCCEEDED]:"已完成", [JobStatus.FAILED]:"失败", [JobStatus.CANCELLED]:"已取消", [JobStatus.DEDUPLICATED]:"已去重", [JobStatus.CONFLICT]:"待处理", [JobStatus.DISCARDED]:"已丢弃" };
+const stepLabel = { [IngestStep.QUEUED]:"等待处理", [IngestStep.RECOVER]:"恢复任务", [IngestStep.VALIDATE]:"文件校验", [IngestStep.EXTRACT]:"解析文本", [IngestStep.DEDUP]:"内容去重", [IngestStep.CONFLICT_CHECK]:"冲突检查", [IngestStep.COMMIT_ARTIFACTS]:"保存产物", [IngestStep.CHUNK]:"文本分块", [IngestStep.EMBED]:"生成向量", [IngestStep.INDEX]:"写入向量索引", [IngestStep.OPENSEARCH_INDEX]:"写入全文索引", [IngestStep.PUBLISH]:"发布文档", [IngestStep.RETRY_WAIT]:"等待重试", [IngestStep.RESOLVE]:"处理冲突", [IngestStep.RESOLVE_SUPERSEDE]:"清理旧版本", [IngestStep.SUPERSEDE_CLEANUP]:"等待旧版本清理", [IngestStep.RESOLVE_PUBLISH]:"发布冲突文档", [IngestStep.RESOLVE_DISCARD]:"丢弃冲突文档", [IngestStep.CANCELLED]:"已取消", [IngestStep.FAILED]:"失败" };
 
 function toast(message, error=false){ const el=document.createElement("div"); el.className=`toast${error?" error":""}`; el.textContent=message; $("#toasts").append(el); setTimeout(()=>el.remove(),4500); }
-async function api(path, options={}){ const response=await fetch(path,options); if(!response.ok){ let detail=`HTTP ${response.status}`; try{detail=(await response.json()).detail||detail}catch{} throw new Error(detail); } return response.status===204?null:response.json(); }
+async function api(path, options={}){ const response=await fetch(path,options); if(!response.ok){ let detail=`HTTP ${response.status}`; try{detail=(await response.json()).detail||detail}catch{} throw new Error(detail); } return response.status===204||response.headers.get("content-length")==="0"?null:response.json(); }
 function persist(){ localStorage.setItem("tg-jobs",JSON.stringify(state.jobs.slice(0,30))); }
 function formatTime(value){ if(!value)return "—"; return new Intl.DateTimeFormat("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).format(new Date(value)); }
 function escapeHtml(value=""){ const div=document.createElement("div"); div.textContent=value; return div.innerHTML; }
@@ -17,12 +22,13 @@ function renderJobs(){
   const list=$("#jobs-list"), empty=$("#jobs-empty"); list.innerHTML=""; empty.hidden=state.jobs.length>0;
   state.jobs.forEach(job=>{
     const row=document.createElement("div"); row.className="job-row";
-    row.innerHTML=`<span class="job-icon">▧</span><div class="job-name"><strong>${escapeHtml(job.filename||"PDF 文档")}</strong><small>${escapeHtml(job.id)}</small></div><span class="step">${escapeHtml(stepLabel[job.current_step]||job.current_step||"等待处理")}</span><span class="status ${job.status}">${statusLabel[job.status]||job.status}</span><button class="job-action">${job.document_id?"查看":"刷新"}</button>`;
+    const attempts=job.max_attempts!=null?` · 尝试 ${job.attempt||0}/${job.max_attempts}`:"";
+    row.innerHTML=`<span class="job-icon">▧</span><div class="job-name"><strong>${escapeHtml(job.filename||"PDF 文档")}</strong><small>${escapeHtml(job.id)}${attempts}</small></div><span class="step">${escapeHtml(stepLabel[job.current_step]||job.current_step||"等待处理")}</span><span class="status ${job.status}">${statusLabel[job.status]||job.status}</span><button class="job-action">${job.document_id?"查看":"刷新"}</button>`;
     row.querySelector("button").onclick=()=>job.document_id?openDocument(job.document_id):refreshJob(job.id);
     list.append(row);
   });
   $("#metric-jobs").textContent=state.jobs.length;
-  $("#metric-success").textContent=state.jobs.filter(j=>["succeeded","deduplicated"].includes(j.status)).length;
+  $("#metric-success").textContent=state.jobs.filter(j=>successful.has(j.status)).length;
 }
 
 async function refreshHealth(){
@@ -45,9 +51,18 @@ async function upload(){
   }catch(error){toast(`上传失败：${error.message}`,true)}finally{button.disabled=!state.file; button.querySelector("span").textContent="开始解析入库";}
 }
 async function refreshJob(id){
-  try{ const data=await api(`/v1/ingest/jobs/${id}`); const old=state.jobs.find(j=>j.id===id)||{}; Object.assign(old,data,{filename:old.filename}); if(!state.jobs.includes(old))state.jobs.unshift(old); persist(); renderJobs(); if(data.status==="failed")toast(`${old.filename||"文档"}：${data.error_message||"入库失败"}`,true); return data; }catch(error){toast(`任务刷新失败：${error.message}`,true)}
+  try{ const data=await api(`/v1/ingest/jobs/${id}`); const old=state.jobs.find(j=>j.id===id)||{}; Object.assign(old,data,{filename:old.filename}); if(!state.jobs.includes(old))state.jobs.unshift(old); persist(); renderJobs(); if(data.status===JobStatus.FAILED)toast(`${old.filename||"文档"}：${data.error_message||"入库失败"}`,true); return data; }catch(error){toast(`任务刷新失败：${error.message}`,true)}
 }
-function pollJob(id){ if(state.timers.has(id))return; const tick=async()=>{const job=await refreshJob(id); if(!job||terminal.has(job.status)){clearInterval(state.timers.get(id));state.timers.delete(id);return;} }; tick(); state.timers.set(id,setInterval(tick,1800)); }
+function pollJob(id){
+  if(state.timers.has(id))return;
+  const tick=async()=>{
+    const job=await refreshJob(id);
+    if(!job||terminal.has(job.status)){state.timers.delete(id);return;}
+    const delay=retrying.has(job.status)?10000:1800;
+    state.timers.set(id,setTimeout(tick,delay));
+  };
+  state.timers.set(id,setTimeout(tick,0));
+}
 
 function renderDocuments(){
   const list=$("#documents-list"), empty=$("#documents-empty"); list.innerHTML=""; empty.hidden=state.documents.length>0;
@@ -160,7 +175,7 @@ async function deleteDocument(doc){
   if(!deletableDocumentStatuses.has(doc.status)){toast("文档仍在处理中，暂时不能删除",true);return;}
   const name=doc.title||doc.original_filename||doc.id;
   if(!window.confirm(`确定删除“${name}”吗？\n分块、向量和产物文件也会被永久删除。`))return;
-  try{await api(`/v1/documents/${doc.id}`,{method:"DELETE"});toast("文档及关联数据已删除");state.jobs.forEach(job=>{if(job.document_id===doc.id)job.document_id=null;if(job.pending_document_id===doc.id)job.pending_document_id=null;if(Array.isArray(job.conflict_candidates))job.conflict_candidates=job.conflict_candidates.filter(id=>id!==doc.id)});persist();renderJobs();if($("#document-id").value===doc.id){$("#document-id").value="";$("#document-result").innerHTML="";}if(state.documentOffset>0&&state.documents.length===1)state.documentOffset=Math.max(0,state.documentOffset-state.documentLimit);await loadDocuments();}
+  try{await api(`/v1/documents/${doc.id}`,{method:"DELETE"});toast("删除任务已提交，后台正在清理关联数据");if($("#document-id").value===doc.id){$("#document-id").value="";$("#document-result").innerHTML="";}await loadDocuments();}
   catch(error){toast(`删除失败：${error.message}`,true);}
 }
 

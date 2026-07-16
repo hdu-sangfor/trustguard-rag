@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import math
 import os
+import re
 from typing import Any
 
 import httpx
@@ -18,6 +19,18 @@ from app.settings import Settings, get_settings
 
 class EmbeddingError(RuntimeError):
     """嵌入提供方无法产出有效向量时抛出的异常。"""
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        self.retryable = retryable
+        super().__init__(message)
+
+
+def _provider_batch_limit(error_text: str) -> int | None:
+    """Extract an advertised provider batch limit from compatible API errors."""
+    if "batch size" not in error_text.lower():
+        return None
+    match = re.search(r"not be larger than\s+(\d+)", error_text, flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 def _pseudo_vector(text: str, dim: int) -> list[float]:
@@ -105,20 +118,54 @@ class EmbeddingClient:
         headers = {}
         if self._settings.embedding_api_key:
             headers["Authorization"] = f"Bearer {self._settings.embedding_api_key}"
-        payload: dict[str, Any] = {
-            "model": self._settings.embedding_model,
-            "input": self._prepare_texts(texts, is_query=is_query),
-        }
+        prepared = self._prepare_texts(texts, is_query=is_query)
+        batch_size = max(1, self._settings.embedding_batch_size)
+        vectors: list[list[float]] = []
         async with httpx.AsyncClient(timeout=self._settings.embedding_api_timeout_seconds) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            try:
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                raise EmbeddingError(
-                    f"Embedding API request failed: {resp.status_code} {resp.text}"
-                ) from e
-            data = resp.json()["data"]
-            return [item["embedding"] for item in sorted(data, key=lambda x: x["index"])]
+            start = 0
+            while start < len(prepared):
+                batch = prepared[start : start + batch_size]
+                payload: dict[str, Any] = {
+                    "model": self._settings.embedding_model,
+                    "input": batch,
+                }
+                try:
+                    resp = await client.post(url, json=payload, headers=headers)
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    provider_limit = _provider_batch_limit(resp.text)
+                    if (
+                        resp.status_code == 400
+                        and len(batch) > 1
+                        and provider_limit is not None
+                        and provider_limit < len(batch)
+                    ):
+                        batch_size = max(1, min(batch_size, provider_limit))
+                        continue
+                    retryable = resp.status_code == 429 or resp.status_code >= 500
+                    raise EmbeddingError(
+                        f"Embedding API request failed: {resp.status_code} {resp.text}",
+                        retryable=retryable,
+                    ) from e
+                except httpx.RequestError as e:
+                    raise EmbeddingError(
+                        f"Embedding API request failed: {e}",
+                        retryable=True,
+                    ) from e
+                try:
+                    data = resp.json()["data"]
+                    batch_vectors = [
+                        item["embedding"] for item in sorted(data, key=lambda x: x["index"])
+                    ]
+                except (KeyError, TypeError, ValueError) as e:
+                    raise EmbeddingError("Embedding API returned an invalid response") from e
+                if len(batch_vectors) != len(payload["input"]):
+                    raise EmbeddingError(
+                        "Embedding API returned a different number of vectors than inputs"
+                    )
+                vectors.extend(batch_vectors)
+                start += len(batch)
+        return vectors
 
     async def _local_embed(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
         """在线程池中调用本地 sentence-transformers 模型。"""

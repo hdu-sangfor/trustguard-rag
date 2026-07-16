@@ -72,7 +72,13 @@ def wait_job(client: httpx.Client, job_id: str, timeout: float = 30) -> dict:
         r = client.get(f"/v1/ingest/jobs/{job_id}")
         r.raise_for_status()
         job = r.json()
-        if job["status"] not in {"queued", "running"}:
+        if job["status"] not in {
+            "queued",
+            "running",
+            "resolving",
+            "ingest_retrying",
+            "resolve_retrying",
+        }:
             return job
         time.sleep(0.15 if hasattr(client, "_transport") else 0.3)
     raise TimeoutError(f"job {job_id} did not finish in {timeout}s")
@@ -211,7 +217,7 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
             json={"keep_document_id": state["conflict_pending"]},
         )
         r.raise_for_status()
-        job = r.json()
+        job = wait_job(client, state["conflict_job"])
         assert job["status"] == "succeeded"
         old = client.get(f"/v1/documents/{state['conflict_old']}").json()
         assert old["status"] == "superseded"
@@ -261,16 +267,11 @@ def run_in_process() -> TestReport:
     os.environ["RAG_MODE"] = "ingest"
     os.environ["RAG_QDRANT_MOCK"] = "true"
     os.environ["RAG_MINIO_ENABLED"] = "false"
+    os.environ["RAG_WORKER_EAGER"] = "true"
     get_settings.cache_clear()
 
     db_path = storage / "test.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-
-    async def setup():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-    import asyncio
 
     async def setup():
         async with engine.begin() as conn:

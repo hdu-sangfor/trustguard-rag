@@ -1,14 +1,13 @@
 """Shared pytest fixtures."""
 from __future__ import annotations
 
-import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.main import create_app
 from app.settings import get_settings
@@ -25,6 +24,7 @@ def tmp_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("RAG_QDRANT_MOCK", "true")
     monkeypatch.setenv("RAG_MINIO_ENABLED", "false")
     monkeypatch.setenv("RAG_EMBEDDING_PROVIDER", "pseudo")
+    monkeypatch.setenv("RAG_WORKER_EAGER", "true")
     get_settings.cache_clear()
     return storage
 
@@ -40,7 +40,6 @@ async def test_engine(tmp_storage: Path, monkeypatch: pytest.MonkeyPatch) -> Asy
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    original = db.get_engine
     db._engine = engine  # type: ignore[attr-defined]
 
     def _get() -> AsyncEngine:

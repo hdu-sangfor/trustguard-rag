@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain import DocumentStatus
+from app.core.ingest.errors import CANCELLED
+from app.domain import (
+    CANCELLABLE_JOB_STATUSES,
+    DELETABLE_DOCUMENT_STATUSES,
+    RESUMABLE_JOB_STATUSES,
+    CleanupAction,
+    DocumentStatus,
+    IngestJobStatus,
+    IngestStep,
+)
+from app.settings import get_settings
 from app.stores.db import get_engine
-from app.stores.models import DocumentRow
+from app.stores.models import DocumentRow, IngestJobRow
+from app.stores.outbox_store import OutboxEvent, add_outbox_event, event_from_row
+from app.workers.messages import CLEANUP_DOCUMENT
 
 
 def _utcnow() -> datetime:
@@ -197,6 +209,118 @@ class DocumentStore:
                 )
             )
             return set(result.scalars().all())
+
+    async def request_delete(self, document_id: str) -> OutboxEvent:
+        """Atomically mark a document deleting and enqueue external cleanup."""
+        async with AsyncSession(get_engine(), expire_on_commit=False) as session:
+            doc = await session.get(DocumentRow, document_id, with_for_update=True)
+            if not doc:
+                raise LookupError("Document not found")
+            if doc.status not in DELETABLE_DOCUMENT_STATUSES:
+                raise ValueError(f"Document cannot be deleted while status is {doc.status}")
+            doc.status = DocumentStatus.DELETING
+            doc.updated_at = _utcnow()
+            await session.execute(
+                update(IngestJobRow)
+                .where(
+                    or_(
+                        IngestJobRow.document_id == document_id,
+                        IngestJobRow.pending_document_id == document_id,
+                    ),
+                    IngestJobRow.status.in_(CANCELLABLE_JOB_STATUSES),
+                )
+                .values(
+                    status=IngestJobStatus.CANCELLED,
+                    current_step=IngestStep.CANCELLED,
+                    error_code=CANCELLED,
+                    error_message="Task cancelled because its document was deleted",
+                    finished_at=_utcnow(),
+                    lease_owner=None,
+                    lease_token=None,
+                    lease_expires_at=None,
+                    heartbeat_at=None,
+                )
+            )
+            event_row = add_outbox_event(
+                session,
+                event_type=CLEANUP_DOCUMENT,
+                aggregate_id=document_id,
+                payload={
+                    "document_id": document_id,
+                    "action": CleanupAction.DELETE,
+                },
+            )
+            await session.commit()
+            return event_from_row(event_row)
+
+    async def enqueue_pending_cleanups(self) -> list[OutboxEvent]:
+        """Enqueue persisted Saga cleanup states when a Worker starts."""
+        actions = {
+            DocumentStatus.DELETING: CleanupAction.DELETE,
+            DocumentStatus.SUPERSEDING: CleanupAction.SUPERSEDE,
+            DocumentStatus.FAILED: CleanupAction.ROLLBACK,
+        }
+        events: list[OutboxEvent] = []
+        async with AsyncSession(get_engine(), expire_on_commit=False) as session:
+            result = await session.execute(
+                select(DocumentRow).where(DocumentRow.status.in_(tuple(actions)))
+            )
+            for doc in result.scalars():
+                event_row = add_outbox_event(
+                    session,
+                    event_type=CLEANUP_DOCUMENT,
+                    aggregate_id=doc.id,
+                    payload={"document_id": doc.id, "action": actions[doc.status]},
+                )
+                events.append(event_from_row(event_row))
+            await session.commit()
+        return events
+
+    async def recover_orphan_publications(self) -> list[OutboxEvent]:
+        """Fail and enqueue cleanup for stale partial documents with no resumable job."""
+        now = _utcnow()
+        stale_before = now - timedelta(
+            seconds=get_settings().worker_indexing_stale_seconds
+        )
+        active_job = (
+            select(IngestJobRow.id)
+            .where(
+                or_(
+                    IngestJobRow.document_id == DocumentRow.id,
+                    IngestJobRow.pending_document_id == DocumentRow.id,
+                ),
+                IngestJobRow.status.in_(RESUMABLE_JOB_STATUSES),
+            )
+            .exists()
+        )
+        events: list[OutboxEvent] = []
+        async with AsyncSession(get_engine(), expire_on_commit=False) as session:
+            result = await session.execute(
+                select(DocumentRow)
+                .where(
+                    DocumentRow.status.in_(
+                        (DocumentStatus.STAGING, DocumentStatus.INDEXING)
+                    ),
+                    DocumentRow.updated_at <= stale_before,
+                    ~active_job,
+                )
+                .with_for_update(skip_locked=True)
+            )
+            for doc in result.scalars():
+                doc.status = DocumentStatus.FAILED
+                doc.updated_at = now
+                event_row = add_outbox_event(
+                    session,
+                    event_type=CLEANUP_DOCUMENT,
+                    aggregate_id=doc.id,
+                    payload={
+                        "document_id": doc.id,
+                        "action": CleanupAction.ROLLBACK,
+                    },
+                )
+                events.append(event_from_row(event_row))
+            await session.commit()
+        return events
 
 
 def get_document_store() -> DocumentStore:
