@@ -66,6 +66,7 @@ class QdrantIndexer:
             for chunk, vector in zip(chunks, vectors):
                 point_id = chunk["id"]
                 payload = {
+                    "chunk_text": chunk["text"],
                     "doc_id": document_id,
                     "chunk_index": chunk["chunk_index"],
                     "page_no": chunk.get("page_no"),
@@ -90,6 +91,9 @@ class QdrantIndexer:
         if not point_ids:
             return
         client = qdrant_store.get_client()
+        collections = await client.get_collections()
+        if self._collection not in {item.name for item in collections.collections}:
+            return
         await client.delete(
             collection_name=self._collection,
             points_selector=[_to_point_id(pid) for pid in point_ids],

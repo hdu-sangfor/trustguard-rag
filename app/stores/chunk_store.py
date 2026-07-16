@@ -47,6 +47,14 @@ class ChunkStore:
             )
             return list(result.scalars().all())
 
+    async def get_many(self, chunk_ids: list[str]) -> list[ChunkRow]:
+        """批量加载指定分块，用于修复旧向量 payload 中缺失的文本字段。"""
+        if not chunk_ids:
+            return []
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(select(ChunkRow).where(ChunkRow.id.in_(chunk_ids)))
+            return list(result.scalars().all())
+
     async def delete_for_document(self, document_id: str) -> list[str]:
         """删除文档分块，并返回需要清理的向量点 ID。"""
         async with AsyncSession(get_engine()) as session:

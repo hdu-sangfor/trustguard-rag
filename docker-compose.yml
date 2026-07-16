@@ -34,6 +34,11 @@ services:
       RAG_MYSQL_DB: ${MYSQL_DATABASE:-trustguard_rag}
       RAG_QDRANT_HOST: qdrant
       RAG_QDRANT_PORT: "6333"
+      RAG_OPENSEARCH_HOST: opensearch
+      RAG_OPENSEARCH_PORT: "9200"
+      RAG_OPENSEARCH_USE_SSL: "false"
+      RAG_OPENSEARCH_VERIFY_CERTS: "false"
+      RAG_SEARCH_OPENSEARCH_MOCK: "false"
       RAG_REDIS_HOST: redis
       RAG_REDIS_PORT: "6379"
       RAG_RABBITMQ_HOST: rabbitmq
@@ -59,7 +64,59 @@ services:
         condition: service_started
       qdrant:
         condition: service_started
+      opensearch:
+        condition: service_healthy
       redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  rag-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: *build-args
+      extra_hosts: *build-extra-hosts
+      network: host
+    image: ${TRUSTGUARD_IMAGE_PREFIX:-trustguard-}rag-service
+    command: ["python", "-m", "app.workers.main"]
+    environment:
+      RAG_MYSQL_HOST: mysql
+      RAG_MYSQL_PORT: "3306"
+      RAG_MYSQL_USER: ${MYSQL_USER:-trustguard}
+      RAG_MYSQL_PASSWORD: ${MYSQL_PASSWORD:-trustguard}
+      RAG_MYSQL_DB: ${MYSQL_DATABASE:-trustguard_rag}
+      RAG_QDRANT_HOST: qdrant
+      RAG_QDRANT_PORT: "6333"
+      RAG_QDRANT_MOCK: "false"
+      RAG_OPENSEARCH_HOST: opensearch
+      RAG_OPENSEARCH_PORT: "9200"
+      RAG_OPENSEARCH_USE_SSL: "false"
+      RAG_OPENSEARCH_VERIFY_CERTS: "false"
+      RAG_SEARCH_OPENSEARCH_MOCK: "false"
+      RAG_REDIS_HOST: redis
+      RAG_REDIS_PORT: "6379"
+      RAG_RABBITMQ_HOST: rabbitmq
+      RAG_RABBITMQ_PORT: "5672"
+      RAG_MINIO_ENABLED: "true"
+      RAG_MINIO_ENDPOINT: minio:9000
+      RAG_MINIO_ACCESS_KEY: minioadmin
+      RAG_MINIO_SECRET_KEY: minioadmin
+      RAG_MINIO_BUCKET: trustguard-rag-artifacts
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      HF_HUB_ETAG_TIMEOUT: ${HF_HUB_ETAG_TIMEOUT:-60}
+      HF_HUB_DOWNLOAD_TIMEOUT: ${HF_HUB_DOWNLOAD_TIMEOUT:-300}
+      HF_HUB_DISABLE_XET: ${HF_HUB_DISABLE_XET:-1}
+    env_file: *optional-env-files
+    volumes:
+      - trustguard_rag_models:/models/huggingface
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      opensearch:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
@@ -114,6 +171,31 @@ services:
     volumes:
       - trustguard_rag_qdrant:/qdrant/storage
 
+  opensearch:
+    image: ${OPENSEARCH_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/opensearchproject/opensearch:2.19.1}
+    environment:
+      discovery.type: single-node
+      bootstrap.memory_lock: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+    ports:
+      - "18216:9200"
+    volumes:
+      - trustguard_rag_opensearch:/usr/share/opensearch/data
+    mem_limit: ${OPENSEARCH_MEM_LIMIT:-1g}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    healthcheck:
+      test: ["CMD-SHELL", "curl --silent --fail 'http://localhost:9200/_cluster/health?wait_for_status=yellow' >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
   minio:
     image: ${MINIO_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/minio/minio:latest}
     command: server /data --console-address ":9001"
@@ -135,5 +217,6 @@ services:
 volumes:
   trustguard_rag_mysql:
   trustguard_rag_qdrant:
+  trustguard_rag_opensearch:
   trustguard_rag_minio:
   trustguard_rag_models:

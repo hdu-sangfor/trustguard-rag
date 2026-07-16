@@ -1,13 +1,14 @@
 """入库 HTTP API。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from uuid import uuid4
 
-from app.core.ingest.pipeline import get_ingest_pipeline
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+
 from app.schemas.ingest import ConflictResolveRequest, IngestJobCreateResponse, IngestJobResponse
 from app.stores.blob_store import get_blob_store
 from app.stores.job_store import get_job_store
-from app.workers.run_ingest_job import enqueue_ingest_job
+from app.workers.eager import dispatch_eager
 
 router = APIRouter(prefix="/v1/ingest", tags=["ingest"])
 
@@ -24,6 +25,8 @@ def _job_response(job) -> IngestJobResponse:
         conflict_candidates=list(job.conflict_candidates_json or []),
         error_code=job.error_code,
         error_message=job.error_message,
+        attempt=job.attempt or 0,
+        max_attempts=job.max_attempts or 3,
         step_logs=list(job.step_logs or []),
         created_at=job.created_at,
         started_at=job.started_at,
@@ -31,9 +34,12 @@ def _job_response(job) -> IngestJobResponse:
     )
 
 
-@router.post("/jobs", response_model=IngestJobCreateResponse)
+@router.post(
+    "/jobs",
+    response_model=IngestJobCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def create_ingest_job(
-    background_tasks: BackgroundTasks,
     source_type: str = Form(...),
     file: UploadFile = File(...),
 ) -> IngestJobCreateResponse:
@@ -45,13 +51,19 @@ async def create_ingest_job(
     data = await file.read()
     original_filename = file.filename or "upload.bin"
     mime = file.content_type
-    job = await js.create(
-        source_type=source_type,
-        source=original_filename,
-        options={"original_filename": original_filename, "mime": mime},
-    )
-    bs.put_job_upload(job.id, data)
-    await enqueue_ingest_job(background_tasks, job.id)
+    job_id = str(uuid4())
+    bs.put_job_upload(job_id, data)
+    try:
+        job, event = await js.create_ingest_command(
+            job_id=job_id,
+            source_type=source_type,
+            source=original_filename,
+            options={"original_filename": original_filename, "mime": mime},
+        )
+    except Exception:
+        bs.delete_job_staging(job_id)
+        raise
+    await dispatch_eager(event)
     return IngestJobCreateResponse(job_id=job.id, status=job.status)
 
 
@@ -64,14 +76,18 @@ async def get_ingest_job(job_id: str) -> IngestJobResponse:
     return _job_response(job)
 
 
-@router.post("/jobs/{job_id}/resolve", response_model=IngestJobResponse)
+@router.post(
+    "/jobs/{job_id}/resolve",
+    response_model=IngestJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def resolve_conflict(job_id: str, body: ConflictResolveRequest) -> IngestJobResponse:
-    """通过发布或丢弃待定文档来解决文件名或来源冲突。"""
-    pl = get_ingest_pipeline()
+    """Persist a conflict choice and enqueue asynchronous resolution."""
     try:
-        await pl.resolve_conflict(job_id, body.keep_document_id)
+        _, event = await get_job_store().request_resolution(job_id, body.keep_document_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    await dispatch_eager(event)
     job = await get_job_store().get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")

@@ -13,9 +13,11 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import documents, health, ingest, sources
+from app.api import documents, health, ingest, search, sources
+from app.core.indexing.opensearch_backfill import backfill_ready_documents
 from app.settings import get_settings
 from app.stores import db, opensearch_store, qdrant_store, redis_cache
+from app.stores.outbox_store import ensure_outbox_schema
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,17 @@ async def lifespan(app: FastAPI):
     s = get_settings()
     logging.basicConfig(level=s.log_level)
     logger.info("starting %s v%s (env=%s) on :%s", s.app_name, s.app_version, s.app_env, s.api_port)
+    await ensure_outbox_schema()
+    if not s.search_opensearch_mock and s.opensearch_backfill_on_startup:
+        try:
+            result = await backfill_ready_documents()
+            logger.info(
+                "OpenSearch backfill complete: documents=%s chunks=%s",
+                result.documents,
+                result.chunks,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("OpenSearch startup backfill failed", exc_info=True)
     yield
     # 优雅关闭各连接
     for closer in (db.close, qdrant_store.close, opensearch_store.close, redis_cache.close):
@@ -49,6 +62,7 @@ def create_app() -> FastAPI:
     app.include_router(ingest.router)
     app.include_router(documents.router)
     app.include_router(sources.router)
+    app.include_router(search.router)
 
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     app.mount("/assets", StaticFiles(directory=frontend_dir / "assets"), name="assets")

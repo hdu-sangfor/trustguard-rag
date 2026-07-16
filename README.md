@@ -14,8 +14,10 @@ curl http://localhost:18200/health
 
 ```bash
 uv sync
-docker compose up -d mysql qdrant redis rabbitmq minio
+docker compose up -d mysql qdrant opensearch redis rabbitmq minio
 uv run uvicorn app.main:app --reload --port 18200
+# 另开终端启动可靠任务 Worker
+uv run python -m app.workers.main
 uv run python -m pytest
 ```
 
@@ -31,6 +33,18 @@ uv run python -m pytest
 | redis | 18211 |
 | rabbitmq | 18212 / 18213 |
 | qdrant | 18214 / 18215 |
+| opensearch | 18216 |
+| minio | 18217 / 18218 |
+
+本地 Compose 使用单节点 OpenSearch，并关闭安全插件，不能直接作为生产配置使用。
+应用启动时会幂等地把 MySQL 中已有的 ready 文档分块回填到 OpenSearch，因而支持
+在已有知识库之后再接入或重建 OpenSearch。可通过
+`RAG_OPENSEARCH_BACKFILL_ON_STARTUP=false` 关闭启动回填。
+若 Linux 上 OpenSearch 因 `vm.max_map_count` 过小而启动失败，可执行：
+
+```bash
+sudo sysctl -w vm.max_map_count=262144
+```
 
 ## 入库（PDF）
 
@@ -59,14 +73,41 @@ curl -X PATCH http://localhost:18200/v1/documents/<document_id> \
   -H "Content-Type: application/json" \
   -d '{"title":"企业安全指南","metadata":{"owner":"security"}}'
 
-# 删除文档，并级联清理向量、分块和 artifact 文件
+# 提交异步删除任务，并级联清理向量、分块和 artifact 文件
 curl -X DELETE http://localhost:18200/v1/documents/<document_id>
 ```
 
-处于 `staging` 或 `indexing` 状态的文档仍由入库任务持有，删除请求会返回 `409`；
+处于 `staging`、`indexing` 或 `superseeding` 状态的文档仍由后台流程持有，删除请求会返回 `409`；
 待文档进入终态后再执行删除，避免与向量和分块写入发生竞争。
-删除成功时还会清理入库任务中的文档引用；清理失败会返回带 reference ID 的 `502`，
-完整错误仅记录在服务端日志中。
+删除接口返回 `202 Accepted`。文档会先进入 `deleting`，随后由 RabbitMQ Worker 独立
+删除 Qdrant 和 OpenSearch 数据；任一失败都会保留该状态并进入延迟重试，超过上限后
+进入 `rag.dead` 死信队列。双索引删除成功后才清理分块、artifact、任务引用和文档记录。
+
+文档只有在 Qdrant 与 OpenSearch 都写入成功后才会进入 `ready`。任一索引写入失败会将
+任务进入 `ingest_retrying` 并补偿删除另一侧索引、分块和 artifact，避免发布半成品文档；
+Worker 会延迟重试，超过任务最大尝试次数后才标记为失败。
+默认最多执行 3 次，并在第 3 次失败时立即终止，不会再等待额外队列投递。文件损坏、
+无文本层、参数错误以及 Embedding API 的普通 4xx 属于不可重试错误；网络错误、429、
+5xx 和索引后端临时故障才进入重试。
+
+## RabbitMQ Worker 与 Outbox
+
+入库、删除和冲突解决均通过 Transactional Outbox 调度。API 在同一 MySQL 事务中保存
+业务状态和 `outbox_events`，独立 Worker 再可靠发布到 RabbitMQ，因此 RabbitMQ 短暂不可用
+不会丢任务。RabbitMQ 管理页为 <http://localhost:18213>。
+
+```bash
+# Docker 会同时启动 API 和 Worker
+docker compose up -d --build
+
+# 查看 Worker 与 RabbitMQ 状态
+docker compose logs -f rag-worker
+docker compose ps rabbitmq rag-worker
+```
+
+队列包括 `rag.ingest`、`rag.cleanup`、`rag.resolve` 和 `rag.dead`，失败命令按
+10 秒、60 秒、300 秒退避。`RAG_WORKER_EAGER=true` 仅供自动化测试使用，生产环境禁止开启。
+已有数据库无需清空 volume：API/Worker 启动时会幂等创建新增的 `outbox_events` 表。
 
 ## Embedding
 
@@ -81,6 +122,7 @@ uv sync --extra local-embedding
 `pseudo` provider 与本地 `Qwen/Qwen3-Embedding-0.6B` 均按 `1024` 维配置；
 `.env.example` 默认选择该本地模型。生产环境也可按下文配置 OpenAI-compatible API。
 Qdrant collection 会按该维度创建；更换模型或维度后需要重建 collection 并重新入库。
+远程 Embedding 默认每批 10 条，并会根据兼容 API 返回的 batch-size 上限自动缩小批次。
 
 本地 Hugging Face 下载：
 
@@ -121,6 +163,20 @@ RAG_EMBEDDING_DIM=1024
 RAG_EMBEDDING_PROVIDER=pseudo
 ```
 
+## Rerank
+
+默认关闭重排，避免轻量安装环境依赖未安装的本地 BGE 模型。使用百炼
+`qwen3-rerank` 时配置：
+
+```env
+RAG_RERANK_PROVIDER=api
+RAG_RERANK_MODEL=qwen3-rerank
+RAG_RERANK_BASE_URL=https://YOUR_WORKSPACE_ID.cn-beijing.maas.aliyuncs.com/compatible-api/v1
+RAG_RERANK_API_KEY=YOUR_BAILIAN_API_KEY
+```
+
+完整配置参见 [`docs/hybrid-search.md`](docs/hybrid-search.md)。
+
 ## 目录结构（概要）
 
 ```
@@ -130,9 +186,9 @@ app/
   core/indexing/ qdrant_indexer
   core/embedding/ client
   stores/       db, blob, document, chunk, job, qdrant
-  workers/      run_ingest_job
+  workers/      outbox publisher, RabbitMQ consumer, command handlers
 docker/
-  mysql-init.d/ 001_init.sql, 001_ingest.sql
+  mysql-init.d/ 001_ingest.sql, 002_outbox.sql
 frontend/       知识库 Web 控制台
 tests/
 ```
@@ -141,4 +197,4 @@ tests/
 
 - `GET /health/live` — 存活
 - `GET /health` — 依赖详情
-- `GET /health/ready` — ingest 模式下检查 mysql、qdrant、本地存储
+- `GET /health/ready` — 检查 MySQL、真实启用的 qdrant/opensearch，以及对象或本地存储；RabbitMQ 会报告但不阻止 API 接收 Outbox 任务

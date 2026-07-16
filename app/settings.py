@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -71,6 +70,7 @@ class Settings(BaseSettings):
     opensearch_use_ssl: bool = False
     opensearch_verify_certs: bool = False
     opensearch_index_prefix: str = "rag_"
+    opensearch_backfill_on_startup: bool = True
 
     # --- Redis（缓存 / 限流 / 任务心跳） ---
     redis_host: str = "localhost"
@@ -84,6 +84,19 @@ class Settings(BaseSettings):
     rabbitmq_user: str = "guest"
     rabbitmq_password: str = "guest"
     rabbitmq_vhost: str = "/"
+    rabbitmq_exchange: str = "rag.commands"
+    rabbitmq_dead_exchange: str = "rag.dead"
+    rabbitmq_prefetch_count: int = 1
+    rabbitmq_consumer_max_retries: int = 5
+    rabbitmq_retry_delays_ms: str = "10000,60000,300000"
+    worker_outbox_poll_seconds: float = 1.0
+    worker_outbox_batch_size: int = 50
+    worker_outbox_lease_seconds: int = 60
+    worker_job_lease_seconds: int = 120
+    worker_heartbeat_seconds: float = 30.0
+    worker_recovery_scan_seconds: float = 15.0
+    worker_indexing_stale_seconds: int = 300
+    worker_eager: bool = False
 
     # --- 对象存储（MVP 可选：默认本地文件后端，见 §3 / §5.1） ---
     minio_enabled: bool = False
@@ -99,7 +112,7 @@ class Settings(BaseSettings):
     embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
     embedding_dim: int = 1024
     embedding_device: str = "auto"
-    embedding_batch_size: int = 16
+    embedding_batch_size: int = 10
     embedding_normalize: bool = True
     embedding_query_instruction: str = (
         "Given a cybersecurity search query, retrieve relevant passages that answer the query"
@@ -115,8 +128,28 @@ class Settings(BaseSettings):
     embedding_api_timeout_seconds: float = 60.0
 
     # --- Rerank ---
-    rerank_provider: str = "bge"  # bge | jina | cohere | none，重排提供方
+    rerank_provider: str = "none"  # none | local | api，重排提供方
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_top_k: int = 10  # rerank 前传入的候选数量
+    rerank_device: str = "auto"
+    rerank_batch_size: int = 16
+    rerank_normalize: bool = True
+    rerank_query_max_length: int = 512
+    rerank_passage_max_length: int = 8192
+    rerank_base_url: str | None = None
+    rerank_api_key: str | None = None
+    rerank_api_timeout_seconds: float = 60.0
+    rerank_instruction: str | None = None
+
+    # --- 混合检索 ---
+    search_top_k: int = 10  # 最终返回的结果数量
+    search_vector_top_k: int = 30  # 向量检索引擎初始召回数量
+    search_keyword_top_k: int = 30  # 关键词检索引擎初始召回数量
+    search_fusion_method: str = "rrf"  # rrf | weighted_score，融合策略
+    search_rrf_k: int = 60  # RRF 融合常数，越小则排名靠前的权重越高
+    search_vector_weight: float = 0.6  # weighted_score 模式下向量检索权重
+    search_keyword_weight: float = 0.4  # weighted_score 模式下关键词检索权重
+    search_opensearch_mock: bool = True  # True 时使用内存模拟 BM25（PseudoKeywordRetriever），无需真实 OpenSearch
 
     # --- 健康检查 ---
     health_check_timeout_seconds: float = 3.0
@@ -152,6 +185,16 @@ class Settings(BaseSettings):
             f"amqp://{self.rabbitmq_user}:{self.rabbitmq_password}"
             f"@{self.rabbitmq_host}:{self.rabbitmq_port}{self.rabbitmq_vhost}"
         )
+
+    @property
+    def rabbitmq_retry_delays(self) -> tuple[int, ...]:
+        """解析消费者重试队列使用的毫秒级退避时间。"""
+        values = tuple(
+            int(value.strip())
+            for value in self.rabbitmq_retry_delays_ms.split(",")
+            if value.strip()
+        )
+        return values or (30_000,)
 
 
 @lru_cache

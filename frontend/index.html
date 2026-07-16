@@ -17,6 +17,7 @@
 
       <nav class="nav" aria-label="主导航">
         <button class="nav-item active" data-view="workspace"><span>⌂</span>工作台</button>
+        <button class="nav-item" data-view="search"><span>⌕</span>知识检索</button>
         <button class="nav-item" data-view="documents"><span>▤</span>文档检查器</button>
         <button class="nav-item" data-view="system"><span>◉</span>系统状态</button>
       </nav>
@@ -79,6 +80,56 @@
         </article>
       </section>
 
+      <section class="view" id="view-search">
+        <article class="panel search-panel">
+          <div class="panel-header search-heading">
+            <div><p class="kicker">HYBRID RETRIEVAL</p><h2>检索知识库</h2></div>
+            <span class="format-tag">VECTOR + BM25</span>
+          </div>
+          <p class="search-intro">同时使用语义向量和关键词召回，并通过融合与重排获得更相关的知识片段。</p>
+
+          <form id="search-form" class="search-form">
+            <label class="search-query" for="search-query">
+              <span>检索问题</span>
+              <div>
+                <input id="search-query" type="search" required autocomplete="off" placeholder="例如：如何防御 SQL 注入攻击？">
+                <button class="primary-button" id="search-button" type="submit">开始检索 <b>→</b></button>
+              </div>
+            </label>
+
+            <div class="search-primary-options">
+              <label><span>返回数量</span><input id="search-top-k" type="number" min="1" max="100" value="10"></label>
+              <label><span>融合策略</span><select id="search-fusion"><option value="rrf">RRF 排名融合</option><option value="weighted_score">加权分数融合</option></select></label>
+              <div class="search-switches" role="group" aria-label="检索引擎">
+                <label><input id="search-vector" type="checkbox" checked><span>向量检索</span></label>
+                <label><input id="search-keyword" type="checkbox" checked><span>关键词检索</span></label>
+                <label><input id="search-rerank" type="checkbox" checked><span>结果重排</span></label>
+              </div>
+            </div>
+
+            <details class="search-advanced">
+              <summary>高级参数</summary>
+              <div class="search-advanced-grid">
+                <label><span>向量召回上限</span><input id="search-vector-top-k" type="number" min="1" max="200" placeholder="使用服务默认值"></label>
+                <label><span>关键词召回上限</span><input id="search-keyword-top-k" type="number" min="1" max="200" placeholder="使用服务默认值"></label>
+                <label><span>向量权重</span><input id="search-vector-weight" type="number" min="0" max="1" step="0.05" value="0.7" disabled></label>
+                <label><span>关键词权重</span><input id="search-keyword-weight" type="number" min="0" max="1" step="0.05" value="0.3" disabled></label>
+                <label class="search-source-filter"><span>限定来源 URI</span><input id="search-source-uri" autocomplete="off" placeholder="可选，例如 upload://security-guide.pdf"></label>
+              </div>
+            </details>
+          </form>
+        </article>
+
+        <article class="panel search-output-panel">
+          <div class="search-results-header">
+            <div><p class="kicker">RETRIEVAL RESULTS</p><h2>检索结果</h2></div>
+            <div class="search-summary" id="search-summary" hidden></div>
+          </div>
+          <div id="search-results" class="search-results"></div>
+          <div id="search-empty" class="empty-state"><span>⌕</span><h3>输入问题开始检索</h3><p>结果会显示相关片段、来源文档与各阶段得分。</p></div>
+        </article>
+      </section>
+
       <section class="view" id="view-documents">
         <article class="panel library-panel">
           <div class="panel-header">
@@ -92,6 +143,8 @@
               <option value="ready">已发布</option>
               <option value="staging">处理中</option>
               <option value="failed">失败</option>
+              <option value="deleting">删除中</option>
+              <option value="superseeding">替换清理中</option>
               <option value="superseded">已替换</option>
             </select>
             <button class="primary-button" type="submit">搜索</button>

@@ -39,12 +39,14 @@ def _ingest_required() -> tuple[str, ...]:
         required.append("local_storage")
     if not s.qdrant_mock:
         required.append("qdrant")
+    if not s.search_opensearch_mock:
+        required.append("opensearch")
     return tuple(required)
 
 
 def _ingest_reported() -> tuple[str, ...]:
-    """列出入库模式会报告的依赖，包括可选的 Qdrant 状态。"""
-    return _ingest_required() + ("qdrant",)
+    """列出入库模式会报告的依赖，包括可选的检索后端状态。"""
+    return tuple(dict.fromkeys((*_ingest_required(), "qdrant", "opensearch", "rabbitmq")))
 
 
 @router.get("/health/live", summary="存活探针")

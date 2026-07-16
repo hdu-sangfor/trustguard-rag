@@ -1,26 +1,34 @@
 const $ = (selector) => document.querySelector(selector);
 const state = { file: null, jobs: JSON.parse(localStorage.getItem("tg-jobs") || "[]"), timers: new Map(), documents: [], documentOffset: 0, documentLimit: 10, documentTotal: 0 };
-const terminal = new Set(["succeeded", "failed", "deduplicated", "discarded", "conflict"]);
-const deletableDocumentStatuses = new Set(["ready", "failed", "superseded"]);
-const statusLabel = { queued:"排队中", running:"处理中", succeeded:"已完成", failed:"失败", deduplicated:"已去重", conflict:"待处理", discarded:"已丢弃" };
-const stepLabel = { validate:"文件校验", extract:"解析文本", dedup:"内容去重", conflict_check:"冲突检查", commit_artifacts:"保存产物", chunk:"文本分块", embed:"生成向量", index:"写入索引", publish:"发布文档" };
+const JobStatus = Object.freeze({ QUEUED:"queued", RUNNING:"running", CONFLICT:"conflict", RESOLVING:"resolving", INGEST_RETRYING:"ingest_retrying", RESOLVE_RETRYING:"resolve_retrying", SUCCEEDED:"succeeded", DEDUPLICATED:"deduplicated", FAILED:"failed", CANCELLED:"cancelled", DISCARDED:"discarded" });
+const DocumentStatus = Object.freeze({ STAGING:"staging", INDEXING:"indexing", READY:"ready", FAILED:"failed", DELETING:"deleting", SUPERSEDED:"superseded" });
+const IngestStep = Object.freeze({ QUEUED:"queued", RECOVER:"recover", VALIDATE:"validate", EXTRACT:"extract", DEDUP:"dedup", CONFLICT_CHECK:"conflict_check", COMMIT_ARTIFACTS:"commit_artifacts", CHUNK:"chunk", EMBED:"embed", INDEX:"index", OPENSEARCH_INDEX:"opensearch_index", PUBLISH:"publish", RETRY_WAIT:"retry_wait", RESOLVE:"resolve", RESOLVE_SUPERSEDE:"resolve_supersede", SUPERSEDE_CLEANUP:"supersede_cleanup", RESOLVE_PUBLISH:"resolve_publish", RESOLVE_DISCARD:"resolve_discard", CANCELLED:"cancelled", FAILED:"failed" });
+const terminal = new Set([JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.DEDUPLICATED, JobStatus.DISCARDED, JobStatus.CONFLICT]);
+const retrying = new Set([JobStatus.INGEST_RETRYING, JobStatus.RESOLVE_RETRYING]);
+const successful = new Set([JobStatus.SUCCEEDED, JobStatus.DEDUPLICATED]);
+const deletableDocumentStatuses = new Set([DocumentStatus.STAGING, DocumentStatus.INDEXING, DocumentStatus.READY, DocumentStatus.FAILED, DocumentStatus.DELETING, DocumentStatus.SUPERSEDED]);
+const statusLabel = { [JobStatus.QUEUED]:"排队中", [JobStatus.RUNNING]:"处理中", [JobStatus.RESOLVING]:"等待冲突处理", [JobStatus.INGEST_RETRYING]:"等待入库重试", [JobStatus.RESOLVE_RETRYING]:"等待冲突重试", [JobStatus.SUCCEEDED]:"已完成", [JobStatus.FAILED]:"失败", [JobStatus.CANCELLED]:"已取消", [JobStatus.DEDUPLICATED]:"已去重", [JobStatus.CONFLICT]:"待处理", [JobStatus.DISCARDED]:"已丢弃" };
+const stepLabel = { [IngestStep.QUEUED]:"等待处理", [IngestStep.RECOVER]:"恢复任务", [IngestStep.VALIDATE]:"文件校验", [IngestStep.EXTRACT]:"解析文本", [IngestStep.DEDUP]:"内容去重", [IngestStep.CONFLICT_CHECK]:"冲突检查", [IngestStep.COMMIT_ARTIFACTS]:"保存产物", [IngestStep.CHUNK]:"文本分块", [IngestStep.EMBED]:"生成向量", [IngestStep.INDEX]:"写入向量索引", [IngestStep.OPENSEARCH_INDEX]:"写入全文索引", [IngestStep.PUBLISH]:"发布文档", [IngestStep.RETRY_WAIT]:"等待重试", [IngestStep.RESOLVE]:"处理冲突", [IngestStep.RESOLVE_SUPERSEDE]:"清理旧版本", [IngestStep.SUPERSEDE_CLEANUP]:"等待旧版本清理", [IngestStep.RESOLVE_PUBLISH]:"发布冲突文档", [IngestStep.RESOLVE_DISCARD]:"丢弃冲突文档", [IngestStep.CANCELLED]:"已取消", [IngestStep.FAILED]:"失败" };
 
 function toast(message, error=false){ const el=document.createElement("div"); el.className=`toast${error?" error":""}`; el.textContent=message; $("#toasts").append(el); setTimeout(()=>el.remove(),4500); }
-async function api(path, options={}){ const response=await fetch(path,options); if(!response.ok){ let detail=`HTTP ${response.status}`; try{detail=(await response.json()).detail||detail}catch{} throw new Error(detail); } return response.status===204?null:response.json(); }
+async function api(path, options={}){ const response=await fetch(path,options); if(!response.ok){ let detail=`HTTP ${response.status}`; try{detail=(await response.json()).detail||detail}catch{} throw new Error(detail); } return response.status===204||response.headers.get("content-length")==="0"?null:response.json(); }
 function persist(){ localStorage.setItem("tg-jobs",JSON.stringify(state.jobs.slice(0,30))); }
 function formatTime(value){ if(!value)return "—"; return new Intl.DateTimeFormat("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).format(new Date(value)); }
 function escapeHtml(value=""){ const div=document.createElement("div"); div.textContent=value; return div.innerHTML; }
+function optionalNumber(selector){ const value=$(selector).value.trim(); return value===""?null:Number(value); }
+function formatScore(value){ return value==null?null:Number(value).toFixed(4).replace(/0+$/,"").replace(/\.$/,""); }
 
 function renderJobs(){
   const list=$("#jobs-list"), empty=$("#jobs-empty"); list.innerHTML=""; empty.hidden=state.jobs.length>0;
   state.jobs.forEach(job=>{
     const row=document.createElement("div"); row.className="job-row";
-    row.innerHTML=`<span class="job-icon">▧</span><div class="job-name"><strong>${escapeHtml(job.filename||"PDF 文档")}</strong><small>${escapeHtml(job.id)}</small></div><span class="step">${escapeHtml(stepLabel[job.current_step]||job.current_step||"等待处理")}</span><span class="status ${job.status}">${statusLabel[job.status]||job.status}</span><button class="job-action">${job.document_id?"查看":"刷新"}</button>`;
+    const attempts=job.max_attempts!=null?` · 尝试 ${job.attempt||0}/${job.max_attempts}`:"";
+    row.innerHTML=`<span class="job-icon">▧</span><div class="job-name"><strong>${escapeHtml(job.filename||"PDF 文档")}</strong><small>${escapeHtml(job.id)}${attempts}</small></div><span class="step">${escapeHtml(stepLabel[job.current_step]||job.current_step||"等待处理")}</span><span class="status ${job.status}">${statusLabel[job.status]||job.status}</span><button class="job-action">${job.document_id?"查看":"刷新"}</button>`;
     row.querySelector("button").onclick=()=>job.document_id?openDocument(job.document_id):refreshJob(job.id);
     list.append(row);
   });
   $("#metric-jobs").textContent=state.jobs.length;
-  $("#metric-success").textContent=state.jobs.filter(j=>["succeeded","deduplicated"].includes(j.status)).length;
+  $("#metric-success").textContent=state.jobs.filter(j=>successful.has(j.status)).length;
 }
 
 async function refreshHealth(){
@@ -43,9 +51,18 @@ async function upload(){
   }catch(error){toast(`上传失败：${error.message}`,true)}finally{button.disabled=!state.file; button.querySelector("span").textContent="开始解析入库";}
 }
 async function refreshJob(id){
-  try{ const data=await api(`/v1/ingest/jobs/${id}`); const old=state.jobs.find(j=>j.id===id)||{}; Object.assign(old,data,{filename:old.filename}); if(!state.jobs.includes(old))state.jobs.unshift(old); persist(); renderJobs(); if(data.status==="failed")toast(`${old.filename||"文档"}：${data.error_message||"入库失败"}`,true); return data; }catch(error){toast(`任务刷新失败：${error.message}`,true)}
+  try{ const data=await api(`/v1/ingest/jobs/${id}`); const old=state.jobs.find(j=>j.id===id)||{}; Object.assign(old,data,{filename:old.filename}); if(!state.jobs.includes(old))state.jobs.unshift(old); persist(); renderJobs(); if(data.status===JobStatus.FAILED)toast(`${old.filename||"文档"}：${data.error_message||"入库失败"}`,true); return data; }catch(error){toast(`任务刷新失败：${error.message}`,true)}
 }
-function pollJob(id){ if(state.timers.has(id))return; const tick=async()=>{const job=await refreshJob(id); if(!job||terminal.has(job.status)){clearInterval(state.timers.get(id));state.timers.delete(id);return;} }; tick(); state.timers.set(id,setInterval(tick,1800)); }
+function pollJob(id){
+  if(state.timers.has(id))return;
+  const tick=async()=>{
+    const job=await refreshJob(id);
+    if(!job||terminal.has(job.status)){state.timers.delete(id);return;}
+    const delay=retrying.has(job.status)?10000:1800;
+    state.timers.set(id,setTimeout(tick,delay));
+  };
+  state.timers.set(id,setTimeout(tick,0));
+}
 
 function renderDocuments(){
   const list=$("#documents-list"), empty=$("#documents-empty"); list.innerHTML=""; empty.hidden=state.documents.length>0;
@@ -78,6 +95,74 @@ async function loadDocuments(reset=false){
   catch(error){$("#documents-list").innerHTML="";toast(`文档列表加载失败：${error.message}`,true);}
 }
 
+function renderSearchResults(data){
+  const results=$("#search-results"), empty=$("#search-empty"), summary=$("#search-summary");
+  const degraded=Array.isArray(data.degraded_components)?data.degraded_components:[];
+  results.innerHTML="";
+  empty.hidden=data.results.length>0;
+  if(!data.results.length){empty.querySelector("h3").textContent="没有找到相关内容";empty.querySelector("p").textContent=degraded.length?`部分检索引擎不可用：${degraded.join("、")}。请稍后重试。`:"尝试更换关键词、增加召回数量或启用另一种检索方式。";}
+  summary.hidden=false;
+  summary.innerHTML=`<span><strong>${data.total}</strong> 条结果</span><span><strong>${Number(data.retrieval_time_ms).toFixed(1)}</strong> ms</span><span>${escapeHtml(data.fusion_method.toUpperCase())}</span><span>向量 ${data.components?.vector??0} · 关键词 ${data.components?.keyword??0}</span>${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}`;
+  data.results.forEach((item,index)=>{
+    const source=item.source||{};
+    const card=document.createElement("article");
+    card.className="search-result-card";
+    const scores=[
+      ["综合",item.score],
+      ["向量",item.vector_score],
+      ["关键词",item.keyword_score],
+      ["重排",item.rerank_score],
+    ].filter(([,value])=>value!=null);
+    card.innerHTML=`<div class="result-rank">${String(index+1).padStart(2,"0")}</div><div class="result-content"><div class="result-topline"><div class="result-source"><strong>${escapeHtml(source.original_filename||source.source_uri||"未知来源")}</strong><span>CHUNK ${(source.chunk_index??0)+1}${source.page_no!=null?` · PAGE ${source.page_no}`:""}</span></div><div class="score-list">${scores.map(([name,value])=>`<span>${name} <b>${formatScore(value)}</b></span>`).join("")}</div></div><p>${escapeHtml(item.text||"该结果没有可显示的文本内容。")}</p><div class="result-footer"><code>${escapeHtml(source.document_id||"")}</code>${source.document_id?'<button class="text-button result-document" type="button">查看原文 →</button>':""}</div></div>`;
+    const openButton=card.querySelector(".result-document");
+    if(openButton)openButton.onclick=()=>openDocument(source.document_id);
+    results.append(card);
+  });
+}
+
+async function runSearch(){
+  const query=$("#search-query").value.trim();
+  const enableVector=$("#search-vector").checked, enableKeyword=$("#search-keyword").checked;
+  if(!query)return;
+  if(!enableVector&&!enableKeyword){toast("请至少启用一种检索方式",true);return;}
+
+  const payload={
+    query,
+    top_k:optionalNumber("#search-top-k"),
+    vector_top_k:optionalNumber("#search-vector-top-k"),
+    keyword_top_k:optionalNumber("#search-keyword-top-k"),
+    fusion_method:$("#search-fusion").value,
+    enable_vector:enableVector,
+    enable_keyword:enableKeyword,
+    enable_rerank:$("#search-rerank").checked,
+  };
+  if(payload.fusion_method==="weighted_score"){
+    payload.vector_weight=optionalNumber("#search-vector-weight");
+    payload.keyword_weight=optionalNumber("#search-keyword-weight");
+    if((payload.vector_weight??0)+(payload.keyword_weight??0)===0){toast("向量权重和关键词权重不能同时为 0",true);return;}
+  }
+  const sourceUri=$("#search-source-uri").value.trim();
+  if(sourceUri)payload.filters={source_uri:sourceUri};
+
+  const button=$("#search-button"), results=$("#search-results"), empty=$("#search-empty"), summary=$("#search-summary");
+  button.disabled=true;button.firstChild.textContent="正在检索 ";
+  results.innerHTML='<div class="loading">正在执行向量召回、关键词召回与结果融合…</div>';
+  empty.hidden=true;summary.hidden=true;
+  try{
+    const data=await api("/v1/search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    renderSearchResults(data);
+  }catch(error){results.innerHTML="";empty.hidden=false;empty.querySelector("h3").textContent="检索失败";empty.querySelector("p").textContent="请检查检索服务状态后重试。";toast(`检索失败：${error.message}`,true);}
+  finally{button.disabled=false;button.firstChild.textContent="开始检索 ";}
+}
+
+function syncSearchOptions(){
+  const weighted=$("#search-fusion").value==="weighted_score";
+  $("#search-vector-weight").disabled=!weighted;
+  $("#search-keyword-weight").disabled=!weighted;
+  $("#search-vector-top-k").disabled=!$("#search-vector").checked;
+  $("#search-keyword-top-k").disabled=!$("#search-keyword").checked;
+}
+
 async function editDocument(doc){
   const title=window.prompt("文档标题",doc.title||doc.original_filename||"");
   if(title===null)return;
@@ -90,7 +175,7 @@ async function deleteDocument(doc){
   if(!deletableDocumentStatuses.has(doc.status)){toast("文档仍在处理中，暂时不能删除",true);return;}
   const name=doc.title||doc.original_filename||doc.id;
   if(!window.confirm(`确定删除“${name}”吗？\n分块、向量和产物文件也会被永久删除。`))return;
-  try{await api(`/v1/documents/${doc.id}`,{method:"DELETE"});toast("文档及关联数据已删除");state.jobs.forEach(job=>{if(job.document_id===doc.id)job.document_id=null;if(job.pending_document_id===doc.id)job.pending_document_id=null;if(Array.isArray(job.conflict_candidates))job.conflict_candidates=job.conflict_candidates.filter(id=>id!==doc.id)});persist();renderJobs();if($("#document-id").value===doc.id){$("#document-id").value="";$("#document-result").innerHTML="";}if(state.documentOffset>0&&state.documents.length===1)state.documentOffset=Math.max(0,state.documentOffset-state.documentLimit);await loadDocuments();}
+  try{await api(`/v1/documents/${doc.id}`,{method:"DELETE"});toast("删除任务已提交，后台正在清理关联数据");if($("#document-id").value===doc.id){$("#document-id").value="";$("#document-result").innerHTML="";}await loadDocuments();}
   catch(error){toast(`删除失败：${error.message}`,true);}
 }
 
@@ -102,7 +187,7 @@ async function openDocument(id){
   }catch(error){target.innerHTML="";toast(`文档查询失败：${error.message}`,true)}
 }
 
-function switchView(name){ document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===`view-${name}`)); document.querySelectorAll(".nav-item").forEach(v=>v.classList.toggle("active",v.dataset.view===name)); $("#page-title").textContent={workspace:"知识工作台",documents:"知识库管理",system:"系统状态"}[name]; if(name==="documents")loadDocuments(); }
+function switchView(name){ document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===`view-${name}`)); document.querySelectorAll(".nav-item").forEach(v=>v.classList.toggle("active",v.dataset.view===name)); $("#page-title").textContent={workspace:"知识工作台",search:"知识检索",documents:"知识库管理",system:"系统状态"}[name]; if(name==="documents")loadDocuments(); if(name==="search")setTimeout(()=>$("#search-query").focus(),0); }
 function chooseFile(file){ if(!file)return; if(file.type!=="application/pdf"&&!file.name.toLowerCase().endsWith(".pdf")){toast("请选择 PDF 文件",true);return;} if(file.size>50*1024*1024){toast("文件不能超过 50 MB",true);return;} state.file=file; const selected=$("#selected-file"); selected.hidden=false; selected.textContent=`${file.name} · ${(file.size/1024/1024).toFixed(2)} MB`; $("#upload-button").disabled=false; }
 
 document.querySelectorAll(".nav-item").forEach(button=>button.onclick=()=>switchView(button.dataset.view));
@@ -118,5 +203,9 @@ $("#documents-filter").onsubmit=e=>{e.preventDefault();loadDocuments(true)};
 $("#refresh-documents").onclick=()=>loadDocuments();
 $("#documents-prev").onclick=()=>{state.documentOffset=Math.max(0,state.documentOffset-state.documentLimit);loadDocuments()};
 $("#documents-next").onclick=()=>{state.documentOffset+=state.documentLimit;loadDocuments()};
+$("#search-form").onsubmit=e=>{e.preventDefault();runSearch()};
+$("#search-fusion").onchange=syncSearchOptions;
+$("#search-vector").onchange=syncSearchOptions;
+$("#search-keyword").onchange=syncSearchOptions;
 setInterval(()=>$("#clock").textContent=new Date().toLocaleString("zh-CN",{hour12:false}),1000);
-renderJobs(); refreshHealth(); state.jobs.filter(j=>!terminal.has(j.status)).forEach(j=>pollJob(j.id));
+syncSearchOptions(); renderJobs(); refreshHealth(); state.jobs.filter(j=>!terminal.has(j.status)).forEach(j=>pollJob(j.id));

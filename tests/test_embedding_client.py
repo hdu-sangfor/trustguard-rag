@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from app.core.embedding import client as embedding_module
@@ -83,6 +84,154 @@ async def test_api_embedding_provider_sends_openai_compatible_request(
     assert calls[0][1]["input"] == ["a", "b"]
     assert calls[0][2]["Authorization"] == "Bearer secret"
     assert calls[0][3] == 12.0
+
+
+@pytest.mark.asyncio
+async def test_api_embedding_batches_document_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    batch_sizes: list[int] = []
+
+    class _Response:
+        def __init__(self, size: int) -> None:
+            self._size = size
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {"index": index, "embedding": [float(index), 1.0]}
+                    for index in range(self._size)
+                ]
+            }
+
+    class _AsyncClient:
+        def __init__(self, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json, headers):
+            size = len(json["input"])
+            batch_sizes.append(size)
+            return _Response(size)
+
+    monkeypatch.setattr("app.core.embedding.client.httpx.AsyncClient", _AsyncClient)
+    settings = Settings(
+        embedding_provider="api",
+        embedding_base_url="http://embedding.local/v1",
+        embedding_dim=2,
+        embedding_batch_size=2,
+    )
+
+    vectors = await EmbeddingClient(settings).embed_texts(["a", "b", "c", "d", "e"])
+
+    assert batch_sizes == [2, 2, 1]
+    assert len(vectors) == 5
+
+
+@pytest.mark.asyncio
+async def test_api_embedding_adapts_to_provider_batch_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_sizes: list[int] = []
+
+    class _Response:
+        def __init__(self, size: int) -> None:
+            self._size = size
+            self.status_code = 400 if size > 2 else 200
+            self.text = "batch size is invalid, it should not be larger than 2"
+
+        def raise_for_status(self) -> None:
+            if self.status_code == 200:
+                return
+            request = httpx.Request("POST", "http://embedding.local/v1/embeddings")
+            response = httpx.Response(self.status_code, request=request)
+            raise httpx.HTTPStatusError("batch too large", request=request, response=response)
+
+        def json(self):
+            return {
+                "data": [
+                    {"index": index, "embedding": [float(index), 1.0]}
+                    for index in range(self._size)
+                ]
+            }
+
+    class _AsyncClient:
+        def __init__(self, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json, headers):
+            size = len(json["input"])
+            batch_sizes.append(size)
+            return _Response(size)
+
+    monkeypatch.setattr("app.core.embedding.client.httpx.AsyncClient", _AsyncClient)
+    settings = Settings(
+        embedding_provider="api",
+        embedding_base_url="http://embedding.local/v1",
+        embedding_dim=2,
+        embedding_batch_size=4,
+    )
+
+    vectors = await EmbeddingClient(settings).embed_texts(["a", "b", "c"])
+
+    assert batch_sizes == [3, 2, 1]
+    assert len(vectors) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status_code", "retryable"), [(400, False), (429, True), (503, True)])
+async def test_api_embedding_classifies_http_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+    retryable: bool,
+) -> None:
+    class _Response:
+        text = "provider error"
+
+        def __init__(self) -> None:
+            self.status_code = status_code
+
+        def raise_for_status(self) -> None:
+            request = httpx.Request("POST", "http://embedding.local/v1/embeddings")
+            response = httpx.Response(status_code, request=request)
+            raise httpx.HTTPStatusError("provider error", request=request, response=response)
+
+    class _AsyncClient:
+        def __init__(self, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json, headers):
+            return _Response()
+
+    monkeypatch.setattr("app.core.embedding.client.httpx.AsyncClient", _AsyncClient)
+    settings = Settings(
+        embedding_provider="api",
+        embedding_base_url="http://embedding.local/v1",
+        embedding_dim=2,
+    )
+
+    with pytest.raises(EmbeddingError) as exc_info:
+        await EmbeddingClient(settings).embed_texts(["a"])
+
+    assert exc_info.value.retryable is retryable
 
 
 @pytest.mark.asyncio
