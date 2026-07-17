@@ -1,10 +1,10 @@
-# syntax=docker/dockerfile:1.7
 ARG DOCKERHUB_REGISTRY=docker.io
 ARG UV_INDEX_URL
 ARG UV_EXTRA_INDEX_URL
 ARG UV_DEFAULT_INDEX
 ARG PIP_INDEX_URL
 ARG PIP_EXTRA_INDEX_URL
+ARG TRUSTGUARD_NETWORK_PROXY
 
 FROM ${DOCKERHUB_REGISTRY}/astral/uv:0.11.7 AS uv
 FROM ${DOCKERHUB_REGISTRY}/library/python:3.11-slim
@@ -13,6 +13,7 @@ ARG UV_EXTRA_INDEX_URL
 ARG UV_DEFAULT_INDEX
 ARG PIP_INDEX_URL
 ARG PIP_EXTRA_INDEX_URL
+ARG TRUSTGUARD_NETWORK_PROXY
 
 COPY --from=uv /uv /uvx /bin/
 
@@ -29,6 +30,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
+    if [ -n "${TRUSTGUARD_NETWORK_PROXY}" ]; then export HTTP_PROXY="${TRUSTGUARD_NETWORK_PROXY}" HTTPS_PROXY="${TRUSTGUARD_NETWORK_PROXY}"; fi; \
     if [ -n "${UV_DEFAULT_INDEX}" ]; then export UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX}"; fi; \
     if [ -n "${UV_INDEX_URL}" ]; then export UV_INDEX_URL="${UV_INDEX_URL}"; fi; \
     if [ -n "${UV_EXTRA_INDEX_URL}" ]; then export UV_EXTRA_INDEX_URL="${UV_EXTRA_INDEX_URL}"; fi; \

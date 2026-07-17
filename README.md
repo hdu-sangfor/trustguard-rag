@@ -10,6 +10,24 @@ docker compose up -d --build
 curl http://localhost:18200/health
 ```
 
+### 国内网络加速
+
+`.env.example` 参考 `trustguard-agent` 统一配置了 Docker Hub、PyPI/uv 和
+Hugging Face 国内镜像。执行 `docker compose build` 时，Compose 会把这些配置传给
+Dockerfile；运行时下载 tokenizer 或本地嵌入模型则使用 `HF_ENDPOINT`。
+
+```env
+DOCKERHUB_REGISTRY=docker.m.daocloud.io
+UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+HF_ENDPOINT=https://hf-mirror.com
+HF_HUB_DISABLE_XET=1
+```
+
+如果镜像不可用，可将相应变量留空，恢复 Docker Hub、PyPI 和 Hugging Face 官方源。
+需要走本机代理时可设置 `TRUSTGUARD_NETWORK_PROXY`；该代理只在镜像构建依赖安装阶段
+使用，不会污染容器运行时访问 MySQL、Qdrant、OpenSearch 等内部服务的网络。
+
 ## 本地开发（Linux）
 
 ```bash

@@ -9,7 +9,10 @@ x-optional-env-files: &optional-env-files
 x-build-args: &build-args
   DOCKERHUB_REGISTRY: ${DOCKERHUB_REGISTRY:-docker.io}
   TRUSTGUARD_NETWORK_PROXY: ${TRUSTGUARD_NETWORK_PROXY:-}
-  PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+  UV_INDEX_URL: ${UV_INDEX_URL:-}
+  UV_EXTRA_INDEX_URL: ${UV_EXTRA_INDEX_URL:-}
+  UV_DEFAULT_INDEX: ${UV_DEFAULT_INDEX:-}
+  PIP_INDEX_URL: ${PIP_INDEX_URL:-}
   PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
 
 x-build-extra-hosts: &build-extra-hosts
