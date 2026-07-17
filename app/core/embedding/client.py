@@ -3,18 +3,40 @@
 生产路径可使用本地 Qwen3-Embedding 或 OpenAI 兼容 API。
 测试和离线冒烟运行仍可使用确定性的伪向量。
 """
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import math
 import os
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from app.settings import Settings, get_settings
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class EmbeddingUsage:
+    """一次嵌入操作在远程提供方产生的准确调用级用量。"""
+
+    prompt_tokens: int
+    total_tokens: int
+    request_count: int
+
+
+@dataclass(frozen=True)
+class EmbeddingBatchResult:
+    """嵌入向量及其可选的远程 API 汇总用量。"""
+
+    vectors: list[list[float]]
+    usage: EmbeddingUsage | None = None
 
 
 class EmbeddingError(RuntimeError):
@@ -92,25 +114,34 @@ class EmbeddingClient:
 
     async def embed_query(self, text: str) -> list[float]:
         """按配置的查询指令嵌入单条查询文本。"""
-        return (await self._embed([text], is_query=True))[0]
+        return (await self._embed_with_usage([text], is_query=True)).vectors[0]
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """按输入顺序嵌入文档分块文本。"""
-        return await self._embed(texts, is_query=False)
+        return (await self.embed_texts_with_usage(texts)).vectors
 
-    async def _embed(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
+    async def embed_texts_with_usage(self, texts: list[str]) -> EmbeddingBatchResult:
+        """嵌入文档分块，并返回提供方给出的批次级准确用量。"""
+        return await self._embed_with_usage(texts, is_query=False)
+
+    async def _embed_with_usage(self, texts: list[str], *, is_query: bool) -> EmbeddingBatchResult:
         """根据提供方类型执行实际嵌入，并统一校验向量维度。"""
         if not texts:
-            return []
+            return EmbeddingBatchResult(vectors=[])
         if self._provider == "api":
-            vectors = await self._remote_embed(texts, is_query=is_query)
+            result = await self._remote_embed(texts, is_query=is_query)
         elif self._provider == "local":
-            vectors = await self._local_embed(texts, is_query=is_query)
+            result = EmbeddingBatchResult(vectors=await self._local_embed(texts, is_query=is_query))
         else:
-            vectors = [_pseudo_vector(t, self._settings.embedding_dim) for t in texts]
-        return _validate_vectors(vectors, self._settings.embedding_dim)
+            result = EmbeddingBatchResult(
+                vectors=[_pseudo_vector(t, self._settings.embedding_dim) for t in texts]
+            )
+        return EmbeddingBatchResult(
+            vectors=_validate_vectors(result.vectors, self._settings.embedding_dim),
+            usage=result.usage,
+        )
 
-    async def _remote_embed(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
+    async def _remote_embed(self, texts: list[str], *, is_query: bool) -> EmbeddingBatchResult:
         """调用兼容 OpenAI 协议的嵌入接口。"""
         if not self._settings.embedding_base_url:
             raise EmbeddingError("RAG_EMBEDDING_BASE_URL is required for API embeddings")
@@ -121,7 +152,13 @@ class EmbeddingClient:
         prepared = self._prepare_texts(texts, is_query=is_query)
         batch_size = max(1, self._settings.embedding_batch_size)
         vectors: list[list[float]] = []
-        async with httpx.AsyncClient(timeout=self._settings.embedding_api_timeout_seconds) as client:
+        prompt_tokens = 0
+        total_tokens = 0
+        usage_seen = False
+        request_count = 0
+        async with httpx.AsyncClient(
+            timeout=self._settings.embedding_api_timeout_seconds
+        ) as client:
             start = 0
             while start < len(prepared):
                 batch = prepared[start : start + batch_size]
@@ -153,7 +190,8 @@ class EmbeddingClient:
                         retryable=True,
                     ) from e
                 try:
-                    data = resp.json()["data"]
+                    body = resp.json()
+                    data = body["data"]
                     batch_vectors = [
                         item["embedding"] for item in sorted(data, key=lambda x: x["index"])
                     ]
@@ -164,8 +202,37 @@ class EmbeddingClient:
                         "Embedding API returned a different number of vectors than inputs"
                     )
                 vectors.extend(batch_vectors)
+                request_count += 1
+                usage = body.get("usage")
+                if isinstance(usage, dict):
+                    batch_prompt_tokens = usage.get("prompt_tokens")
+                    batch_total_tokens = usage.get("total_tokens")
+                    if isinstance(batch_prompt_tokens, int) and batch_prompt_tokens >= 0:
+                        prompt_tokens += batch_prompt_tokens
+                        usage_seen = True
+                    if isinstance(batch_total_tokens, int) and batch_total_tokens >= 0:
+                        total_tokens += batch_total_tokens
+                        usage_seen = True
                 start += len(batch)
-        return vectors
+        aggregate_usage = (
+            EmbeddingUsage(
+                prompt_tokens=prompt_tokens,
+                total_tokens=total_tokens,
+                request_count=request_count,
+            )
+            if usage_seen
+            else None
+        )
+        if aggregate_usage is not None:
+            logger.info(
+                "嵌入 API 用量：model=%s inputs=%d requests=%d prompt_tokens=%d total_tokens=%d",
+                self._settings.embedding_model,
+                len(texts),
+                aggregate_usage.request_count,
+                aggregate_usage.prompt_tokens,
+                aggregate_usage.total_tokens,
+            )
+        return EmbeddingBatchResult(vectors=vectors, usage=aggregate_usage)
 
     async def _local_embed(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
         """在线程池中调用本地 Sentence Transformers 模型。"""

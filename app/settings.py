@@ -2,6 +2,7 @@
 
 见 doc/rag-platform-implementation-plan.md §5（基础设施选型）。
 """
+
 from __future__ import annotations
 
 import os
@@ -47,7 +48,9 @@ class Settings(BaseSettings):
     ingest_max_pdf_bytes: int = 52_428_800
     ingest_max_pdf_pages: int = 500
     conflict_ttl_hours: int = 168
-    chunk_target_tokens: int = 512
+    chunk_tokenizer_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    chunk_target_tokens: int = 384
+    chunk_overlap_tokens: int = 64
 
     # --- MySQL（元数据 / 文档 / 分块 / 任务） ---
     mysql_host: str = "localhost"
@@ -157,7 +160,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def reject_mock_retrieval_in_production(self) -> Settings:
-        """生产环境必须使用真实召回后端，避免把模拟空结果当成正常结果。"""
+        """校验生产检索后端和分块窗口配置。"""
+        if self.chunk_target_tokens <= 0:
+            raise ValueError("RAG_CHUNK_TARGET_TOKENS 必须大于 0")
+        if not 0 <= self.chunk_overlap_tokens < self.chunk_target_tokens:
+            raise ValueError(
+                "RAG_CHUNK_OVERLAP_TOKENS 必须大于等于 0，"
+                "并且小于 RAG_CHUNK_TARGET_TOKENS"
+            )
         if self.app_env.strip().lower() != "prod":
             return self
         enabled_mocks: list[str] = []
@@ -167,8 +177,7 @@ class Settings(BaseSettings):
             enabled_mocks.append("RAG_SEARCH_OPENSEARCH_MOCK")
         if enabled_mocks:
             raise ValueError(
-                "Production cannot enable mock retrieval backends: "
-                + ", ".join(enabled_mocks)
+                "Production cannot enable mock retrieval backends: " + ", ".join(enabled_mocks)
             )
         return self
 

@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
 from app.settings import Settings, get_settings
+
+logger = logging.getLogger(__name__)
+
 
 class RerankError(RuntimeError):
     """重排序提供方无法返回有效结果。"""
@@ -23,6 +28,27 @@ def normalize_rerank_provider(provider: str) -> str:
     if value in {"none", "disabled", "off"}:
         return "none"
     raise RerankError(f"Unsupported rerank provider: {provider}")
+
+
+def build_rerank_url(base_url: str) -> str:
+    """构建重排序端点，并纠正误用的百炼嵌入兼容路径。"""
+    normalized = base_url.rstrip("/")
+    parsed = urlsplit(normalized)
+    wrong_suffix = "/compatible-mode/v1"
+    if (
+        parsed.hostname
+        and parsed.hostname.endswith(".maas.aliyuncs.com")
+        and parsed.path.rstrip("/").endswith(wrong_suffix)
+    ):
+        corrected_path = parsed.path.rstrip("/")[: -len(wrong_suffix)] + "/compatible-api/v1"
+        normalized = urlunsplit(
+            (parsed.scheme, parsed.netloc, corrected_path, parsed.query, parsed.fragment)
+        )
+        logger.warning(
+            "检测到百炼 Embedding 兼容地址，已自动改用 Rerank 地址：%s",
+            corrected_path,
+        )
+    return f"{normalized}/reranks"
 
 
 class Reranker:
@@ -110,7 +136,7 @@ class Reranker:
         if self._settings.rerank_instruction:
             payload["instruct"] = self._settings.rerank_instruction
 
-        url = f"{base_url.rstrip('/')}/reranks"
+        url = build_rerank_url(base_url)
         headers = {"Authorization": f"Bearer {api_key}"}
         async with httpx.AsyncClient(
             timeout=self._settings.rerank_api_timeout_seconds

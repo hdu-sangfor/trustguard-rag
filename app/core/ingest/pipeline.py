@@ -9,10 +9,11 @@ from uuid import NAMESPACE_URL, uuid5
 from app.core.embedding.client import EmbeddingClient, EmbeddingError, normalize_embedding_provider
 from app.core.indexing.opensearch_indexer import OpenSearchIndexer, get_opensearch_indexer
 from app.core.indexing.qdrant_indexer import get_qdrant_indexer
-from app.core.ingest.chunker import chunk_extracted_text
+from app.core.ingest.chunker import ChunkingError, chunk_extracted_text
 from app.core.ingest.compensator import Compensator
 from app.core.ingest.errors import (
     ARTIFACT_WRITE_FAILED,
+    CHUNKING_FAILED,
     EMBEDDING_FAILED,
     EMPTY_CONTENT,
     FILE_TOO_LARGE,
@@ -227,7 +228,10 @@ class IngestPipeline:
             await self._jobs.mark_running(
                 job_id, IngestStep.CHUNK, lease_token=lease_token
             )
-            drafts = chunk_extracted_text(extracted.text)
+            try:
+                drafts = chunk_extracted_text(extracted.text)
+            except ChunkingError as e:
+                raise IngestError(CHUNKING_FAILED, str(e)) from e
             if not drafts:
                 raise IngestError(EMPTY_CONTENT, "No chunks produced")
 
@@ -506,7 +510,10 @@ class IngestPipeline:
             await self._documents.update_status(
                 document_id, DocumentStatus.INDEXING, blob_path=blob_path
             )
-            drafts = chunk_extracted_text(extracted.text)
+            try:
+                drafts = chunk_extracted_text(extracted.text)
+            except ChunkingError as e:
+                raise IngestError(CHUNKING_FAILED, str(e)) from e
             vectors = await self._embedder.embed_texts([d.text for d in drafts])
             settings = get_settings()
             embedding_metadata = _embedding_metadata(settings)

@@ -10,9 +10,24 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.main import create_app
+from app.core.ingest import chunker as chunker_module
 from app.settings import get_settings
 from app.stores import db
 from app.stores.models import Base
+
+
+class _TestTokenCounter:
+    """测试环境的离线计数器，避免单元测试访问模型仓库。"""
+
+    def count(self, text: str) -> int:
+        return max(1, len(text) // 4) if text else 0
+
+
+@pytest.fixture(autouse=True)
+def offline_chunk_tokenizer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """为非 tokenizer 集成测试注入确定性离线计数器。"""
+    counter = _TestTokenCounter()
+    monkeypatch.setattr(chunker_module, "get_token_counter", lambda settings=None: counter)
 
 
 @pytest.fixture
