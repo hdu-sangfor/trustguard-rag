@@ -14,8 +14,20 @@ class BlobStore:
     def __init__(self, root: Path | None = None) -> None:
         """初始化本地 blob 根目录和暂存目录。"""
         s = get_settings()
-        self._root = root or Path(s.local_storage_dir)
-        self._staging = Path(s.staging_dir)
+        self._root = (root or Path(s.local_storage_dir)).resolve()
+        self._staging = Path(s.staging_dir).resolve()
+
+    def _resolved_under_root(self, relative_path: str) -> Path:
+        """将相对路径解析到 blob 根下，拒绝越界。"""
+        rel = relative_path.replace("\\", "/").lstrip("/")
+        if not rel or ".." in Path(rel).parts:
+            raise ValueError(f"invalid blob path: {relative_path}")
+        target = (self._root / rel).resolve()
+        try:
+            target.relative_to(self._root)
+        except ValueError as e:
+            raise ValueError(f"blob path escapes storage root: {relative_path}") from e
+        return target
 
     @property
     def root(self) -> Path:
@@ -97,22 +109,46 @@ class BlobStore:
 
     def read(self, relative_path: str) -> bytes:
         """按相对 blob 根目录的路径读取已提交 artifact 字节。"""
-        return (self._root / relative_path).read_bytes()
+        return self._resolved_under_root(relative_path).read_bytes()
 
     def read_text(self, relative_path: str) -> str:
         """读取已提交的 UTF-8 文本 artifact。"""
-        return (self._root / relative_path).read_text(encoding="utf-8")
+        return self._resolved_under_root(relative_path).read_text(encoding="utf-8")
 
     def exists(self, relative_path: str) -> bool:
         """返回已提交 artifact 路径是否存在。"""
-        return (self._root / relative_path).exists()
+        try:
+            return self._resolved_under_root(relative_path).exists()
+        except ValueError:
+            return False
 
     def list_artifacts(self, document_id: str, version: int = 1) -> list[str]:
-        """列出已提交文档 artifact 包中的文件名。"""
+        """列出已提交文档 artifact 包中的文件名（含子目录相对路径）。"""
         bundle = self.artifact_dir(document_id, version)
         if not bundle.exists():
             return []
-        return [p.name for p in bundle.iterdir() if p.is_file()]
+        names: list[str] = []
+        for p in bundle.rglob("*"):
+            if p.is_file():
+                names.append(str(p.relative_to(bundle)).replace("\\", "/"))
+        return names
+
+    def write_artifact_file(
+        self,
+        document_id: str,
+        *,
+        version: int = 1,
+        relative_name: str,
+        data: bytes,
+    ) -> str:
+        """向已提交 artifact 目录写入附加文件（如 OCR crop），返回相对根目录路径。"""
+        safe = relative_name.replace("\\", "/").lstrip("/")
+        if ".." in safe.split("/"):
+            raise ValueError("invalid artifact relative path")
+        path = self.artifact_dir(document_id, version) / safe
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return str(path.relative_to(self._root)).replace("\\", "/")
 
 
 def get_blob_store() -> BlobStore:

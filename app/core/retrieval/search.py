@@ -166,30 +166,46 @@ def _rrf_fusion(
     return sorted_items
 
 
+def _minmax_normalize(scores: list[float]) -> list[float]:
+    """将一侧引擎分数缩放到 [0, 1]；全相等时置为 1，避免除零。"""
+    if not scores:
+        return []
+    lo = min(scores)
+    hi = max(scores)
+    if hi <= lo:
+        return [1.0 for _ in scores]
+    span = hi - lo
+    return [(s - lo) / span for s in scores]
+
+
 def _weighted_score_fusion(
     vector_results: list[dict[str, Any]],
     keyword_results: list[dict[str, Any]],
     vector_weight: float,
     keyword_weight: float,
 ) -> list[dict[str, Any]]:
+    """先对两侧原始分做 min-max，再按权重相加，避免 BM25 量级压倒余弦分。"""
     merged: dict[str, dict[str, Any]] = {}
 
-    for item in vector_results:
+    vector_norms = _minmax_normalize([float(item.get("score", 0) or 0) for item in vector_results])
+    keyword_norms = _minmax_normalize([float(item.get("score", 0) or 0) for item in keyword_results])
+
+    for item, norm in zip(vector_results, vector_norms):
         cid = item.get("chunk_id") or ""
         merged[cid] = {**item, "vector_score": item.get("score", 0), "keyword_score": None}
-        merged[cid]["weighted_score"] = (item.get("score", 0) or 0) * vector_weight
+        merged[cid]["weighted_score"] = norm * vector_weight
         merged[cid]["score"] = merged[cid]["weighted_score"]
 
-    for item in keyword_results:
+    for item, norm in zip(keyword_results, keyword_norms):
         cid = item.get("chunk_id") or ""
         ks = item.get("score", 0) or 0
         if cid in merged:
             merged[cid]["keyword_score"] = ks
-            merged[cid]["weighted_score"] = merged[cid].get("weighted_score", 0) + ks * keyword_weight
+            merged[cid]["weighted_score"] = merged[cid].get("weighted_score", 0) + norm * keyword_weight
             merged[cid]["score"] = merged[cid]["weighted_score"]
         else:
             merged[cid] = {**item, "vector_score": None, "keyword_score": ks}
-            merged[cid]["weighted_score"] = ks * keyword_weight
+            merged[cid]["weighted_score"] = norm * keyword_weight
             merged[cid]["score"] = merged[cid]["weighted_score"]
 
     return sorted(merged.values(), key=lambda x: x.get("score", 0), reverse=True)

@@ -11,6 +11,7 @@ from app.domain.ingest import (
     IngestStep,
     PipelineResult,
 )
+from app.domain.ocr import OcrRegionStatus
 from app.domain.worker import ClaimOutcome, CleanupAction, OutboxStatus
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "DocumentStatus",
     "IngestJobStatus",
     "IngestStep",
+    "OcrRegionStatus",
     "OutboxStatus",
     "PipelineResult",
 ]

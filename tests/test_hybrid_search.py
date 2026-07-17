@@ -311,6 +311,57 @@ class TestWeightedScoreFusion:
 
         assert weighted[0]["chunk_id"] != vector_leaning[0]["chunk_id"]
 
+    def test_scale_mismatch_respects_vector_weight(self) -> None:
+        """余弦分与 BM25 量级差很大时，归一化后向量权重应生效。"""
+        vector_results = [
+            {"chunk_id": "semantic-best", "text": "sem", "score": 0.92},
+            {"chunk_id": "both", "text": "both", "score": 0.80},
+        ]
+        keyword_results = [
+            {"chunk_id": "bm25-best", "text": "kw", "score": 18.5},
+            {"chunk_id": "both", "text": "both", "score": 12.0},
+        ]
+        merged = _weighted_score_fusion(
+            vector_results, keyword_results, vector_weight=0.6, keyword_weight=0.4
+        )
+        ranking = [item["chunk_id"] for item in merged]
+        assert ranking.index("semantic-best") < ranking.index("bm25-best")
+        # 原始分仍保留
+        by_id = {item["chunk_id"]: item for item in merged}
+        assert by_id["semantic-best"]["vector_score"] == 0.92
+        assert by_id["bm25-best"]["keyword_score"] == 18.5
+
+
+class TestFakeScoreStability:
+    def test_fake_score_deterministic_across_calls(self) -> None:
+        from app.core.retrieval.keyword_retriever import _fake_score_from_text
+
+        a = _fake_score_from_text("SQL injection defense", "SQL injection")
+        b = _fake_score_from_text("SQL injection defense", "SQL injection")
+        assert a == b
+        assert a > 0
+
+    def test_fake_score_stable_across_pythonhashseed(self) -> None:
+        """子进程分别以不同 PYTHONHASHSEED 运行，分数应一致。"""
+        import os
+        import subprocess
+        import sys
+
+        code = (
+            "from app.core.retrieval.keyword_retriever import _fake_score_from_text; "
+            "print(_fake_score_from_text('SQL injection defense', 'SQL injection'))"
+        )
+        scores = []
+        for seed in ("0", "1", "42", "random"):
+            env = os.environ.copy()
+            env["PYTHONHASHSEED"] = seed
+            env["PYTHONPATH"] = str(
+                __import__("pathlib").Path(__file__).resolve().parents[1]
+            )
+            out = subprocess.check_output([sys.executable, "-c", code], env=env, text=True)
+            scores.append(out.strip())
+        assert len(set(scores)) == 1
+
 
 class TestMergeResults:
     def test_rrf_method(self, sample_vector_results, sample_keyword_results) -> None:

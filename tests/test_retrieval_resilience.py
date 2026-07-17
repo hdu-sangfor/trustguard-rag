@@ -81,7 +81,7 @@ async def test_vector_retriever_hydrates_text_missing_from_old_payload(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_keyword_retriever_recreates_and_backfills_missing_index(monkeypatch) -> None:
+async def test_keyword_retriever_recreates_missing_index_without_backfill(monkeypatch) -> None:
     indices = SimpleNamespace(
         exists=AsyncMock(return_value=False),
         create=AsyncMock(return_value={"acknowledged": True}),
@@ -102,7 +102,7 @@ async def test_keyword_retriever_recreates_and_backfills_missing_index(monkeypat
     assert await retriever.retrieve("查询", top_k=5) == []
 
     indices.create.assert_awaited_once()
-    backfill.assert_awaited_once_with(retriever=retriever, ensure_index=False)
+    backfill.assert_not_awaited()
     client.search.assert_awaited_once()
     get_settings.cache_clear()
 

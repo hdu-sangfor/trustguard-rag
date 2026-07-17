@@ -188,7 +188,19 @@ async function openDocument(id){
 }
 
 function switchView(name){ document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===`view-${name}`)); document.querySelectorAll(".nav-item").forEach(v=>v.classList.toggle("active",v.dataset.view===name)); $("#page-title").textContent={workspace:"知识工作台",search:"知识检索",documents:"知识库管理",system:"系统状态"}[name]; if(name==="documents")loadDocuments(); if(name==="search")setTimeout(()=>$("#search-query").focus(),0); }
-function chooseFile(file){ if(!file)return; if(file.type!=="application/pdf"&&!file.name.toLowerCase().endsWith(".pdf")){toast("请选择 PDF 文件",true);return;} if(file.size>50*1024*1024){toast("文件不能超过 50 MB",true);return;} state.file=file; const selected=$("#selected-file"); selected.hidden=false; selected.textContent=`${file.name} · ${(file.size/1024/1024).toFixed(2)} MB`; $("#upload-button").disabled=false; }
+function chooseFile(file){
+  if(!file)return;
+  const name=file.name.toLowerCase();
+  const okExt=/\.(pdf|txt|log|text|md|markdown|csv|json|html?|png|jpe?g|webp|gif|bmp|tiff?)$/i.test(name);
+  const okMime=/^(application\/pdf|text\/|image\/|application\/json)/.test(file.type||"");
+  if(!okExt && !okMime){toast("不支持的文件类型",true);return;}
+  if(file.size>50*1024*1024){toast("文件不能超过 50 MB",true);return;}
+  state.file=file;
+  const selected=$("#selected-file");
+  selected.hidden=false;
+  selected.textContent=`${file.name} · ${(file.size/1024/1024).toFixed(2)} MB`;
+  $("#upload-button").disabled=false;
+}
 
 document.querySelectorAll(".nav-item").forEach(button=>button.onclick=()=>switchView(button.dataset.view));
 $("#dropzone").onclick=()=>$("#file-input").click(); $("#dropzone").onkeydown=e=>{if(["Enter"," "].includes(e.key))$("#file-input").click()};

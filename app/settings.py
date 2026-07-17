@@ -44,9 +44,36 @@ class Settings(BaseSettings):
 
     # --- Ingest ---
     ingest_max_pdf_bytes: int = 52_428_800
+    ingest_max_file_bytes: int = 52_428_800
     ingest_max_pdf_pages: int = 500
     conflict_ttl_hours: int = 168
     chunk_target_tokens: int = 512
+    ingest_json_max_chars: int = 200_000
+
+    # --- OCR ---
+    ocr_provider: str = "none"  # none | local | api
+    ocr_api_driver: str = "openai_compatible"  # bailian | openai_compatible | custom
+    ocr_lang: str = "ch"
+    ocr_fail_open: bool = True
+    ocr_render_dpi: int = 144
+    ocr_min_image_side_px: int = 32
+    ocr_max_regions_per_page: int = 32
+    ocr_max_regions_per_document: int = 200
+    ocr_max_crop_pixels: int = 4_000_000
+    ocr_max_crop_bytes: int = 8_000_000
+    ocr_api_base_url: str | None = None
+    ocr_api_key: str | None = None
+    ocr_api_model: str = "qwen-vl-ocr"
+    ocr_api_timeout_seconds: float = 60.0
+    ocr_api_prompt: str | None = None
+    ocr_custom_base_url: str | None = None
+    ocr_custom_path: str = "/ocr"
+    ocr_custom_api_key: str | None = None
+    ocr_custom_headers_json: str | None = None
+    ocr_custom_request_template: str = "multipart"  # multipart | base64_json
+    ocr_custom_response_jsonpath: str = "$.text"
+    # 默认拒绝 custom/API OCR 指向内网/回环；本地联调可设 true
+    ocr_allow_private_urls: bool = False
 
     # --- MySQL（元数据 / 文档 / 分块 / 任务） ---
     mysql_host: str = "localhost"
