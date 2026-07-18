@@ -1,8 +1,10 @@
 """数据源能力 API。"""
+
 from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.core.ingest.extractors.file import SUPPORTED_MIME_TYPES
 from app.settings import get_settings
 
 router = APIRouter(prefix="/v1/sources", tags=["sources"])
@@ -16,9 +18,24 @@ async def source_capabilities() -> dict:
         "sources": [
             {
                 "source_type": "file",
-                "mime_types": ["application/pdf"],
-                "max_bytes": settings.ingest_max_pdf_bytes,
+                "mime_types": SUPPORTED_MIME_TYPES,
+                "max_bytes": max(settings.ingest_max_pdf_bytes, settings.ingest_max_file_bytes),
                 "max_pdf_pages": settings.ingest_max_pdf_pages,
+                "parsers": {
+                    "application/pdf": settings.pdf_parser,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "mineru",
+                    "text/plain": "local",
+                    "text/markdown": "local",
+                    "text/csv": "local",
+                    "application/json": "local",
+                    "text/html": "local",
+                    "image/*": "ocr",
+                },
+                "ocr": {
+                    "provider": settings.ocr_provider,
+                    "api_driver": settings.ocr_api_driver,
+                    "fail_open": settings.ocr_fail_open,
+                },
             }
         ]
     }

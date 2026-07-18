@@ -40,6 +40,8 @@ def tmp_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("RAG_MINIO_ENABLED", "false")
     monkeypatch.setenv("RAG_EMBEDDING_PROVIDER", "pseudo")
     monkeypatch.setenv("RAG_WORKER_EAGER", "true")
+    # E2E tests run fully offline; production/default behavior is covered separately.
+    monkeypatch.setenv("RAG_PDF_PARSER", "local")
     get_settings.cache_clear()
     return storage
 

@@ -1,0 +1,52 @@
+# The default service uses MinerU's pipeline backend, so it does not need the
+# much larger vLLM runtime. Override this argument for a vLLM-engine deployment.
+ARG MINERU_BASE_IMAGE=python:3.11-slim
+FROM ${MINERU_BASE_IMAGE}
+
+ARG PIP_INDEX_URL
+ARG PIP_EXTRA_INDEX_URL
+ARG MINERU_PACKAGE_SPEC=mineru[core]==3.4.4
+ARG MINERU_MODEL_SOURCE=modelscope
+ARG MINERU_MODEL_TYPE=pipeline
+ARG UBUNTU_APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/ubuntu
+
+RUN if [ -n "${PIP_INDEX_URL}" ]; then export PIP_INDEX_URL="${PIP_INDEX_URL}"; fi && \
+    if [ -n "${PIP_EXTRA_INDEX_URL}" ]; then export PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}"; fi && \
+    python3 -m pip install -U "${MINERU_PACKAGE_SPEC}" --break-system-packages && \
+    python3 -m pip cache purge
+
+RUN if [ -f /etc/apt/sources.list ]; then \
+      sed -i \
+        -e "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_APT_MIRROR}|g" \
+        -e "s|http://security.ubuntu.com/ubuntu|${UBUNTU_APT_MIRROR}|g" \
+        /etc/apt/sources.list; \
+    fi && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 \
+      install -y --fix-missing --no-install-recommends \
+      curl \
+      fontconfig \
+      fonts-noto-cjk \
+      fonts-noto-core \
+      libgl1 \
+      libglib2.0-0 \
+      libsm6 \
+      libxext6 \
+      libxrender1 && \
+    fc-cache -fv && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN --mount=type=cache,target=/root/.cache \
+    mineru-models-download -s "${MINERU_MODEL_SOURCE}" -m "${MINERU_MODEL_TYPE}" && \
+    mkdir -p /opt/mineru-models && \
+    cp -a /root/.cache/modelscope /opt/mineru-models/ && \
+    sed -i 's|/root/.cache/modelscope|/opt/mineru-models/modelscope|g' /root/mineru.json
+
+ENV MINERU_MODEL_SOURCE=local \
+    MINERU_API_MAX_CONCURRENT_REQUESTS=1 \
+    MINERU_PDF_RENDER_TIMEOUT=300
+
+EXPOSE 8000
+
+ENTRYPOINT ["mineru-api"]
+CMD ["--host", "0.0.0.0", "--port", "8000"]

@@ -6,10 +6,10 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import DateTime, Enum as SqlEnum, Index, Integer, JSON, String, Text, func
+from sqlalchemy import DateTime, Enum as SqlEnum, Float, Index, Integer, JSON, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from app.domain import DocumentStatus, IngestJobStatus, IngestStep, OutboxStatus
+from app.domain import DocumentStatus, IngestJobStatus, IngestStep, OutboxStatus, OcrRegionStatus
 
 
 def _enum_values(enum_type: type[StrEnum]) -> list[str]:
@@ -149,3 +149,37 @@ class OutboxEventRow(Base):
         DateTime(timezone=False), server_default=func.now()
     )
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+
+
+class OcrRegionRow(Base):
+    """PDF/图片 OCR 区域及人工复核状态。"""
+
+    __tablename__ = "ocr_regions"
+    __table_args__ = (Index("idx_ocr_document", "document_id", "status"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    document_id: Mapped[str] = mapped_column(String(36))
+    page_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bbox_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    crop_blob_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    ocr_text: Mapped[str] = mapped_column(Text, default="")
+    corrected_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[OcrRegionStatus] = mapped_column(
+        SqlEnum(
+            OcrRegionStatus,
+            values_callable=_enum_values,
+            native_enum=False,
+            length=32,
+        ),
+        default=OcrRegionStatus.PENDING,
+    )
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
+    )

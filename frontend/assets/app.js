@@ -18,6 +18,7 @@ function formatTime(value){ if(!value)return "—"; return new Intl.DateTimeForm
 function escapeHtml(value=""){ const div=document.createElement("div"); div.textContent=value; return div.innerHTML; }
 function optionalNumber(selector){ const value=$(selector).value.trim(); return value===""?null:Number(value); }
 function formatScore(value){ return value==null?null:Number(value).toFixed(4).replace(/0+$/,"").replace(/\.$/,""); }
+function documentFormat(doc){ const mime=(doc.mime_type||"").toLowerCase(), name=(doc.original_filename||"").toLowerCase(); if(mime==="application/pdf"||name.endsWith(".pdf"))return "PDF"; if(mime==="application/vnd.openxmlformats-officedocument.wordprocessingml.document"||name.endsWith(".docx"))return "DOCX"; if(mime==="text/markdown"||mime==="text/x-markdown"||name.endsWith(".md")||name.endsWith(".markdown"))return "MD"; if(mime==="text/plain"||name.endsWith(".txt"))return "TXT"; return "FILE"; }
 
 function renderJobs(){
   const list=$("#jobs-list"), empty=$("#jobs-empty"); list.innerHTML=""; empty.hidden=state.jobs.length>0;
@@ -70,7 +71,7 @@ function renderDocuments(){
   $("#documents-total").textContent=`${state.documentTotal} DOCUMENTS`;
   state.documents.forEach(doc=>{
     const row=document.createElement("article"); row.className="document-row";
-    row.innerHTML=`<button class="document-main" type="button"><span class="document-symbol">PDF</span><span class="document-name"><strong>${escapeHtml(doc.title||doc.original_filename||"未命名文档")}</strong><small>${escapeHtml(doc.original_filename||doc.source_uri)} · ${formatTime(doc.created_at)}</small></span></button><span class="status ${escapeHtml(doc.status)}">${escapeHtml(doc.status)}</span><div class="document-actions"><button class="text-button edit-document" type="button">编辑</button><button class="text-button danger delete-document" type="button">删除</button></div>`;
+    row.innerHTML=`<button class="document-main" type="button"><span class="document-symbol">${documentFormat(doc)}</span><span class="document-name"><strong>${escapeHtml(doc.title||doc.original_filename||"未命名文档")}</strong><small>${escapeHtml(doc.original_filename||doc.source_uri)} · ${formatTime(doc.created_at)}</small></span></button><span class="status ${escapeHtml(doc.status)}">${escapeHtml(doc.status)}</span><div class="document-actions"><button class="text-button edit-document" type="button">编辑</button><button class="text-button danger delete-document" type="button">删除</button></div>`;
     row.querySelector(".document-main").onclick=()=>openDocument(doc.id);
     row.querySelector(".edit-document").onclick=()=>editDocument(doc);
     const deleteButton=row.querySelector(".delete-document");
@@ -190,7 +191,19 @@ async function openDocument(id){
 }
 
 function switchView(name){ document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===`view-${name}`)); document.querySelectorAll(".nav-item").forEach(v=>v.classList.toggle("active",v.dataset.view===name)); $("#page-title").textContent={workspace:"知识工作台",search:"知识检索",documents:"知识库管理",system:"系统状态"}[name]; if(name==="documents")loadDocuments(); if(name==="search")setTimeout(()=>$("#search-query").focus(),0); }
-function chooseFile(file){ if(!file)return; if(file.type!=="application/pdf"&&!file.name.toLowerCase().endsWith(".pdf")){toast("请选择 PDF 文件",true);return;} if(file.size>50*1024*1024){toast("文件不能超过 50 MB",true);return;} state.file=file; const selected=$("#selected-file"); selected.hidden=false; selected.textContent=`${file.name} · ${(file.size/1024/1024).toFixed(2)} MB`; $("#upload-button").disabled=false; }
+function chooseFile(file){
+  if(!file)return;
+  const name=file.name.toLowerCase();
+  const okExt=/\.(pdf|docx|txt|log|text|md|markdown|csv|json|html?|png|jpe?g|webp|gif|bmp|tiff?)$/i.test(name);
+  const okMime=/^(application\/(pdf|json|vnd\.openxmlformats-officedocument\.wordprocessingml\.document)|text\/|image\/)/.test(file.type||"");
+  if(!okExt && !okMime){toast("不支持的文件类型",true);return;}
+  if(file.size>50*1024*1024){toast("文件不能超过 50 MB",true);return;}
+  state.file=file;
+  const selected=$("#selected-file");
+  selected.hidden=false;
+  selected.textContent=`${file.name} · ${(file.size/1024/1024).toFixed(2)} MB`;
+  $("#upload-button").disabled=false;
+}
 
 document.querySelectorAll(".nav-item").forEach(button=>button.onclick=()=>switchView(button.dataset.view));
 $("#dropzone").onclick=()=>$("#file-input").click(); $("#dropzone").onkeydown=e=>{if(["Enter"," "].includes(e.key))$("#file-input").click()};

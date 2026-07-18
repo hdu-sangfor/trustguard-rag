@@ -11,6 +11,7 @@ from app.domain.ingest import (
     IngestStep,
     PipelineResult,
 )
+from app.domain.ocr import OcrRegionStatus
 from app.domain.retrieval import (
     EffectiveSearchMode,
     RetrievalComponent,
@@ -31,6 +32,7 @@ __all__ = [
     "EffectiveSearchMode",
     "IngestJobStatus",
     "IngestStep",
+    "OcrRegionStatus",
     "OutboxStatus",
     "PipelineResult",
     "RetrievalComponent",

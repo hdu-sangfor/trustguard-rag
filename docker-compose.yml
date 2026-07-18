@@ -19,6 +19,46 @@ x-build-extra-hosts: &build-extra-hosts
   - "host.docker.internal:host-gateway"
 
 services:
+  mineru-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.mineru
+      args:
+        MINERU_BASE_IMAGE: ${MINERU_BASE_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/library/python:3.11-slim}
+        MINERU_PACKAGE_SPEC: ${MINERU_PACKAGE_SPEC:-mineru[core]==3.4.4}
+        MINERU_MODEL_SOURCE: ${MINERU_MODEL_SOURCE:-modelscope}
+        MINERU_MODEL_TYPE: ${MINERU_MODEL_TYPE:-pipeline}
+        UBUNTU_APT_MIRROR: ${UBUNTU_APT_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/ubuntu}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
+      extra_hosts: *build-extra-hosts
+      network: host
+    image: ${MINERU_IMAGE:-trustguard-mineru:latest}
+    ports:
+      - "18220:8000"
+    environment:
+      MINERU_MODEL_SOURCE: local
+      MINERU_API_MAX_CONCURRENT_REQUESTS: ${MINERU_API_MAX_CONCURRENT_REQUESTS:-1}
+      MINERU_PDF_RENDER_TIMEOUT: ${MINERU_PDF_RENDER_TIMEOUT:-300}
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${MINERU_GPU_DEVICE_ID:-0}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 120s
+    restart: unless-stopped
+
   rag-service:
     build:
       context: .
@@ -53,14 +93,22 @@ services:
       RAG_MINIO_BUCKET: trustguard-rag-artifacts
       RAG_QDRANT_MOCK: "false"
       RAG_MODE: ingest
+      RAG_PDF_PARSER: ${RAG_PDF_PARSER:-mineru}
+      RAG_MINERU_BASE_URL: ${RAG_MINERU_DOCKER_BASE_URL:-http://mineru-api:8000}
+      RAG_MINERU_BACKEND: ${RAG_MINERU_BACKEND:-pipeline}
+      RAG_MINERU_TIMEOUT_SECONDS: ${RAG_MINERU_TIMEOUT_SECONDS:-300}
       HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
       HF_HUB_ETAG_TIMEOUT: ${HF_HUB_ETAG_TIMEOUT:-60}
       HF_HUB_DOWNLOAD_TIMEOUT: ${HF_HUB_DOWNLOAD_TIMEOUT:-300}
       HF_HUB_DISABLE_XET: ${HF_HUB_DISABLE_XET:-1}
     env_file: *optional-env-files
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - trustguard_rag_models:/models/huggingface
     depends_on:
+      mineru-api:
+        condition: service_healthy
       mysql:
         condition: service_healthy
       minio:
@@ -105,6 +153,10 @@ services:
       RAG_MINIO_ACCESS_KEY: minioadmin
       RAG_MINIO_SECRET_KEY: minioadmin
       RAG_MINIO_BUCKET: trustguard-rag-artifacts
+      RAG_PDF_PARSER: ${RAG_PDF_PARSER:-mineru}
+      RAG_MINERU_BASE_URL: ${RAG_MINERU_DOCKER_BASE_URL:-http://mineru-api:8000}
+      RAG_MINERU_BACKEND: ${RAG_MINERU_BACKEND:-pipeline}
+      RAG_MINERU_TIMEOUT_SECONDS: ${RAG_MINERU_TIMEOUT_SECONDS:-300}
       HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
       HF_HUB_ETAG_TIMEOUT: ${HF_HUB_ETAG_TIMEOUT:-60}
       HF_HUB_DOWNLOAD_TIMEOUT: ${HF_HUB_DOWNLOAD_TIMEOUT:-300}
@@ -113,6 +165,8 @@ services:
     volumes:
       - trustguard_rag_models:/models/huggingface
     depends_on:
+      mineru-api:
+        condition: service_healthy
       mysql:
         condition: service_healthy
       minio:

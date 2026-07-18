@@ -1,0 +1,60 @@
+"""Deterministically combine document text layers with reviewable OCR regions."""
+
+from __future__ import annotations
+
+import re
+from collections import defaultdict
+from typing import Any, Iterable
+
+_PAGE_MARKER = re.compile(r"(?:^|\n)--- Page (\d+) ---\n")
+
+
+def merge_ocr_text(base_text: str, regions: Iterable[Any]) -> str:
+    """Return page-aware text rebuilt from an immutable text-layer baseline."""
+    page_bodies: dict[int, str] = {}
+    page_order: list[int] = []
+    matches = list(_PAGE_MARKER.finditer(base_text or ""))
+    if matches:
+        for index, match in enumerate(matches):
+            page_no = int(match.group(1))
+            start = match.end()
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(base_text)
+            page_bodies[page_no] = base_text[start:end].strip()
+            page_order.append(page_no)
+
+    ocr_by_page: dict[int, list[tuple[int, str]]] = defaultdict(list)
+    unpaged: list[tuple[int, str]] = []
+    for fallback_sequence, region in enumerate(regions):
+        if isinstance(region, dict):
+            text = str(region.get("text") or "").strip()
+            page_no = region.get("page_no")
+            metadata = region.get("metadata") or {}
+        else:
+            text = str(getattr(region, "ocr_text", "") or "").strip()
+            page_no = getattr(region, "page_no", None)
+            metadata = getattr(region, "metadata", {}) or {}
+        if not text:
+            continue
+        sequence = int(metadata.get("sequence", fallback_sequence))
+        if isinstance(page_no, int) and page_no > 0:
+            ocr_by_page[page_no].append((sequence, text))
+            if page_no not in page_bodies:
+                page_bodies[page_no] = ""
+                page_order.append(page_no)
+        else:
+            unpaged.append((sequence, text))
+
+    if not matches and not page_bodies:
+        pieces = [base_text.strip()] if (base_text or "").strip() else []
+        pieces.extend(text for _, text in sorted(unpaged))
+        return "\n\n".join(pieces).strip()
+
+    rendered: list[str] = []
+    for page_no in sorted(set(page_order)):
+        pieces = [page_bodies.get(page_no, "").strip()]
+        pieces.extend(text for _, text in sorted(ocr_by_page.get(page_no, [])))
+        body = "\n\n".join(piece for piece in pieces if piece)
+        if body:
+            rendered.append(f"--- Page {page_no} ---\n{body}")
+    rendered.extend(text for _, text in sorted(unpaged))
+    return "\n\n".join(rendered).strip()
