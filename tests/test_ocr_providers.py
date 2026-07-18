@@ -308,6 +308,11 @@ async def test_ocr_review_api_approve_and_correct(client, test_engine, tmp_stora
         extracted_text="base text",
         meta={},
     )
+    blobs.write_artifact_file(
+        doc.id,
+        relative_name="ocr/base.txt",
+        data=b"--- Page 1 ---\nbase layer",
+    )
     store = OcrRegionStore(blob_store=blobs)
     await store.create_from_drafts(
         doc.id,
@@ -441,6 +446,11 @@ async def test_ocr_correct_reindexes_chunks(client, test_engine, tmp_storage, mo
         extracted_text="base layer",
         meta={},
     )
+    blobs.write_artifact_file(
+        doc.id,
+        relative_name="ocr/base.txt",
+        data=b"--- Page 1 ---\nbase layer",
+    )
     store = OcrRegionStore(blob_store=blobs)
     await store.create_from_drafts(
         doc.id,
@@ -467,3 +477,16 @@ async def test_ocr_correct_reindexes_chunks(client, test_engine, tmp_storage, mo
     chunks = await ChunkStore().list_for_document(doc.id)
     joined = "\n".join(c.text for c in chunks)
     assert "HUMAN_FIXED_OCR" in joined
+    assert "machine guess" not in joined
+
+    second = await client.post(
+        f"/v1/ocr-regions/{rid}/review",
+        json={"action": "correct", "corrected_text": "SECOND_HUMAN_FIX"},
+    )
+    assert second.status_code == 200
+    joined_again = "\n".join(
+        chunk.text for chunk in await ChunkStore().list_for_document(doc.id)
+    )
+    assert "SECOND_HUMAN_FIX" in joined_again
+    assert "HUMAN_FIXED_OCR" not in joined_again
+    assert "machine guess" not in joined_again

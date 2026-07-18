@@ -19,6 +19,7 @@ dependencies = [
     "cryptography>=42",
     "pymupdf>=1.24.0",
     "python-multipart>=0.0.9",
+    "Pillow>=10.0",
     "langchain-text-splitters>=0.3.8",
     "transformers>=4.51.0",
 ]
@@ -33,9 +34,9 @@ local-embedding = [
     "torch>=2.2",
 ]
 ocr-local = [
-    "paddlepaddle>=2.6",
-    "paddleocr>=2.7",
-    "Pillow>=10.0",
+    # LocalOcrProvider currently uses PaddleOCR 2.x's constructor/ocr() API.
+    "paddlepaddle>=2.6,<3",
+    "paddleocr>=2.7,<3",
     "numpy>=1.24",
 ]
 

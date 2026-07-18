@@ -28,17 +28,21 @@ HF_HUB_DISABLE_XET=1
 需要走本机代理时可设置 `TRUSTGUARD_NETWORK_PROXY`；该代理只在镜像构建依赖安装阶段
 使用，不会污染容器运行时访问 MySQL、Qdrant、OpenSearch 等内部服务的网络。
 
-### 可选 MinerU 文档解析
+### 默认 MinerU 文档解析
 
-默认使用 #10 的本地 PDF 文本层与 OCR 解析链路。DOCX 始终由 MinerU 解析；如需让
-PDF 也走 MinerU，在 `.env` 中设置 `RAG_PDF_PARSER=mineru`，并启动 MinerU profile：
+PDF 和 DOCX 默认由 MinerU 解析。完整 Compose 会自动构建并启动 `mineru-api`：
 
 ```bash
-docker compose --profile mineru up -d --build
+docker compose up -d --build
 ```
 
-首次构建 MinerU 需要下载 CUDA 基础镜像和模型，耗时及磁盘占用较大。相关镜像源可用
-`UBUNTU_APT_MIRROR`、`PIP_INDEX_URL` 和 `MINERU_MODEL_SOURCE` 覆盖。
+首次构建 MinerU 需要安装解析依赖并下载模型，耗时及磁盘占用较大。默认 `pipeline`
+后端使用 Python slim 基础镜像，不额外携带 vLLM 运行时；相关镜像源可用
+`DOCKERHUB_REGISTRY`、`MINERU_BASE_IMAGE`、`UBUNTU_APT_MIRROR`、`PIP_INDEX_URL`
+和 `MINERU_MODEL_SOURCE` 覆盖。默认只下载 `MINERU_MODEL_TYPE=pipeline` 对应模型，
+避免把未使用的 VLM 模型打入镜像。
+若只需本地 PDF 文本层 + 图片区域 OCR，可显式设置 `RAG_PDF_PARSER=local`；DOCX
+仍需要 MinerU。
 
 ## 本地开发（Linux）
 

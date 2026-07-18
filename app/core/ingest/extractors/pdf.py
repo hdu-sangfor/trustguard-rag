@@ -21,6 +21,7 @@ from app.core.ingest.models import ExtractedDocument
 from app.core.ocr import get_ocr_engine
 from app.core.ocr.errors import OcrError
 from app.core.ocr.protocol import OcrRegionDraft
+from app.core.ocr.text_merge import merge_ocr_text
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ class PdfExtractor:
 
             pages_with_text: list[int] = []
             pages_with_ocr: list[int] = []
-            parts: list[str] = []
+            base_parts: list[str] = []
             min_side = settings.ocr_min_image_side_px
             dpi = settings.ocr_render_dpi
             scale = dpi / 72.0
@@ -113,8 +114,9 @@ class PdfExtractor:
                 page_no = i + 1
                 page = doc.load_page(i)
                 text = page.get_text("text") or ""
-                ocr_bits: list[str] = []
                 page_region_count = 0
+                if text.strip():
+                    base_parts.append(f"--- Page {page_no} ---\n{text.strip()}")
 
                 if ocr_engine.enabled:
                     for rect in _page_image_rects(page):
@@ -125,23 +127,25 @@ class PdfExtractor:
                             break
                         if page_region_count >= max_per_page:
                             break
-                        if rect.width < min_side or rect.height < min_side:
-                            continue
                         clip = rect & page.rect
                         if clip.is_empty:
+                            continue
+                        rendered_width = max(1, int(clip.width * scale + 0.5))
+                        rendered_height = max(1, int(clip.height * scale + 0.5))
+                        if rendered_width < min_side or rendered_height < min_side:
+                            continue
+                        if rendered_width * rendered_height > max_pixels:
+                            logger.warning(
+                                "skip OCR crop exceeding max pixels page=%s size=%sx%s",
+                                page_no,
+                                rendered_width,
+                                rendered_height,
+                            )
                             continue
                         try:
                             pix = page.get_pixmap(
                                 matrix=fitz.Matrix(scale, scale), clip=clip, alpha=False
                             )
-                            if pix.width * pix.height > max_pixels:
-                                logger.warning(
-                                    "skip OCR crop exceeding max pixels page=%s size=%sx%s",
-                                    page_no,
-                                    pix.width,
-                                    pix.height,
-                                )
-                                continue
                             crop_png = pix.tobytes("png")
                             if len(crop_png) > max_crop_bytes:
                                 logger.warning(
@@ -173,22 +177,19 @@ class PdfExtractor:
                                 )
                             else:
                                 raise IngestError(OCR_UNAVAILABLE, str(e)) from e
+                        draft.metadata = {**draft.metadata, "sequence": len(region_drafts)}
                         region_drafts.append(draft)
                         page_region_count += 1
                         if draft.ocr_text.strip():
-                            ocr_bits.append(draft.ocr_text.strip())
                             pages_with_ocr.append(page_no)
-
-                page_body = text
-                if ocr_bits:
-                    page_body = (text.rstrip() + "\n\n" if text.strip() else "") + "\n\n".join(
-                        ocr_bits
-                    )
-                if page_body.strip():
+                if text.strip() or any(
+                    draft.page_no == page_no and draft.ocr_text.strip()
+                    for draft in region_drafts
+                ):
                     pages_with_text.append(page_no)
-                    parts.append(f"\n--- Page {page_no} ---\n{page_body}")
 
-            full_text = "".join(parts).strip()
+            base_text = "\n\n".join(base_parts).strip()
+            full_text = merge_ocr_text(base_text, region_drafts)
             if not full_text:
                 if region_drafts:
                     # OCR 尝试过但全文仍空：返回空文本 + drafts，由 pipeline 落库后报 EMPTY
@@ -209,6 +210,7 @@ class PdfExtractor:
                 "original_filename": original_filename,
                 "file_size": len(data),
                 "ocr_region_drafts": region_drafts,
+                "ocr_base_text": base_text,
                 "ocr_provider": ocr_engine.provider_name if ocr_engine.enabled else "none",
             }
             return ExtractedDocument(

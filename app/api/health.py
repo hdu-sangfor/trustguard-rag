@@ -9,6 +9,7 @@ from app.settings import get_settings
 from app.stores import (
     db,
     local_storage,
+    mineru_store,
     minio_store,
     opensearch_store,
     qdrant_store,
@@ -26,6 +27,7 @@ _CHECKS = {
     "rabbitmq": rabbitmq.check,
     "minio": minio_store.check,
     "local_storage": local_storage.check,
+    "mineru": mineru_store.check,
 }
 
 
@@ -41,6 +43,9 @@ def _ingest_required() -> tuple[str, ...]:
         required.append("qdrant")
     if not s.search_opensearch_mock:
         required.append("opensearch")
+    # DOCX is always routed to MinerU, so advertised ingest readiness requires it
+    # even when PDF explicitly falls back to the local parser.
+    required.append("mineru")
     return tuple(required)
 
 

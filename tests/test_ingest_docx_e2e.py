@@ -10,7 +10,7 @@ from httpx import AsyncClient
 
 from app.core.ingest.extractors.file import MIME_ROUTER
 from app.core.ingest.extractors.mineru import DOCX_MIME, MineruDocxExtractor
-from app.settings import Settings
+from app.settings import Settings, get_settings
 
 
 @pytest.mark.asyncio
@@ -68,7 +68,11 @@ async def test_ingest_docx_via_mineru_e2e(
 
 
 @pytest.mark.asyncio
-async def test_source_capabilities_include_docx(client: AsyncClient) -> None:
+async def test_source_capabilities_include_docx(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAG_PDF_PARSER", "mineru")
+    get_settings.cache_clear()
     response = await client.get("/v1/sources/capabilities")
 
     assert response.status_code == 200
@@ -76,5 +80,6 @@ async def test_source_capabilities_include_docx(client: AsyncClient) -> None:
     assert DOCX_MIME in mime_types
     parsers = response.json()["sources"][0]["parsers"]
     assert parsers[DOCX_MIME] == "mineru"
-    assert parsers["application/pdf"] == "local"
+    assert parsers["application/pdf"] == "mineru"
     assert parsers["text/plain"] == "local"
+    get_settings.cache_clear()

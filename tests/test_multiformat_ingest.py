@@ -1,6 +1,10 @@
 """Multi-format extractor and MIME routing tests."""
 from __future__ import annotations
 
+import io
+
+from PIL import Image
+
 import json
 
 import pytest
@@ -17,6 +21,12 @@ from app.core.ingest.extractors.text_extractor import (
 )
 from app.core.ocr.protocol import OcrRecognizeResult
 from app.settings import get_settings
+
+
+def _png_bytes() -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(output, format="PNG")
+    return output.getvalue()
 
 
 class FakeOcr:
@@ -110,18 +120,19 @@ async def test_image_extractor_requires_ocr(monkeypatch):
 @pytest.mark.asyncio
 async def test_image_extractor_with_fake_ocr():
     doc = await ImageExtractor(ocr_engine=FakeOcr("扫描文字")).extract_async(
-        b"\x89PNG\r\n\x1a\nfake",
+        _png_bytes(),
         original_filename="a.png",
         mime="image/png",
     )
-    assert doc.text == "扫描文字"
+    assert "扫描文字" in doc.text
+    assert doc.metadata["ocr_region_drafts"][0].crop_png.startswith(b"\x89PNG")
     assert doc.metadata["ocr_region_drafts"]
 
 
 @pytest.mark.asyncio
 async def test_image_empty_ocr_still_returns_drafts():
     doc = await ImageExtractor(ocr_engine=FakeOcr(empty=True)).extract_async(
-        b"\x89PNG\r\n\x1a\nfake",
+        _png_bytes(),
         original_filename="a.png",
         mime="image/png",
     )

@@ -1,9 +1,15 @@
 """文件名冲突检测与解决测试。"""
 from __future__ import annotations
 
+import io
+
 import pytest
 from httpx import AsyncClient
+from PIL import Image
 
+from app.core.ingest.extractors.file import MIME_ROUTER
+from app.core.ingest.extractors.image_extractor import ImageExtractor
+from app.core.ocr.protocol import OcrRecognizeResult
 from app.domain import DocumentStatus
 from app.stores.document_store import DocumentStore
 from pdf_fixtures import make_pdf_bytes
@@ -18,6 +24,20 @@ class _FailingOpenSearchIndexer:
 
     async def delete_for_document(self, document_id: str) -> None:
         return None
+
+
+class _ImageOcr:
+    enabled = True
+    provider_name = "test"
+
+    async def recognize(self, image_bytes: bytes, **_: object) -> OcrRecognizeResult:
+        return OcrRecognizeResult(text="reviewable image text", confidence=0.9)
+
+
+def _png_bytes(color: str) -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (8, 8), color).save(output, format="PNG")
+    return output.getvalue()
 
 
 @pytest.mark.asyncio
@@ -115,3 +135,37 @@ async def test_conflict_new_publish_failure_keeps_old_document_ready(
     assert resolved.json()["status"] == "resolve_retrying"
     assert (await DocumentStore().get(old_id)).status == DocumentStatus.READY
     assert (await DocumentStore().get(pending_id)).status == DocumentStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_conflict_keep_new_persists_ocr_review_drafts(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(MIME_ROUTER, "image/png", ImageExtractor(ocr_engine=_ImageOcr()))
+    first = await client.post(
+        "/v1/ingest/jobs",
+        data={"source_type": "file"},
+        files={"file": ("same.png", _png_bytes("white"), "image/png")},
+    )
+    assert first.status_code == 202
+
+    second = await client.post(
+        "/v1/ingest/jobs",
+        data={"source_type": "file"},
+        files={"file": ("same.png", _png_bytes("black"), "image/png")},
+    )
+    job_id = second.json()["job_id"]
+    conflict = (await client.get(f"/v1/ingest/jobs/{job_id}")).json()
+    assert conflict["status"] == "conflict"
+
+    resolved = await client.post(
+        f"/v1/ingest/jobs/{job_id}/resolve",
+        json={"keep_document_id": conflict["pending_document_id"]},
+    )
+    document_id = resolved.json()["document_id"]
+    regions = (await client.get(f"/v1/documents/{document_id}/ocr-regions")).json()
+    artifacts = (await client.get(f"/v1/documents/{document_id}/artifacts")).json()["files"]
+
+    assert len(regions) == 1
+    assert regions[0]["ocr_text"] == "reviewable image text"
+    assert "ocr/base.txt" in artifacts

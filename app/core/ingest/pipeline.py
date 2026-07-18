@@ -20,6 +20,7 @@ from app.core.ingest.errors import (
     FILENAME_CONFLICT,
     INDEX_FAILED,
     INTERNAL,
+    MINERU_UNAVAILABLE,
     IngestError,
 )
 from app.core.ingest.extractors.file import FileExtractor
@@ -32,6 +33,7 @@ from app.domain import (
     PipelineResult,
 )
 from app.core.ocr.protocol import OcrRegionDraft
+from app.core.ocr.text_merge import merge_ocr_text
 from app.stores.ocr_region_store import OcrRegionStore, get_ocr_region_store
 from app.settings import Settings, get_settings
 from app.stores.blob_store import BlobStore, get_blob_store
@@ -43,7 +45,9 @@ from app.workers.messages import CLEANUP_DOCUMENT
 
 logger = logging.getLogger(__name__)
 
-_RETRYABLE_INGEST_CODES = frozenset({INDEX_FAILED, ARTIFACT_WRITE_FAILED})
+_RETRYABLE_INGEST_CODES = frozenset(
+    {INDEX_FAILED, ARTIFACT_WRITE_FAILED, MINERU_UNAVAILABLE}
+)
 
 
 def _document_id_for_job(job_id: str) -> str:
@@ -80,7 +84,16 @@ def _json_safe_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     safe = dict(metadata)
     safe.pop("ocr_region_drafts", None)
+    safe.pop("ocr_base_text", None)
     return safe
+
+
+def _pop_ocr_base_text(metadata: dict[str, Any] | None) -> str | None:
+    """Pop the immutable non-OCR baseline used for deterministic review rebuilds."""
+    if not metadata or "ocr_base_text" not in metadata:
+        return None
+    value = metadata.pop("ocr_base_text")
+    return str(value or "")
 
 
 async def _enqueue_cleanup(document_id: str, action: CleanupAction) -> None:
@@ -185,6 +198,7 @@ class IngestPipeline:
                 file_bytes, original_filename=original_filename, mime=mime
             )
             ocr_drafts = _pop_ocr_drafts(extracted.metadata)
+            ocr_base_text = _pop_ocr_base_text(extracted.metadata)
             extracted.metadata = _json_safe_metadata(extracted.metadata)
 
             await self._jobs.mark_running(
@@ -253,6 +267,13 @@ class IngestPipeline:
             )
             if ocr_drafts:
                 await self._ocr_regions.create_from_drafts(doc.id, ocr_drafts, version=1)
+            if ocr_base_text is not None:
+                self._blobs.write_artifact_file(
+                    doc.id,
+                    version=1,
+                    relative_name="ocr/base.txt",
+                    data=ocr_base_text.encode("utf-8"),
+                )
 
             await self._jobs.mark_running(
                 job_id, IngestStep.CHUNK, lease_token=lease_token
@@ -548,11 +569,25 @@ class IngestPipeline:
     ) -> None:
         """按产物、分块、嵌入、索引步骤发布暂存的冲突胜出文档。"""
         try:
+            ocr_drafts = _pop_ocr_drafts(extracted.metadata)
+            ocr_base_text = _pop_ocr_base_text(extracted.metadata)
+            extracted.metadata = _json_safe_metadata(extracted.metadata)
             await self._documents.update_status(document_id, DocumentStatus.INDEXING)
             blob_path = await self._commit_artifacts(document_id, extracted)
             await self._documents.update_status(
                 document_id, DocumentStatus.INDEXING, blob_path=blob_path
             )
+            if ocr_drafts:
+                await self._ocr_regions.create_from_drafts(
+                    document_id, ocr_drafts, version=1
+                )
+            if ocr_base_text is not None:
+                self._blobs.write_artifact_file(
+                    document_id,
+                    version=1,
+                    relative_name="ocr/base.txt",
+                    data=ocr_base_text.encode("utf-8"),
+                )
             try:
                 drafts = chunk_extracted_text(extracted.text)
             except ChunkingError as e:
@@ -665,45 +700,20 @@ class IngestPipeline:
         if not doc:
             raise ValueError("document not found")
         regions = await self._ocr_regions.effective_texts_for_document(document_id)
-        # 读取现有 extracted，替换 OCR 段落较复杂；简化：按页追加纠正后的 OCR 文本
         blob_path = doc.blob_path or f"artifacts/{document_id}/v{doc.doc_version}"
         try:
-            base_text = self._blobs.read_text(f"{blob_path}/extracted.txt")
-        except Exception:  # noqa: BLE001
-            base_text = ""
-        ocr_lines = []
-        for region in regions:
-            text = (region.get("text") or "").strip()
-            if not text:
-                continue
-            page = region.get("page_no")
-            prefix = f"[OCR p{page}] " if page else "[OCR] "
-            ocr_lines.append(prefix + text)
-        if ocr_lines:
-            merged = (base_text.rstrip() + "\n\n" if base_text.strip() else "") + "\n\n".join(
-                ocr_lines
-            )
-        else:
-            merged = base_text
-        # 写回 extracted
-        self._blobs.write_artifact_file(
-            document_id,
-            version=doc.doc_version,
-            relative_name="extracted.txt",
-            data=merged.encode("utf-8"),
-        )
-        # 清旧分块与索引后重建
-        point_ids = await self._chunks.point_ids_for_document(document_id)
-        await self._indexer.delete_document(document_id)
-        if point_ids:
-            await self._indexer.delete_points(point_ids)
-        await self._opensearch_indexer.delete_for_document(document_id)
-        await self._chunks.delete_for_document(document_id)
+            base_text = self._blobs.read_text(f"{blob_path}/ocr/base.txt")
+        except Exception as exc:  # noqa: BLE001
+            raise IngestError(
+                ARTIFACT_WRITE_FAILED,
+                "OCR baseline artifact is missing; re-ingest the document before review",
+            ) from exc
+        old_extracted = self._blobs.read_text(f"{blob_path}/extracted.txt")
+        merged = merge_ocr_text(base_text, regions)
 
         chunk_drafts = chunk_extracted_text(merged)
         if not chunk_drafts:
-            await self._documents.update_status(document_id, DocumentStatus.FAILED)
-            return
+            raise IngestError(EMPTY_CONTENT, "OCR corrections produced no chunks")
         settings = get_settings()
         vectors = await self._embedder.embed_texts([d.text for d in chunk_drafts])
         embedding_metadata = _embedding_metadata(settings)
@@ -724,20 +734,85 @@ class IngestPipeline:
                     "metadata": {**draft.metadata, **embedding_metadata},
                 }
             )
-        await self._indexer.upsert_chunks(
-            document_id=document_id,
-            chunks=chunk_rows,
-            vectors=vectors,
-            source_uri=doc.source_uri,
-            original_filename=doc.original_filename,
+
+        old_rows = await self._chunks.list_for_document(document_id)
+        old_chunks = [
+            {
+                "id": row.id,
+                "document_id": row.document_id,
+                "chunk_index": row.chunk_index,
+                "text": row.text,
+                "token_count": row.token_count,
+                "page_no": row.page_no,
+                "embedding_model": row.embedding_model,
+                "embedding_dim": row.embedding_dim,
+                "qdrant_point_id": row.qdrant_point_id,
+                "metadata": row.metadata_json or {},
+                "status": row.status,
+            }
+            for row in old_rows
+        ]
+        old_vectors = (
+            await self._embedder.embed_texts([row["text"] for row in old_chunks])
+            if old_chunks
+            else []
         )
-        await self._chunks.create_many(chunk_rows)
-        await self._index_opensearch(
-            chunk_rows,
-            source_uri=doc.source_uri,
-            original_filename=doc.original_filename,
-        )
-        await self._documents.update_status(document_id, DocumentStatus.READY)
+        try:
+            await self._documents.update_status(document_id, DocumentStatus.INDEXING)
+            await self._indexer.delete_document(document_id)
+            await self._opensearch_indexer.delete_for_document(document_id)
+            await self._chunks.delete_for_document(document_id)
+            await self._indexer.upsert_chunks(
+                document_id=document_id,
+                chunks=chunk_rows,
+                vectors=vectors,
+                source_uri=doc.source_uri,
+                original_filename=doc.original_filename,
+            )
+            await self._chunks.create_many(chunk_rows)
+            await self._index_opensearch(
+                chunk_rows,
+                source_uri=doc.source_uri,
+                original_filename=doc.original_filename,
+            )
+            self._blobs.write_artifact_file(
+                document_id,
+                version=doc.doc_version,
+                relative_name="extracted.txt",
+                data=merged.encode("utf-8"),
+            )
+            await self._documents.update_status(document_id, DocumentStatus.READY)
+        except Exception:
+            logger.exception("OCR correction publish failed; restoring document %s", document_id)
+            try:
+                await self._indexer.delete_document(document_id)
+                await self._opensearch_indexer.delete_for_document(document_id)
+                await self._chunks.delete_for_document(document_id)
+                if old_chunks:
+                    await self._indexer.upsert_chunks(
+                        document_id=document_id,
+                        chunks=old_chunks,
+                        vectors=old_vectors,
+                        source_uri=doc.source_uri,
+                        original_filename=doc.original_filename,
+                    )
+                    await self._chunks.create_many(old_chunks)
+                    await self._index_opensearch(
+                        old_chunks,
+                        source_uri=doc.source_uri,
+                        original_filename=doc.original_filename,
+                    )
+                self._blobs.write_artifact_file(
+                    document_id,
+                    version=doc.doc_version,
+                    relative_name="extracted.txt",
+                    data=old_extracted.encode("utf-8"),
+                )
+                await self._documents.update_status(document_id, DocumentStatus.READY)
+            except Exception:  # noqa: BLE001
+                logger.exception("OCR correction rollback failed for %s", document_id)
+                await self._documents.update_status(document_id, DocumentStatus.FAILED)
+            raise
 
 
 def get_ingest_pipeline() -> IngestPipeline:

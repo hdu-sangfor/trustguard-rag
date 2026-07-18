@@ -20,14 +20,14 @@ x-build-extra-hosts: &build-extra-hosts
 
 services:
   mineru-api:
-    profiles: ["mineru"]
     build:
       context: .
       dockerfile: Dockerfile.mineru
       args:
-        MINERU_BASE_IMAGE: ${MINERU_BASE_IMAGE:-vllm/vllm-openai:v0.21.0}
-        MINERU_PACKAGE_SPEC: ${MINERU_PACKAGE_SPEC:-mineru[core]>=3.4.0}
+        MINERU_BASE_IMAGE: ${MINERU_BASE_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/library/python:3.11-slim}
+        MINERU_PACKAGE_SPEC: ${MINERU_PACKAGE_SPEC:-mineru[core]==3.4.4}
         MINERU_MODEL_SOURCE: ${MINERU_MODEL_SOURCE:-modelscope}
+        MINERU_MODEL_TYPE: ${MINERU_MODEL_TYPE:-pipeline}
         UBUNTU_APT_MIRROR: ${UBUNTU_APT_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/ubuntu}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
         PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
@@ -93,7 +93,7 @@ services:
       RAG_MINIO_BUCKET: trustguard-rag-artifacts
       RAG_QDRANT_MOCK: "false"
       RAG_MODE: ingest
-      RAG_PDF_PARSER: ${RAG_PDF_PARSER:-local}
+      RAG_PDF_PARSER: ${RAG_PDF_PARSER:-mineru}
       RAG_MINERU_BASE_URL: ${RAG_MINERU_DOCKER_BASE_URL:-http://mineru-api:8000}
       RAG_MINERU_BACKEND: ${RAG_MINERU_BACKEND:-pipeline}
       RAG_MINERU_TIMEOUT_SECONDS: ${RAG_MINERU_TIMEOUT_SECONDS:-300}
@@ -107,6 +107,8 @@ services:
     volumes:
       - trustguard_rag_models:/models/huggingface
     depends_on:
+      mineru-api:
+        condition: service_healthy
       mysql:
         condition: service_healthy
       minio:
@@ -151,7 +153,7 @@ services:
       RAG_MINIO_ACCESS_KEY: minioadmin
       RAG_MINIO_SECRET_KEY: minioadmin
       RAG_MINIO_BUCKET: trustguard-rag-artifacts
-      RAG_PDF_PARSER: ${RAG_PDF_PARSER:-local}
+      RAG_PDF_PARSER: ${RAG_PDF_PARSER:-mineru}
       RAG_MINERU_BASE_URL: ${RAG_MINERU_DOCKER_BASE_URL:-http://mineru-api:8000}
       RAG_MINERU_BACKEND: ${RAG_MINERU_BACKEND:-pipeline}
       RAG_MINERU_TIMEOUT_SECONDS: ${RAG_MINERU_TIMEOUT_SECONDS:-300}
@@ -163,6 +165,8 @@ services:
     volumes:
       - trustguard_rag_models:/models/huggingface
     depends_on:
+      mineru-api:
+        condition: service_healthy
       mysql:
         condition: service_healthy
       minio:

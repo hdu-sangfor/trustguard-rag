@@ -124,9 +124,17 @@ class OcrRegionStore:
                     "page_no": row.page_no,
                     "text": text or "",
                     "status": row.status.value if hasattr(row.status, "value") else str(row.status),
+                    "metadata": row.metadata_json or {},
                 }
             )
-        return out
+        return sorted(
+            out,
+            key=lambda item: (
+                item.get("page_no") or 0,
+                int((item.get("metadata") or {}).get("sequence", 0)),
+                item["id"],
+            ),
+        )
 
 
 def get_ocr_region_store() -> OcrRegionStore:

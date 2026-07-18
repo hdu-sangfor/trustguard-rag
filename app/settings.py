@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     ocr_allow_private_urls: bool = False
 
     # --- 文档解析器 / MinerU ---
-    pdf_parser: str = "local"  # local | mineru
+    pdf_parser: str = "mineru"  # mineru | local（显式回退）
     mineru_base_url: str = "http://127.0.0.1:8000"
     mineru_backend: str = "pipeline"
     mineru_timeout_seconds: float = 300.0

@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
+
+from PIL import Image, UnidentifiedImageError
 
 from app.core.ingest.errors import FILE_TOO_LARGE, OCR_FAILED, OCR_UNAVAILABLE, IngestError
 from app.core.ingest.extractors._async_utils import run_sync
@@ -10,6 +13,7 @@ from app.core.ocr import get_ocr_engine
 from app.core.ocr.errors import OcrError
 from app.core.ocr.protocol import OcrRegionDraft
 from app.settings import get_settings
+from app.core.ocr.text_merge import merge_ocr_text
 
 _EXT_BY_MIME = {
     "image/png": "png",
@@ -57,7 +61,16 @@ class ImageExtractor:
             )
 
         try:
-            result = await engine.recognize(data)
+            with Image.open(io.BytesIO(data)) as image:
+                image.load()
+                output = io.BytesIO()
+                image.save(output, format="PNG")
+                crop_png = output.getvalue()
+        except (UnidentifiedImageError, OSError, ValueError) as e:
+            raise IngestError(OCR_FAILED, f"Cannot decode image: {e}") from e
+
+        try:
+            result = await engine.recognize(crop_png)
         except OcrError as e:
             raise IngestError(OCR_UNAVAILABLE, str(e)) from e
         except Exception as e:  # noqa: BLE001
@@ -68,16 +81,17 @@ class ImageExtractor:
         draft = OcrRegionDraft(
             page_no=1,
             bbox=[0.0, 0.0, 0.0, 0.0],
-            crop_png=data,
+            crop_png=crop_png,
             ocr_text=text,
             status=status,
             provider=engine.provider_name,
             confidence=result.confidence,
+            metadata={"sequence": 0},
         )
         content_hash = hashlib.sha256(data).hexdigest()
         ext = _EXT_BY_MIME.get(mime, "bin")
         return ExtractedDocument(
-            text=text,
+            text=merge_ocr_text("", [draft]),
             content_hash=content_hash,
             source_uri=f"upload://{content_hash}",
             mime=mime,
@@ -87,5 +101,6 @@ class ImageExtractor:
                 "original_filename": original_filename,
                 "file_size": len(data),
                 "ocr_region_drafts": [draft],
+                "ocr_base_text": "",
             },
         )
