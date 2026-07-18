@@ -194,19 +194,21 @@ RAG_RERANK_API_KEY=YOUR_BAILIAN_API_KEY
 ```
 
 完整配置参见 [`docs/hybrid-search.md`](docs/hybrid-search.md)。
+多格式入库与 OCR 参见 [`docs/ocr-and-multiformat-ingest.md`](docs/ocr-and-multiformat-ingest.md)。
 
 ## 目录结构（概要）
 
 ```
 app/
-  api/          health, ingest, documents, sources
+  api/          health, ingest, documents, sources, ocr_review
   core/ingest/  extractors, pipeline, chunker, compensator
+  core/ocr/     Paddle / API / custom OCR providers
   core/indexing/ qdrant_indexer
   core/embedding/ client
-  stores/       db, blob, document, chunk, job, qdrant
+  stores/       db, blob, document, chunk, job, qdrant, ocr_region
   workers/      outbox publisher, RabbitMQ consumer, command handlers
 docker/
-  mysql-init.d/ 001_ingest.sql, 002_outbox.sql
+  mysql-init.d/ 001_ingest.sql, 002_outbox.sql, 003_ocr_regions.sql
 frontend/       知识库 Web 控制台
 tests/
 ```

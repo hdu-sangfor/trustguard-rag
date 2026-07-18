@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from typing import Any
 
 from app.core.retrieval.filters import build_opensearch_filters, matches_filters
@@ -119,12 +120,9 @@ class KeywordRetriever:
 
         filter_clauses = build_opensearch_filters(filters)
 
+        # 仅确保索引存在；全量回填留给 startup / 运维入口，避免读路径阻塞。
         async with _INDEX_INIT_LOCK:
-            created = await self.ensure_index()
-            if created:
-                from app.core.indexing.opensearch_backfill import backfill_ready_documents
-
-                await backfill_ready_documents(retriever=self, ensure_index=False)
+            await self.ensure_index()
 
         client = opensearch_store.get_client()
         response = await client.search(
@@ -204,7 +202,7 @@ class MockKeywordRetriever:
 
 
 def _fake_score_from_text(text: str, query: str) -> float:
-    """基于查询词命中率计算模拟 TF-IDF 分数。"""
+    """基于查询词命中率计算模拟 TF-IDF 分数（种子跨进程稳定）。"""
     if not query or not text:
         return 0.0
     query_terms = set(query.lower().split())
@@ -212,7 +210,8 @@ def _fake_score_from_text(text: str, query: str) -> float:
     hits = sum(1 for term in query_terms if term in text_lower)
     if hits == 0:
         return 0.0
-    seed = hash(text + query) % 100
+    digest = hashlib.sha256(f"{text}\0{query}".encode("utf-8")).digest()
+    seed = int.from_bytes(digest[:4], "big") % 100
     return hits * 0.3 + (seed / 200.0) + 0.1
 
 

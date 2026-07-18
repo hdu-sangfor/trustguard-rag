@@ -30,8 +30,11 @@ class MinioBlobStore:
         return Path(".")
 
     def _key(self, relative_path: str) -> str:
-        """将相对路径规范化为对象存储键。"""
-        return relative_path.replace("\\", "/").lstrip("/")
+        """将相对路径安全地规范化为对象存储键。"""
+        key = relative_path.replace("\\", "/").lstrip("/")
+        if not key or ".." in key.split("/"):
+            raise ValueError(f"invalid blob path: {relative_path}")
+        return key
 
     def artifact_dir(self, document_id: str, version: int = 1) -> Path:
         """返回某个文档版本的逻辑产物前缀。"""
@@ -140,13 +143,31 @@ class MinioBlobStore:
                 return False
             raise
 
+    def write_artifact_file(
+        self,
+        document_id: str,
+        *,
+        version: int = 1,
+        relative_name: str,
+        data: bytes,
+    ) -> str:
+        """向文档 artifact 前缀写入附加对象，返回逻辑相对路径。"""
+        safe = relative_name.replace("\\", "/").lstrip("/")
+        if ".." in safe.split("/"):
+            raise ValueError("invalid artifact relative path")
+        prefix = self._key(str(self.artifact_dir(document_id, version)))
+        key = f"{prefix}/{safe}"
+        self._put_bytes(key, data)
+        # 与本地 BlobStore 对齐：返回相对 storage 根的路径形态
+        return f"artifacts/{document_id}/v{version}/{safe}"
+
     def list_artifacts(self, document_id: str, version: int = 1) -> list[str]:
-        """列出文档版本前缀下的直接产物文件名。"""
+        """列出文档版本前缀下的产物相对路径。"""
         prefix = self._key(str(self.artifact_dir(document_id, version))).rstrip("/") + "/"
         names: list[str] = []
-        for obj in self._client.list_objects(self._bucket, prefix=prefix, recursive=False):
+        for obj in self._client.list_objects(self._bucket, prefix=prefix, recursive=True):
             name = obj.object_name[len(prefix) :]
-            if name and "/" not in name:
+            if name:
                 names.append(name)
         return sorted(names)
 

@@ -13,13 +13,25 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import documents, health, ingest, search, sources
+from app.api import documents, health, ingest, ocr_review, search, sources
 from app.core.indexing.opensearch_backfill import backfill_ready_documents
 from app.settings import get_settings
 from app.stores import db, opensearch_store, qdrant_store, redis_cache
 from app.stores.outbox_store import ensure_outbox_schema
+from app.stores.models import Base
+from app.stores.db import get_engine
 
 logger = logging.getLogger(__name__)
+
+
+async def ensure_ocr_schema() -> None:
+    """确保 OCR 区域表存在（开发/SQLite 与增量部署）。"""
+    try:
+        engine = get_engine()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception:  # noqa: BLE001
+        logger.warning("ensure_ocr_schema failed", exc_info=True)
 
 
 @asynccontextmanager
@@ -29,6 +41,7 @@ async def lifespan(app: FastAPI):
     logging.basicConfig(level=s.log_level)
     logger.info("starting %s v%s (env=%s) on :%s", s.app_name, s.app_version, s.app_env, s.api_port)
     await ensure_outbox_schema()
+    await ensure_ocr_schema()
     if not s.search_opensearch_mock and s.opensearch_backfill_on_startup:
         try:
             result = await backfill_ready_documents()
@@ -63,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(documents.router)
     app.include_router(sources.router)
     app.include_router(search.router)
+    app.include_router(ocr_review.router)
 
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     app.mount("/assets", StaticFiles(directory=frontend_dir / "assets"), name="assets")

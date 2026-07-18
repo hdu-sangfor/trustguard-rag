@@ -32,6 +32,12 @@ local-embedding = [
     "modelscope>=1.17",
     "torch>=2.2",
 ]
+ocr-local = [
+    "paddlepaddle>=2.6",
+    "paddleocr>=2.7",
+    "Pillow>=10.0",
+    "numpy>=1.24",
+]
 
 [dependency-groups]
 dev = [
