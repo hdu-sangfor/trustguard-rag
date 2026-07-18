@@ -69,6 +69,16 @@ def _scanned_like_pdf() -> bytes:
 
 
 @pytest.mark.asyncio
+async def test_scanned_pdf_with_ocr(monkeypatch):
+    monkeypatch.setenv("RAG_OCR_PROVIDER", "api")
+    get_settings.cache_clear()
+    extractor = PdfExtractor(ocr_engine=FakeOcrEngine("scan text"))
+    doc = await extractor.extract_async(_scanned_like_pdf(), original_filename="scan.pdf")
+    assert "scan text" in doc.text
+    assert "[OCR image 1" in doc.text
+
+
+@pytest.mark.asyncio
 async def test_pdf_ocr_merges_image_text(monkeypatch):
     monkeypatch.setenv("RAG_OCR_PROVIDER", "api")
     get_settings.cache_clear()
@@ -76,6 +86,9 @@ async def test_pdf_ocr_merges_image_text(monkeypatch):
     doc = await extractor.extract_async(_pdf_with_embedded_image(), original_filename="mix.pdf")
     assert "visible text layer" in doc.text
     assert "from-image" in doc.text
+    assert "[OCR image 1" in doc.text
+    # 邻近：图片在 y=50，正文在 y=200 → OCR 段应出现在正文之前
+    assert doc.text.index("[OCR image") < doc.text.index("visible text layer")
     assert doc.metadata["ocr_region_drafts"]
     assert 1 in doc.metadata["pages_with_ocr"]
 

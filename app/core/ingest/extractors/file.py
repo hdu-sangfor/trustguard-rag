@@ -6,6 +6,7 @@ import mimetypes
 from pathlib import Path
 
 from app.core.ingest.errors import UNSUPPORTED_MIME, IngestError
+from app.core.ingest.extractors.docx_extractor import DocxExtractor
 from app.core.ingest.extractors.html_extractor import HtmlExtractor
 from app.core.ingest.extractors.image_extractor import ImageExtractor
 from app.core.ingest.extractors.mineru import (
@@ -26,6 +27,7 @@ from app.settings import get_settings
 
 _local_pdf = PdfExtractor()
 _mineru_pdf = MineruPdfExtractor()
+_local_docx = DocxExtractor()
 _mineru_docx = MineruDocxExtractor()
 _plain = PlainTextExtractor()
 _md = MarkdownExtractor()
@@ -36,7 +38,7 @@ _image = ImageExtractor()
 
 MIME_ROUTER: dict[str, object] = {
     PDF_MIME: _local_pdf,
-    DOCX_MIME: _mineru_docx,
+    DOCX_MIME: _local_docx,
     "text/plain": _plain,
     "text/markdown": _md,
     "text/x-markdown": _md,
@@ -91,6 +93,18 @@ def _guess_mime(filename: str, data: bytes) -> str:
         return "image/bmp"
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp"
+    if data.startswith(b"PK"):
+        try:
+            import io
+            import zipfile
+
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                if "[Content_Types].xml" in zf.namelist():
+                    ct = zf.read("[Content_Types].xml").decode("utf-8", errors="ignore")
+                    if "wordprocessingml" in ct:
+                        return DOCX_MIME
+        except Exception:  # noqa: BLE001
+            pass
     if data.lstrip().startswith((b"{", b"[")):
         return "application/json"
     if "<html" in data[:2000].decode("utf-8", errors="ignore").lower():
@@ -120,6 +134,8 @@ class FileExtractor:
 
         if resolved_mime == PDF_MIME and get_settings().pdf_parser.strip().lower() == "mineru":
             return resolved_mime, _mineru_pdf
+        if resolved_mime == DOCX_MIME and get_settings().docx_parser.strip().lower() == "mineru":
+            return resolved_mime, _mineru_docx
 
         extractor = MIME_ROUTER.get(resolved_mime)
         if extractor is None:

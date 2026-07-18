@@ -72,6 +72,7 @@ async def test_source_capabilities_include_docx(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("RAG_PDF_PARSER", "mineru")
+    monkeypatch.setenv("RAG_DOCX_PARSER", "mineru")
     get_settings.cache_clear()
     response = await client.get("/v1/sources/capabilities")
 

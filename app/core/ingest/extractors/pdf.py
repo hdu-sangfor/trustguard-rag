@@ -1,4 +1,4 @@
-"""基于 PyMuPDF 的 PDF 文本抽取 + 图片区域 OCR。"""
+"""基于 PyMuPDF 的 PDF 文本抽取 + 图片区域 OCR（邻近插入 + 统一前缀）。"""
 from __future__ import annotations
 
 import hashlib
@@ -17,11 +17,11 @@ from app.core.ingest.errors import (
     IngestError,
 )
 from app.core.ingest.extractors._async_utils import run_sync
+from app.core.ingest.extractors.ocr_merge import format_ocr_span
 from app.core.ingest.models import ExtractedDocument
 from app.core.ocr import get_ocr_engine
 from app.core.ocr.errors import OcrError
 from app.core.ocr.protocol import OcrRegionDraft
-from app.core.ocr.text_merge import merge_ocr_text
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,26 @@ def _page_image_rects(page: fitz.Page) -> list[fitz.Rect]:
     return unique
 
 
+def _page_text_blocks(page: fitz.Page) -> list[tuple[float, float, str]]:
+    """文本块：(y0, x0, text)，供与 OCR 邻近排序。"""
+    blocks: list[tuple[float, float, str]] = []
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        lines: list[str] = []
+        for line in block.get("lines", []):
+            spans = [s.get("text", "") for s in line.get("spans", [])]
+            line_text = "".join(spans).strip()
+            if line_text:
+                lines.append(line_text)
+        text = "\n".join(lines).strip()
+        if not text:
+            continue
+        bbox = block.get("bbox") or (0, 0, 0, 0)
+        blocks.append((float(bbox[1]), float(bbox[0]), text))
+    return blocks
+
+
 class PdfExtractor:
     def __init__(self, ocr_engine=None) -> None:
         self._ocr = ocr_engine
@@ -77,7 +97,7 @@ class PdfExtractor:
         *,
         original_filename: str = "document.pdf",
     ) -> ExtractedDocument:
-        """校验 PDF，抽取文本层，并对图片区域做裁剪 OCR。"""
+        """校验 PDF，抽取文本层，并对图片区域做裁剪 OCR（邻近插入）。"""
         settings = get_settings()
         if len(data) > settings.ingest_max_pdf_bytes:
             raise IngestError(PDF_TOO_LARGE, "PDF exceeds max byte size")
@@ -102,6 +122,7 @@ class PdfExtractor:
             pages_with_text: list[int] = []
             pages_with_ocr: list[int] = []
             base_parts: list[str] = []
+            page_bodies: list[str] = []
             min_side = settings.ocr_min_image_side_px
             dpi = settings.ocr_render_dpi
             scale = dpi / 72.0
@@ -109,14 +130,21 @@ class PdfExtractor:
             max_doc_regions = settings.ocr_max_regions_per_document
             max_pixels = settings.ocr_max_crop_pixels
             max_crop_bytes = settings.ocr_max_crop_bytes
+            image_no = 0
 
             for i in range(page_count):
                 page_no = i + 1
                 page = doc.load_page(i)
-                text = page.get_text("text") or ""
+                text_blocks = _page_text_blocks(page)
+                plain_text = "\n".join(t for _, _, t in text_blocks).strip()
+                if plain_text:
+                    base_parts.append(f"--- Page {page_no} ---\n{plain_text}")
+
+                # events: (y0, x0, kind, payload) kind=text|ocr
+                events: list[tuple[float, float, str, Any]] = [
+                    (y0, x0, "text", text) for y0, x0, text in text_blocks
+                ]
                 page_region_count = 0
-                if text.strip():
-                    base_parts.append(f"--- Page {page_no} ---\n{text.strip()}")
 
                 if ocr_engine.enabled:
                     for rect in _page_image_rects(page):
@@ -157,6 +185,8 @@ class PdfExtractor:
                         except Exception as e:  # noqa: BLE001
                             logger.warning("failed to render PDF image crop: %s", e)
                             continue
+
+                        image_no += 1
                         bbox = [float(clip.x0), float(clip.y0), float(clip.x1), float(clip.y1)]
                         try:
                             draft = await ocr_engine.recognize_region(
@@ -174,22 +204,36 @@ class PdfExtractor:
                                     status="failed",
                                     provider=ocr_engine.provider_name,
                                     error_message=_safe_ocr_error(str(e)),
+                                    metadata={
+                                        "image_no": image_no,
+                                        "source": "pdf",
+                                        "sequence": len(region_drafts),
+                                    },
                                 )
                             else:
                                 raise IngestError(OCR_UNAVAILABLE, str(e)) from e
-                        draft.metadata = {**draft.metadata, "sequence": len(region_drafts)}
+                        draft.metadata = {
+                            **(draft.metadata or {}),
+                            "image_no": image_no,
+                            "source": "pdf",
+                            "sequence": len(region_drafts),
+                        }
                         region_drafts.append(draft)
                         page_region_count += 1
-                        if draft.ocr_text.strip():
+                        span = format_ocr_span(image_no, draft.ocr_text, page_no=page_no)
+                        if span:
+                            events.append((float(clip.y0), float(clip.x0), "ocr", span))
                             pages_with_ocr.append(page_no)
-                if text.strip() or any(
-                    draft.page_no == page_no and draft.ocr_text.strip()
-                    for draft in region_drafts
-                ):
+
+                events.sort(key=lambda e: (e[0], e[1], 0 if e[2] == "text" else 1))
+                page_chunks = [payload for _, _, _, payload in events if payload]
+                page_body = "\n\n".join(page_chunks).strip()
+                if page_body:
                     pages_with_text.append(page_no)
+                    page_bodies.append(f"--- Page {page_no} ---\n{page_body}")
 
             base_text = "\n\n".join(base_parts).strip()
-            full_text = merge_ocr_text(base_text, region_drafts)
+            full_text = "\n\n".join(page_bodies).strip()
             if not full_text:
                 if region_drafts:
                     # OCR 尝试过但全文仍空：返回空文本 + drafts，由 pipeline 落库后报 EMPTY

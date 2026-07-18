@@ -6,8 +6,8 @@ TrustGuard RAG 支持本地上传多种文件格式，并对 PDF 内嵌图片 / 
 
 | 类型 | MIME / 扩展名 | 说明 |
 |------|----------------|------|
-| PDF | `application/pdf` | 默认 MinerU；可切换为文本层 + 图片区域裁剪 OCR |
-| Word | `.docx` | MinerU 文档解析 |
+| PDF | `application/pdf` | 默认 MinerU；可切换为文本层 + 图片区域裁剪 OCR（邻近插入） |
+| Word | `.docx` | 默认本地 `python-docx`（正文/表格/页眉页脚 + 嵌入原图 OCR + 公式/图表文本化）；可切换 MinerU |
 | 纯文本 | `.txt` `.log` | UTF-8 / BOM / GBK |
 | Markdown | `.md` | 剥离 YAML front matter（写入 metadata） |
 | CSV / JSON / HTML | `.csv` `.json` `.html` | 转为可读纯文本后分块 |
@@ -53,11 +53,23 @@ Docker 默认不装 Paddle 大镜像；容器内用 `api` 或 `none` 即可。
 
 显式设置 `RAG_PDF_PARSER=local` 时使用以下本地链路：
 
-1. 每页抽取文本层。
+1. 每页抽取文本块，并按 bbox 与图片 OCR **邻近插入**。
 2. 用 PyMuPDF 检测图片 bbox，**只渲染裁剪区**再 OCR（非整页）。
-3. 合并页面文本 + OCR spans；空识别记 `status=empty`。
+3. OCR 正文带统一前缀 `[OCR image N]` / `[OCR image N p{page}]`；空识别记 `status=empty`。
 4. 单块失败时（`RAG_OCR_FAIL_OPEN=true`）记 `failed`，不阻断其它页。
-5. 全文最终仍空 → `EMPTY_CONTENT`；OCR 区域仍会落库便于复核。
+5. 另存非 OCR 基线 `ocr/base.txt` 供人工复核确定性重拼。
+6. 全文最终仍空 → `EMPTY_CONTENT`；OCR 区域仍会落库便于复核。
+
+## Word 行为
+
+默认 `RAG_DOCX_PARSER=local`：
+
+1. 抽取正文、表格、页眉/页脚。
+2. 嵌入图片走原图 OCR（开启 OCR 时），按文档顺序邻近插入，前缀同上。
+3. OMML 公式与图表 XML 尽量文本化。
+4. 加密 DOCX → `DOCX_ENCRYPTED`。
+
+设置 `RAG_DOCX_PARSER=mineru` 时走 MinerU 文档解析（与 PDF MinerU 共用服务）。
 
 ## 人工复核 API（无 UI）
 

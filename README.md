@@ -41,8 +41,9 @@ docker compose up -d --build
 `DOCKERHUB_REGISTRY`、`MINERU_BASE_IMAGE`、`UBUNTU_APT_MIRROR`、`PIP_INDEX_URL`
 和 `MINERU_MODEL_SOURCE` 覆盖。默认只下载 `MINERU_MODEL_TYPE=pipeline` 对应模型，
 避免把未使用的 VLM 模型打入镜像。
-若只需本地 PDF 文本层 + 图片区域 OCR，可显式设置 `RAG_PDF_PARSER=local`；DOCX
-仍需要 MinerU。
+若只需本地 PDF 文本层 + 图片区域 OCR，可显式设置 `RAG_PDF_PARSER=local`。
+Word 默认走本地 `python-docx`（`RAG_DOCX_PARSER=local`）；需要 MinerU 解析 Word 时设
+`RAG_DOCX_PARSER=mineru`。仅当 PDF 或 Word 配置为 mineru 时，健康检查才要求 MinerU 就绪。
 
 ## 本地开发（Linux）
 

@@ -289,6 +289,19 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         assert "bad()" not in text
         return f"doc={job['document_id']}"
 
+    def t_ingest_docx():
+        from docx import Document
+
+        buf = __import__("io").BytesIO()
+        d = Document()
+        d.add_paragraph(f"Dynamic docx body {run_id}")
+        d.save(buf)
+        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        job = _ingest_ok(f"doc-{run_id}.docx", buf.getvalue(), mime)
+        text = client.get(f"/v1/documents/{job['document_id']}/artifacts/extracted.txt").text
+        assert run_id in text
+        return f"doc={job['document_id']}"
+
     def t_empty_txt_fails():
         r = client.post(
             "/v1/ingest/jobs",
@@ -370,6 +383,7 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         ("ingest csv", t_ingest_csv),
         ("ingest json", t_ingest_json),
         ("ingest html", t_ingest_html),
+        ("ingest docx", t_ingest_docx),
         ("empty txt EMPTY_CONTENT", t_empty_txt_fails),
         ("unsupported mime", t_unsupported_mime),
         ("image without OCR", t_image_without_ocr),

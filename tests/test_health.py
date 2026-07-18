@@ -47,8 +47,21 @@ def test_ingest_health_reports_disabled_search_backends_once(monkeypatch) -> Non
     get_settings.cache_clear()
 
 
-def test_local_pdf_parser_still_requires_mineru_for_docx(monkeypatch) -> None:
+def test_local_parsers_do_not_require_mineru(monkeypatch) -> None:
     monkeypatch.setenv("RAG_PDF_PARSER", "local")
+    monkeypatch.setenv("RAG_DOCX_PARSER", "local")
+    monkeypatch.setenv("RAG_QDRANT_MOCK", "true")
+    monkeypatch.setenv("RAG_SEARCH_OPENSEARCH_MOCK", "true")
+    monkeypatch.setenv("RAG_MINIO_ENABLED", "false")
+    get_settings.cache_clear()
+
+    assert _ingest_required() == ("mysql", "local_storage")
+    get_settings.cache_clear()
+
+
+def test_mineru_docx_parser_requires_mineru(monkeypatch) -> None:
+    monkeypatch.setenv("RAG_PDF_PARSER", "local")
+    monkeypatch.setenv("RAG_DOCX_PARSER", "mineru")
     monkeypatch.setenv("RAG_QDRANT_MOCK", "true")
     monkeypatch.setenv("RAG_SEARCH_OPENSEARCH_MOCK", "true")
     monkeypatch.setenv("RAG_MINIO_ENABLED", "false")

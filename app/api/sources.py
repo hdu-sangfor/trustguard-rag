@@ -23,7 +23,7 @@ async def source_capabilities() -> dict:
                 "max_pdf_pages": settings.ingest_max_pdf_pages,
                 "parsers": {
                     "application/pdf": settings.pdf_parser,
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "mineru",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": settings.docx_parser,
                     "text/plain": "local",
                     "text/markdown": "local",
                     "text/csv": "local",

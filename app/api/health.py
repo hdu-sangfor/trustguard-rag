@@ -43,9 +43,13 @@ def _ingest_required() -> tuple[str, ...]:
         required.append("qdrant")
     if not s.search_opensearch_mock:
         required.append("opensearch")
-    # DOCX is always routed to MinerU, so advertised ingest readiness requires it
-    # even when PDF explicitly falls back to the local parser.
-    required.append("mineru")
+    # MinerU only required when PDF or DOCX is configured to use it.
+    needs_mineru = (
+        s.pdf_parser.strip().lower() == "mineru"
+        or s.docx_parser.strip().lower() == "mineru"
+    )
+    if needs_mineru:
+        required.append("mineru")
     return tuple(required)
 
 

@@ -81,6 +81,7 @@ class Settings(BaseSettings):
 
     # --- 文档解析器 / MinerU ---
     pdf_parser: str = "mineru"  # mineru | local（显式回退）
+    docx_parser: str = "local"  # local | mineru
     mineru_base_url: str = "http://127.0.0.1:8000"
     mineru_backend: str = "pipeline"
     mineru_timeout_seconds: float = 300.0
@@ -196,6 +197,8 @@ class Settings(BaseSettings):
         """校验生产检索后端和分块窗口配置。"""
         if self.pdf_parser.strip().lower() not in {"local", "mineru"}:
             raise ValueError("RAG_PDF_PARSER 必须是 local 或 mineru")
+        if self.docx_parser.strip().lower() not in {"local", "mineru"}:
+            raise ValueError("RAG_DOCX_PARSER 必须是 local 或 mineru")
         if self.chunk_target_tokens <= 0:
             raise ValueError("RAG_CHUNK_TARGET_TOKENS 必须大于 0")
         if not 0 <= self.chunk_overlap_tokens < self.chunk_target_tokens:
