@@ -2,11 +2,13 @@
 
 见 doc/rag-platform-implementation-plan.md §5（基础设施选型）。
 """
+
 from __future__ import annotations
 
 import os
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,17 +38,19 @@ class Settings(BaseSettings):
     # --- 应用 ---
     app_name: str = "trustguard-rag-platform"
     app_version: str = "0.1.0"
-    app_env: str = "dev"  # dev | prod，运行环境
+    app_env: str = "dev"  # 运行环境取值：dev | prod
     log_level: str = "INFO"
     api_host: str = "0.0.0.0"
     api_port: int = 18200
-    rag_mode: str = "ingest"  # ingest | full，健康检查模式
+    rag_mode: str = "ingest"  # 健康检查模式取值：ingest | full
 
-    # --- Ingest ---
+    # --- 入库 ---
     ingest_max_pdf_bytes: int = 52_428_800
     ingest_max_pdf_pages: int = 500
     conflict_ttl_hours: int = 168
-    chunk_target_tokens: int = 512
+    chunk_tokenizer_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    chunk_target_tokens: int = 384
+    chunk_overlap_tokens: int = 64
 
     # --- MySQL（元数据 / 文档 / 分块 / 任务） ---
     mysql_host: str = "localhost"
@@ -60,7 +64,7 @@ class Settings(BaseSettings):
     qdrant_port: int = 6333
     qdrant_api_key: str | None = None
     qdrant_collection_prefix: str = "rag_"
-    qdrant_mock: bool = True  # True 表示跳过真实 Qdrant，索引操作为空操作
+    qdrant_mock: bool = True  # 设为 True 时跳过真实 Qdrant，索引操作为空操作
 
     # --- OpenSearch（BM25 / 全文） ---
     opensearch_host: str = "localhost"
@@ -105,10 +109,10 @@ class Settings(BaseSettings):
     minio_secret_key: str = "minioadmin"
     minio_secure: bool = False
     minio_bucket: str = "trustguard-rag-artifacts"
-    local_storage_dir: str = "./data/storage"  # minio_enabled=False 时使用
+    local_storage_dir: str = "./data/storage"  # `minio_enabled` 为 False 时使用
 
-    # --- Embedding（启动前需冻结单一模型，维度必须与模型匹配；见 §5.1“嵌入模型冻结”） ---
-    embedding_provider: str = "pseudo"  # pseudo | local | api | openai_compatible
+    # --- 嵌入（启动前需冻结单一模型，维度必须与模型匹配；见 §5.1“嵌入模型冻结”） ---
+    embedding_provider: str = "pseudo"  # 提供方取值：pseudo | local | api | openai_compatible
     embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
     embedding_dim: int = 1024
     embedding_device: str = "auto"
@@ -117,7 +121,7 @@ class Settings(BaseSettings):
     embedding_query_instruction: str = (
         "Given a cybersecurity search query, retrieve relevant passages that answer the query"
     )
-    embedding_download_source: str = "huggingface"  # huggingface | modelscope
+    embedding_download_source: str = "huggingface"  # 下载源取值：huggingface | modelscope
     embedding_cache_dir: str | None = None
     huggingface_endpoint: str | None = None
     huggingface_hub_url: str | None = None
@@ -127,10 +131,10 @@ class Settings(BaseSettings):
     embedding_api_key: str | None = None
     embedding_api_timeout_seconds: float = 60.0
 
-    # --- Rerank ---
-    rerank_provider: str = "none"  # none | local | api，重排提供方
+    # --- 重排序 ---
+    rerank_provider: str = "none"  # 重排序提供方取值：none | local | api
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
-    rerank_top_k: int = 10  # rerank 前传入的候选数量
+    rerank_top_k: int = 10  # 重排序前传入的候选数量
     rerank_device: str = "auto"
     rerank_batch_size: int = 16
     rerank_normalize: bool = True
@@ -145,23 +149,46 @@ class Settings(BaseSettings):
     search_top_k: int = 10  # 最终返回的结果数量
     search_vector_top_k: int = 30  # 向量检索引擎初始召回数量
     search_keyword_top_k: int = 30  # 关键词检索引擎初始召回数量
-    search_fusion_method: str = "rrf"  # rrf | weighted_score，融合策略
+    search_fusion_method: str = "rrf"  # 融合策略取值：rrf | weighted_score
     search_rrf_k: int = 60  # RRF 融合常数，越小则排名靠前的权重越高
-    search_vector_weight: float = 0.6  # weighted_score 模式下向量检索权重
-    search_keyword_weight: float = 0.4  # weighted_score 模式下关键词检索权重
-    search_opensearch_mock: bool = True  # True 时使用内存模拟 BM25（PseudoKeywordRetriever），无需真实 OpenSearch
+    search_vector_weight: float = 0.6  # 加权分数模式下的向量检索权重
+    search_keyword_weight: float = 0.4  # 加权分数模式下的关键词检索权重
+    search_opensearch_mock: bool = True  # 设为 True 时使用内存模拟 BM25，无需真实 OpenSearch
 
     # --- 健康检查 ---
     health_check_timeout_seconds: float = 3.0
 
+    @model_validator(mode="after")
+    def reject_mock_retrieval_in_production(self) -> Settings:
+        """校验生产检索后端和分块窗口配置。"""
+        if self.chunk_target_tokens <= 0:
+            raise ValueError("RAG_CHUNK_TARGET_TOKENS 必须大于 0")
+        if not 0 <= self.chunk_overlap_tokens < self.chunk_target_tokens:
+            raise ValueError(
+                "RAG_CHUNK_OVERLAP_TOKENS 必须大于等于 0，"
+                "并且小于 RAG_CHUNK_TARGET_TOKENS"
+            )
+        if self.app_env.strip().lower() != "prod":
+            return self
+        enabled_mocks: list[str] = []
+        if self.qdrant_mock:
+            enabled_mocks.append("RAG_QDRANT_MOCK")
+        if self.search_opensearch_mock:
+            enabled_mocks.append("RAG_SEARCH_OPENSEARCH_MOCK")
+        if enabled_mocks:
+            raise ValueError(
+                "Production cannot enable mock retrieval backends: " + ", ".join(enabled_mocks)
+            )
+        return self
+
     @property
     def staging_dir(self) -> str:
-        """返回 artifact 提交前使用的本地暂存目录。"""
+        """返回产物提交前使用的本地暂存目录。"""
         return f"{self.local_storage_dir.rstrip('/')}/staging"
 
     @property
     def mysql_dsn(self) -> str:
-        """根据配置构建 SQLAlchemy async MySQL 连接串。"""
+        """根据配置构建 SQLAlchemy 异步 MySQL 连接串。"""
         return (
             f"mysql+aiomysql://{self.mysql_user}:{self.mysql_password}"
             f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}?charset=utf8mb4"

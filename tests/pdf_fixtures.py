@@ -1,4 +1,4 @@
-"""Test PDF helpers."""
+"""PDF 测试辅助函数。"""
 from __future__ import annotations
 
 

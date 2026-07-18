@@ -40,7 +40,7 @@ def sample_vector_results() -> list[dict]:
             "chunk_id": "v1",
             "text": "网络安全威胁检测系统使用深度学习模型",
             "score": 0.95,
-            "doc_id": "doc1",
+            "document_id": "doc1",
             "chunk_index": 0,
             "page_no": 1,
             "source_uri": "file:///doc1.pdf",
@@ -51,7 +51,7 @@ def sample_vector_results() -> list[dict]:
             "chunk_id": "v2",
             "text": "SQL注入攻击是最常见的Web安全漏洞",
             "score": 0.87,
-            "doc_id": "doc2",
+            "document_id": "doc2",
             "chunk_index": 1,
             "page_no": 3,
             "source_uri": "file:///doc2.pdf",
@@ -62,7 +62,7 @@ def sample_vector_results() -> list[dict]:
             "chunk_id": "v3",
             "text": "量子计算对密码学的影响分析",
             "score": 0.62,
-            "doc_id": "doc3",
+            "document_id": "doc3",
             "chunk_index": 0,
             "page_no": 1,
             "source_uri": "file:///doc3.pdf",
@@ -79,7 +79,7 @@ def sample_keyword_results() -> list[dict]:
             "chunk_id": "k1",
             "text": "SQL注入是最常见的攻击向量，攻击者可通过构造恶意的SQL语句",
             "score": 8.5,
-            "doc_id": "doc4",
+            "document_id": "doc4",
             "chunk_index": 2,
             "page_no": 5,
             "source_uri": "file:///doc4.pdf",
@@ -90,7 +90,7 @@ def sample_keyword_results() -> list[dict]:
             "chunk_id": "v2",
             "text": "SQL注入攻击是最常见的Web安全漏洞",
             "score": 7.2,
-            "doc_id": "doc2",
+            "document_id": "doc2",
             "chunk_index": 1,
             "page_no": 3,
             "source_uri": "file:///doc2.pdf",
@@ -101,7 +101,7 @@ def sample_keyword_results() -> list[dict]:
             "chunk_id": "k2",
             "text": "Web应用防火墙可以有效防御SQL注入和XSS攻击",
             "score": 4.1,
-            "doc_id": "doc5",
+            "document_id": "doc5",
             "chunk_index": 0,
             "page_no": 2,
             "source_uri": "file:///doc5.pdf",
@@ -343,6 +343,8 @@ class TestHybridSearch:
         assert "fusion_method" in result
         assert "retrieval_time_ms" in result
         assert "components" in result
+        assert result["search_status"] == "ok"
+        assert result["effective_mode"] == "keyword_only"
         assert isinstance(result["results"], list)
         assert result["total"] == len(result["results"])
 
@@ -385,7 +387,7 @@ class TestHybridSearch:
             enable_vector=False,
             enable_keyword=True,
             enable_rerank=False,
-            filters={"doc_id": "nonexistent"},
+            filters={"document_id": "nonexistent"},
         )
         assert result["total"] >= 0
 
@@ -422,6 +424,8 @@ class TestSearchAPI:
         assert "total" in data
         assert "fusion_method" in data
         assert "retrieval_time_ms" in data
+        assert data["search_status"] == "ok"
+        assert data["effective_mode"] == "keyword_only"
 
     async def test_search_endpoint_invalid_fusion(self, client) -> None:
         response = await client.post(

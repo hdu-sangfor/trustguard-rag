@@ -7,8 +7,9 @@ import time
 from typing import Any
 
 from app.core.retrieval.keyword_retriever import get_keyword_retriever
-from app.core.retrieval.reranker import get_reranker
+from app.core.retrieval.reranker import RerankError, get_reranker
 from app.core.retrieval.vector_retriever import get_vector_retriever
+from app.domain import EffectiveSearchMode, RetrievalComponent, SearchStatus
 from app.settings import get_settings
 from app.stores.document_store import get_document_store
 
@@ -55,28 +56,58 @@ class HybridSearch:
         vector_results: list[dict[str, Any]] = []
         keyword_results: list[dict[str, Any]] = []
 
-        tasks: list[tuple[str, Any]] = []
+        tasks: list[tuple[RetrievalComponent, Any]] = []
         if enable_vector:
-            tasks.append(("vector", self._vector.retrieve(query, vector_top_k, filters)))
+            tasks.append(
+                (
+                    RetrievalComponent.VECTOR,
+                    self._vector.retrieve(query, vector_top_k, filters),
+                )
+            )
         if enable_keyword:
-            tasks.append(("keyword", self._keyword.retrieve(query, keyword_top_k, filters)))
+            tasks.append(
+                (
+                    RetrievalComponent.KEYWORD,
+                    self._keyword.retrieve(query, keyword_top_k, filters),
+                )
+            )
 
-        degraded_components: list[str] = []
+        if not tasks:
+            raise ValueError("At least one retrieval backend must be enabled")
+
+        degraded_components: list[RetrievalComponent] = []
+        available_components: list[RetrievalComponent] = []
         if tasks:
             gathered: list[Any] = await asyncio.gather(
                 *(task for _, task in tasks), return_exceptions=True
             )
             for (name, _), result in zip(tasks, gathered):
-                if isinstance(result, BaseException):
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                if isinstance(result, Exception):
                     degraded_components.append(name)
-                    logger.warning("%s retrieval failed: %s", name, result)
-                elif name == "vector":
+                    logger.warning(
+                        "%s retrieval failed: %s",
+                        name,
+                        result,
+                        exc_info=(type(result), result, result.__traceback__),
+                    )
+                elif name == RetrievalComponent.VECTOR:
+                    available_components.append(name)
                     vector_results = result
                 else:
+                    available_components.append(name)
                     keyword_results = result
 
         if tasks and len(degraded_components) == len(tasks):
             raise SearchUnavailableError("All enabled retrieval backends are unavailable")
+
+        if degraded_components and not vector_results and not keyword_results:
+            raise SearchUnavailableError(
+                "Retrieval is incomplete and no reliable result is available"
+            )
+
+        effective_mode = _effective_mode(available_components)
 
         components = {
             "vector": len(vector_results),
@@ -92,33 +123,57 @@ class HybridSearch:
         )
         document_ids = list(
             {
-                str(item.get("doc_id") or item.get("document_id"))
+                str(item.get("document_id"))
                 for item in merged
-                if item.get("doc_id") or item.get("document_id")
+                if item.get("document_id")
             }
         )
         ready_ids = await self._documents.ready_ids(document_ids)
         merged = [
             item
             for item in merged
-            if str(item.get("doc_id") or item.get("document_id")) in ready_ids
+            if str(item.get("document_id")) in ready_ids
         ]
 
         if enable_rerank and merged:
             rerank_candidates = merged[: self._settings.rerank_top_k]
-            merged = await self._reranker.rerank(query, rerank_candidates, top_k)
+            try:
+                merged = await self._reranker.rerank(query, rerank_candidates, top_k)
+            except RerankError as error:
+                degraded_components.append(RetrievalComponent.RERANK)
+                logger.warning(
+                    "rerank failed: %s",
+                    error,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+                merged = rerank_candidates[:top_k]
 
         results = _format_results(merged[:top_k])
         retrieval_time_ms = round((time.perf_counter() - t0) * 1000, 2)
 
         return {
+            "search_status": (
+                SearchStatus.DEGRADED if degraded_components else SearchStatus.OK
+            ),
+            "effective_mode": effective_mode,
             "results": results,
             "total": len(results),
             "fusion_method": fusion_method,
             "retrieval_time_ms": retrieval_time_ms,
             "components": components,
-            "degraded_components": degraded_components,
+            "degraded_components": [item.value for item in degraded_components],
         }
+
+
+def _effective_mode(
+    available_components: list[RetrievalComponent],
+) -> EffectiveSearchMode:
+    available = set(available_components)
+    if available == {RetrievalComponent.VECTOR, RetrievalComponent.KEYWORD}:
+        return EffectiveSearchMode.HYBRID
+    if RetrievalComponent.VECTOR in available:
+        return EffectiveSearchMode.VECTOR_ONLY
+    return EffectiveSearchMode.KEYWORD_ONLY
 
 
 def _merge_results(
@@ -205,7 +260,7 @@ def _format_results(merged: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "keyword_score": item.get("keyword_score"),
             "rerank_score": item.get("rerank_score"),
             "source": {
-                "document_id": item.get("doc_id") or item.get("document_id", ""),
+                "document_id": item.get("document_id", ""),
                 "source_uri": item.get("source_uri", ""),
                 "original_filename": item.get("original_filename"),
                 "chunk_index": item.get("chunk_index", 0),

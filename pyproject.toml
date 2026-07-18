@@ -19,6 +19,8 @@ dependencies = [
     "cryptography>=42",
     "pymupdf>=1.24.0",
     "python-multipart>=0.0.9",
+    "langchain-text-splitters>=0.3.8",
+    "transformers>=4.51.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -27,7 +29,6 @@ include = ["app*"]
 [project.optional-dependencies]
 local-embedding = [
     "sentence-transformers>=3.0",
-    "transformers>=4.51.0",
     "modelscope>=1.17",
     "torch>=2.2",
 ]

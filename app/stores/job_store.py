@@ -36,7 +36,7 @@ def _utcnow() -> datetime:
 
 
 class LeaseLostError(RuntimeError):
-    """The caller no longer owns the right to mutate a running job."""
+    """调用方已无权修改正在运行的任务。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +64,7 @@ class JobStore:
         status: IngestJobStatus | str = IngestJobStatus.QUEUED,
         job_id: str | None = None,
     ) -> IngestJobRow:
-        """创建 queued 状态的入库任务行，并初始化选项和日志。"""
+        """创建排队状态的入库任务记录，并初始化选项和日志。"""
         row = IngestJobRow(
             id=job_id or str(uuid4()),
             source_type=source_type,
@@ -87,7 +87,7 @@ class JobStore:
         source: str,
         options: dict[str, Any] | None = None,
     ) -> tuple[IngestJobRow, OutboxEvent]:
-        """Atomically create an ingest job and its dispatch event."""
+        """以原子方式创建入库任务及其调度事件。"""
         row = IngestJobRow(
             id=job_id,
             source_type=source_type,
@@ -119,7 +119,7 @@ class JobStore:
         *,
         lease_token: str | None = None,
     ) -> None:
-        """记录流水线步骤并刷新 Worker 租约，不增加任务 attempt。"""
+        """记录流水线步骤并刷新 Worker 租约，不增加任务尝试次数。"""
         async with AsyncSession(get_engine()) as session:
             job = await session.get(IngestJobRow, job_id)
             if not job:
@@ -150,7 +150,7 @@ class JobStore:
         allowed_statuses: tuple[IngestJobStatus | str, ...],
         owner: str | None = None,
     ) -> ClaimResult:
-        """Atomically claim one job; expired running leases may be reclaimed."""
+        """以原子方式认领一个任务；已过期的运行租约可被重新认领。"""
         now = _utcnow()
         settings = get_settings()
         async with AsyncSession(get_engine()) as session:
@@ -214,7 +214,7 @@ class JobStore:
             )
 
     async def heartbeat(self, job_id: str, lease_token: str) -> bool:
-        """Renew a lease only while the caller still owns the running job."""
+        """仅当调用方仍持有运行中任务时续租。"""
         now = _utcnow()
         async with AsyncSession(get_engine()) as session:
             result = await session.execute(
@@ -238,7 +238,7 @@ class JobStore:
         job_id: str,
         keep_document_id: str,
     ) -> tuple[IngestJobRow, OutboxEvent]:
-        """Atomically persist a conflict decision and enqueue its command."""
+        """以原子方式持久化冲突处理决定，并将对应命令加入队列。"""
         async with AsyncSession(get_engine(), expire_on_commit=False) as session:
             job = await session.get(IngestJobRow, job_id, with_for_update=True)
             if not job or job.status != IngestJobStatus.CONFLICT:
@@ -296,7 +296,7 @@ class JobStore:
         *,
         lease_token: str | None = None,
     ) -> None:
-        """Persist the current Saga document so retries can clean partial work."""
+        """持久化当前 Saga 文档，以便重试时清理未完成的工作。"""
         async with AsyncSession(get_engine()) as session:
             query = update(IngestJobRow).where(IngestJobRow.id == job_id)
             if lease_token is not None:
@@ -319,7 +319,7 @@ class JobStore:
         status: IngestJobStatus | str = IngestJobStatus.INGEST_RETRYING,
         lease_token: str | None = None,
     ) -> bool:
-        """Release a claimed job, or fail it immediately at the attempt limit."""
+        """释放已认领任务；达到尝试上限时立即将其标记失败。"""
         async with AsyncSession(get_engine()) as session:
             job = await session.get(IngestJobRow, job_id, with_for_update=True)
             if not job or job.status != IngestJobStatus.RUNNING:
@@ -387,7 +387,7 @@ class JobStore:
     async def publish_document(
         self, job_id: str, document_id: str, *, lease_token: str
     ) -> None:
-        """Atomically publish a document and finish only for the current lease owner."""
+        """仅允许当前租约持有者以原子方式发布文档并完成任务。"""
         now = _utcnow()
         async with AsyncSession(get_engine()) as session:
             job = await session.get(IngestJobRow, job_id, with_for_update=True)
@@ -413,7 +413,7 @@ class JobStore:
             await session.commit()
 
     async def recover_expired_jobs(self) -> list[OutboxEvent]:
-        """Release crashed Worker leases and atomically enqueue resumable commands."""
+        """释放崩溃 Worker 的租约，并以原子方式将可恢复命令重新加入队列。"""
         now = _utcnow()
         events: list[OutboxEvent] = []
         async with AsyncSession(get_engine(), expire_on_commit=False) as session:

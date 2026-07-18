@@ -1,4 +1,4 @@
-"""Periodic recovery for Worker crashes and orphaned ingest Saga state."""
+"""定期恢复 Worker 崩溃和入库 Saga 遗留的孤立状态。"""
 
 from __future__ import annotations
 

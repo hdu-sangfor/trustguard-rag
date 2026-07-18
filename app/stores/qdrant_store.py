@@ -25,7 +25,7 @@ def get_client() -> AsyncQdrantClient:
 
 
 async def check() -> DependencyStatus:
-    """非 mock 模式下检查 Qdrant 可用性。"""
+    """非模拟模式下检查 Qdrant 可用性。"""
     s = get_settings()
     if s.qdrant_mock:
         return DependencyStatus(status="disabled", detail="qdrant mock mode (no real index)")

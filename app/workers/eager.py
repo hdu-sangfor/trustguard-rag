@@ -1,4 +1,4 @@
-"""In-process command execution used only by deterministic tests."""
+"""仅供确定性测试使用的进程内命令执行器。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 async def dispatch_eager(event: OutboxEvent) -> None:
-    """Execute after commit when explicitly enabled; production always uses RabbitMQ."""
+    """显式启用时在事务提交后执行；生产环境始终使用 RabbitMQ。"""
     if not get_settings().worker_eager:
         return
     command = CommandMessage(

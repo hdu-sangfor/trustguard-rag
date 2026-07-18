@@ -1,4 +1,4 @@
-"""Standalone RabbitMQ Worker process."""
+"""独立的 RabbitMQ Worker 进程。"""
 
 from __future__ import annotations
 

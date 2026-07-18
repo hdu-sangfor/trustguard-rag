@@ -1,4 +1,4 @@
-"""Artifact 删除失败必须阻止元数据清理。"""
+"""产物删除失败必须阻止元数据清理。"""
 
 from __future__ import annotations
 

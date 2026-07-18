@@ -1,4 +1,4 @@
-"""Transactional Outbox relay."""
+"""事务性 Outbox 中继。"""
 
 from __future__ import annotations
 

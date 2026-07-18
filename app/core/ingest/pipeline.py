@@ -9,10 +9,11 @@ from uuid import NAMESPACE_URL, uuid5
 from app.core.embedding.client import EmbeddingClient, EmbeddingError, normalize_embedding_provider
 from app.core.indexing.opensearch_indexer import OpenSearchIndexer, get_opensearch_indexer
 from app.core.indexing.qdrant_indexer import get_qdrant_indexer
-from app.core.ingest.chunker import chunk_extracted_text
+from app.core.ingest.chunker import ChunkingError, chunk_extracted_text
 from app.core.ingest.compensator import Compensator
 from app.core.ingest.errors import (
     ARTIFACT_WRITE_FAILED,
+    CHUNKING_FAILED,
     EMBEDDING_FAILED,
     EMPTY_CONTENT,
     FILE_TOO_LARGE,
@@ -61,7 +62,7 @@ def _embedding_metadata(settings: Settings) -> dict[str, str]:
 
 
 async def _enqueue_cleanup(document_id: str, action: CleanupAction) -> None:
-    """Best-effort immediate scheduling; persisted document state remains the recovery source."""
+    """尽力立即调度；持久化的文档状态仍是故障恢复的依据。"""
     try:
         await OutboxStore().add(
             event_type=CLEANUP_DOCUMENT,
@@ -227,7 +228,10 @@ class IngestPipeline:
             await self._jobs.mark_running(
                 job_id, IngestStep.CHUNK, lease_token=lease_token
             )
-            drafts = chunk_extracted_text(extracted.text)
+            try:
+                drafts = chunk_extracted_text(extracted.text)
+            except ChunkingError as e:
+                raise IngestError(CHUNKING_FAILED, str(e)) from e
             if not drafts:
                 raise IngestError(EMPTY_CONTENT, "No chunks produced")
 
@@ -480,7 +484,7 @@ class IngestPipeline:
         status: IngestJobStatus = IngestJobStatus.INGEST_RETRYING,
         lease_token: str | None = None,
     ) -> PipelineResult:
-        """Schedule another delivery unless this attempt already reached the limit."""
+        """只要本次尝试尚未达到上限，就调度下一次投递。"""
         retrying = await self._jobs.mark_retrying(
             job_id,
             error_code=error_code,
@@ -499,14 +503,17 @@ class IngestPipeline:
         extracted: ExtractedDocument,
         original_filename: str,
     ) -> None:
-        """按 artifact、分块、嵌入、索引步骤发布暂存的冲突胜出文档。"""
+        """按产物、分块、嵌入、索引步骤发布暂存的冲突胜出文档。"""
         try:
             await self._documents.update_status(document_id, DocumentStatus.INDEXING)
             blob_path = await self._commit_artifacts(document_id, extracted)
             await self._documents.update_status(
                 document_id, DocumentStatus.INDEXING, blob_path=blob_path
             )
-            drafts = chunk_extracted_text(extracted.text)
+            try:
+                drafts = chunk_extracted_text(extracted.text)
+            except ChunkingError as e:
+                raise IngestError(CHUNKING_FAILED, str(e)) from e
             vectors = await self._embedder.embed_texts([d.text for d in drafts])
             settings = get_settings()
             embedding_metadata = _embedding_metadata(settings)
@@ -591,7 +598,7 @@ class IngestPipeline:
         return []
 
     async def _commit_artifacts(self, document_id: str, extracted: ExtractedDocument) -> str:
-        """将抽取文本、元数据和原始字节写入 blob 存储。"""
+        """将抽取文本、元数据和原始字节写入对象存储。"""
         meta = {
             "content_hash": extracted.content_hash,
             "mime": extracted.mime,

@@ -1,4 +1,4 @@
-"""RabbitMQ command consumers with delayed retries and dead lettering."""
+"""支持延迟重试和死信处理的 RabbitMQ 命令消费者。"""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ async def run_consumers() -> None:
         try:
             await dispatch_command(command)
         except BusyCommandError:
-            # Waiting for a live lease is coordination, not a failed business attempt.
+            # 等待有效租约属于并发协调，不计为一次业务失败尝试。
             routing_key = ROUTING_KEYS[command.event_type]
             await publish_command(
                 channel,

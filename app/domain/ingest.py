@@ -6,7 +6,7 @@ from enum import StrEnum
 
 
 class IngestJobStatus(StrEnum):
-    """持久化到 ingest_jobs 的任务生命周期状态。"""
+    """持久化到 `ingest_jobs` 表的任务生命周期状态。"""
 
     QUEUED = "queued"
     RUNNING = "running"
@@ -22,7 +22,7 @@ class IngestJobStatus(StrEnum):
 
 
 class IngestStep(StrEnum):
-    """持久化到 current_step 和步骤日志的入库步骤。"""
+    """持久化到 `current_step` 字段和步骤日志的入库步骤。"""
 
     QUEUED = "queued"
     RECOVER = "recover"
@@ -47,7 +47,7 @@ class IngestStep(StrEnum):
 
 
 class PipelineResult(StrEnum):
-    """Pipeline 方法返回值；与持久化任务状态分开建模。"""
+    """入库流水线方法的返回值；与持久化任务状态分开建模。"""
 
     MISSING = "missing"
     SUCCEEDED = "succeeded"
@@ -88,4 +88,3 @@ TERMINAL_JOB_STATUSES = frozenset(
         IngestJobStatus.DISCARDED,
     }
 )
-

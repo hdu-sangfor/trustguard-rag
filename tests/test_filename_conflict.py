@@ -1,4 +1,4 @@
-"""Filename conflict detection and resolution."""
+"""文件名冲突检测与解决测试。"""
 from __future__ import annotations
 
 import pytest

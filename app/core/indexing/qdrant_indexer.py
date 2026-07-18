@@ -11,6 +11,7 @@ from qdrant_client.models import (
     Filter,
     FilterSelector,
     MatchValue,
+    PayloadSchemaType,
     PointStruct,
     VectorParams,
 )
@@ -26,9 +27,17 @@ class QdrantIndexer:
         """读取向量配置并生成目标分块集合名。"""
         self._settings = get_settings()
         self._collection = f"{self._settings.qdrant_collection_prefix}chunks"
+        self._collection_ready = False
+
+    @property
+    def collection_name(self) -> str:
+        """返回当前使用的 Qdrant 集合名。"""
+        return self._collection
 
     async def ensure_collection(self) -> None:
         """在尚未创建时初始化分块向量集合。"""
+        if self._collection_ready:
+            return
         client = qdrant_store.get_client()
         collections = await client.get_collections()
         names = {c.name for c in collections.collections}
@@ -40,6 +49,20 @@ class QdrantIndexer:
                     distance=Distance.COSINE,
                 ),
             )
+        for field_name, field_schema in (
+            ("document_id", PayloadSchemaType.KEYWORD),
+            ("source_uri", PayloadSchemaType.KEYWORD),
+            ("original_filename", PayloadSchemaType.KEYWORD),
+            ("chunk_index", PayloadSchemaType.INTEGER),
+            ("page_no", PayloadSchemaType.INTEGER),
+        ):
+            await client.create_payload_index(
+                collection_name=self._collection,
+                field_name=field_name,
+                field_schema=field_schema,
+                wait=True,
+            )
+        self._collection_ready = True
 
     async def upsert_chunks(
         self,
@@ -50,7 +73,7 @@ class QdrantIndexer:
         source_uri: str,
         original_filename: str | None,
     ) -> None:
-        """写入分块向量及后续检索需要的 payload 字段。"""
+        """写入分块向量及后续检索需要的载荷字段。"""
         if len(chunks) != len(vectors):
             raise IngestError(INDEX_FAILED, "Chunk/vector count mismatch")
         for idx, vector in enumerate(vectors):
@@ -67,11 +90,12 @@ class QdrantIndexer:
                 point_id = chunk["id"]
                 payload = {
                     "chunk_text": chunk["text"],
-                    "doc_id": document_id,
+                    "document_id": document_id,
                     "chunk_index": chunk["chunk_index"],
                     "page_no": chunk.get("page_no"),
                     "source_uri": source_uri,
                     "original_filename": original_filename,
+                    "metadata": chunk.get("metadata") or {},
                     "embedding_model": self._settings.embedding_model,
                     "embedding_dim": self._settings.embedding_dim,
                     "embedding_provider": self._settings.embedding_provider,
@@ -100,7 +124,7 @@ class QdrantIndexer:
         )
 
     async def delete_document(self, document_id: str) -> None:
-        """按 payload 中的文档 ID 删除全部向量，覆盖 chunks 尚未落库的情况。"""
+        """按载荷中的文档 ID 删除全部向量，覆盖分块尚未落库的情况。"""
         client = qdrant_store.get_client()
         collections = await client.get_collections()
         if self._collection not in {item.name for item in collections.collections}:
@@ -111,7 +135,7 @@ class QdrantIndexer:
                 filter=Filter(
                     must=[
                         FieldCondition(
-                            key="doc_id",
+                            key="document_id",
                             match=MatchValue(value=document_id),
                         )
                     ]
@@ -121,7 +145,7 @@ class QdrantIndexer:
 
 
 def _to_point_id(value: str) -> str:
-    """将 UUID 字符串规范化为 Qdrant point ID。"""
+    """将 UUID 字符串规范化为 Qdrant 向量点 ID。"""
     return str(UUID(value))
 
 

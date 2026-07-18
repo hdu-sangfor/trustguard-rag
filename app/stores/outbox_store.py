@@ -1,4 +1,4 @@
-"""Transactional Outbox persistence and relay leasing."""
+"""事务性 Outbox 的持久化与中继租约管理。"""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def add_outbox_event(
     payload: dict[str, Any] | None = None,
     event_id: str | None = None,
 ) -> OutboxEventRow:
-    """Add an event to an existing business transaction."""
+    """向现有业务事务添加事件。"""
     row = OutboxEventRow(
         id=event_id or str(uuid4()),
         event_type=event_type,
@@ -58,7 +58,7 @@ def add_outbox_event(
 
 
 async def ensure_outbox_schema() -> None:
-    """Create additive Worker schema for both fresh and existing databases."""
+    """为新建和现有数据库增量创建 Worker 表结构。"""
     async with get_engine().begin() as connection:
         is_mysql = connection.dialect.name == "mysql"
         if is_mysql:
@@ -124,7 +124,7 @@ class OutboxStore:
             return event_from_row(row)
 
     async def claim_batch(self, limit: int | None = None) -> list[OutboxEvent]:
-        """Lease publishable rows; stale publishing leases are reclaimable."""
+        """租用可发布记录；过期的发布租约可被重新认领。"""
         settings = get_settings()
         now = _utcnow()
         stale_before = now - timedelta(seconds=settings.worker_outbox_lease_seconds)
@@ -173,7 +173,7 @@ class OutboxStore:
             await session.commit()
 
     async def mark_failed(self, event_id: str, error: str) -> None:
-        """Release a failed publish with bounded exponential backoff."""
+        """发布失败时释放记录，并采用有上限的指数退避。"""
         async with AsyncSession(get_engine()) as session:
             row = await session.get(OutboxEventRow, event_id, with_for_update=True)
             if not row:

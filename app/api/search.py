@@ -27,13 +27,19 @@ async def search(request: SearchRequest) -> SearchResponse:
             enable_rerank=request.enable_rerank,
             enable_vector=request.enable_vector,
             enable_keyword=request.enable_keyword,
-            filters=request.filters,
+            filters=(
+                request.filters.model_dump(exclude_none=True)
+                if request.filters is not None
+                else None
+            ),
         )
     except SearchUnavailableError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
     return SearchResponse(
         query=request.query,
+        search_status=result["search_status"],
+        effective_mode=result["effective_mode"],
         results=result["results"],
         total=result["total"],
         fusion_method=result["fusion_method"],

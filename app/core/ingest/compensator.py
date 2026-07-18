@@ -43,7 +43,7 @@ class Compensator:
         self._opensearch_indexer = opensearch_indexer or get_opensearch_indexer()
 
     async def _delete_vectors(self, document_id: str, point_ids: list[str]) -> None:
-        """同时按文档 payload 和已知 point ID 删除向量。"""
+        """同时按文档载荷和已知向量点 ID 删除向量。"""
         await self._indexer.delete_document(document_id)
         if point_ids:
             await self._indexer.delete_points(point_ids)
@@ -66,14 +66,14 @@ class Compensator:
         return failures
 
     def _delete_artifacts(self, document_id: str, doc) -> None:
-        """幂等删除文档 artifact 前缀。"""
+        """幂等删除文档产物前缀。"""
         if doc and doc.blob_path:
             self._blobs.delete_prefix(doc.blob_path)
         else:
             self._blobs.delete_prefix(f"artifacts/{document_id}")
 
     async def rollback_document(self, document_id: str) -> bool:
-        """删除发布失败文档的 artifacts、分块和向量。"""
+        """删除发布失败文档的产物、分块和向量。"""
         doc = await self._documents.get(document_id)
         if not doc:
             return True
@@ -114,7 +114,7 @@ class Compensator:
         await self._documents.update_status(document_id, DocumentStatus.SUPERSEDED)
 
     async def delete_document(self, document_id: str) -> bool:
-        """删除文档的向量、artifacts、分块和元数据。"""
+        """删除文档的向量、产物、分块和元数据。"""
         doc = await self._documents.get(document_id)
         if not doc:
             return False

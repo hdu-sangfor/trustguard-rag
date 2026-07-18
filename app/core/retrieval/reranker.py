@@ -1,10 +1,11 @@
-"""重排序模块：local / api / none providers。"""
+"""重排序模块：支持本地、API 和禁用三种提供方。"""
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -18,7 +19,7 @@ class RerankError(RuntimeError):
 
 
 def normalize_rerank_provider(provider: str) -> str:
-    """将外部 provider 名称归一化为与 Embedding 一致的分发值。"""
+    """将外部提供方名称归一化为与嵌入模块一致的分发值。"""
     value = provider.strip().lower()
     if value in {"api", "openai", "openai_compatible", "remote", "bailian", "dashscope"}:
         return "api"
@@ -29,8 +30,29 @@ def normalize_rerank_provider(provider: str) -> str:
     raise RerankError(f"Unsupported rerank provider: {provider}")
 
 
+def build_rerank_url(base_url: str) -> str:
+    """构建重排序端点，并纠正误用的百炼嵌入兼容路径。"""
+    normalized = base_url.rstrip("/")
+    parsed = urlsplit(normalized)
+    wrong_suffix = "/compatible-mode/v1"
+    if (
+        parsed.hostname
+        and parsed.hostname.endswith(".maas.aliyuncs.com")
+        and parsed.path.rstrip("/").endswith(wrong_suffix)
+    ):
+        corrected_path = parsed.path.rstrip("/")[: -len(wrong_suffix)] + "/compatible-api/v1"
+        normalized = urlunsplit(
+            (parsed.scheme, parsed.netloc, corrected_path, parsed.query, parsed.fragment)
+        )
+        logger.warning(
+            "检测到百炼 Embedding 兼容地址，已自动改用 Rerank 地址：%s",
+            corrected_path,
+        )
+    return f"{normalized}/reranks"
+
+
 class Reranker:
-    """重排序门面：支持 BGE 本地模型、百炼 API 和 none 透传。"""
+    """重排序门面：支持 BGE 本地模型、百炼 API 和禁用时透传。"""
 
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
@@ -65,19 +87,17 @@ class Reranker:
             model = _get_bge_reranker(self._settings)
             pairs = [[query, c.get("text") or ""] for c in candidates]
             scores = await asyncio.to_thread(model.compute_score, pairs)
+            if isinstance(scores, float):
+                scores = [scores]
+
+            scored = list(zip(scores, candidates))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            top = scored[:top_k]
+            for score, candidate in top:
+                candidate["rerank_score"] = float(score)
+            return [candidate for _, candidate in top]
         except Exception as e:
-            logger.warning("bge reranker unavailable: %s, returning unranked results", e)
-            return candidates[:top_k]
-
-        if isinstance(scores, float):
-            scores = [scores]
-
-        scored = list(zip(scores, candidates))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top = scored[:top_k]
-        for s, c in top:
-            c["rerank_score"] = float(s)
-        return [c for _, c in top]
+            raise RerankError("BGE reranker is unavailable") from e
 
     async def _api_rerank(
         self,
@@ -85,12 +105,13 @@ class Reranker:
         candidates: list[dict[str, Any]],
         top_k: int,
     ) -> list[dict[str, Any]]:
-        """调用百炼 OpenAI-compatible rerank API，并按原始索引映射候选结果。"""
+        """调用百炼兼容 OpenAI 协议的重排序 API，并按原始索引映射候选结果。"""
         try:
             return await self._call_api(query, candidates, top_k)
+        except RerankError:
+            raise
         except Exception as e:  # noqa: BLE001
-            logger.warning("API reranker unavailable: %s, returning unranked results", e)
-            return candidates[:top_k]
+            raise RerankError("API reranker is unavailable") from e
 
     async def _call_api(
         self,
@@ -115,7 +136,7 @@ class Reranker:
         if self._settings.rerank_instruction:
             payload["instruct"] = self._settings.rerank_instruction
 
-        url = f"{base_url.rstrip('/')}/reranks"
+        url = build_rerank_url(base_url)
         headers = {"Authorization": f"Bearer {api_key}"}
         async with httpx.AsyncClient(
             timeout=self._settings.rerank_api_timeout_seconds

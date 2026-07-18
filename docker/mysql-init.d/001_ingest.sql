@@ -1,4 +1,4 @@
--- Ingest schema for trustguard-rag-platform (single-tenant)
+-- trustguard-rag-platform 的单租户入库表结构
 
 CREATE TABLE IF NOT EXISTS documents (
     id CHAR(36) NOT NULL PRIMARY KEY,

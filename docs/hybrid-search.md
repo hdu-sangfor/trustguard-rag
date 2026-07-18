@@ -56,6 +56,35 @@ curl -X POST http://localhost:18200/v1/search \
   }'
 ```
 
+过滤条件采用 Qdrant 与 OpenSearch 共用的强类型契约，支持：
+
+- `document_id`
+- `source_uri`
+- `original_filename`
+- `chunk_index`
+- `page_no`
+- `metadata` 下的标量字段
+
+例如：
+
+```json
+{
+  "filters": {
+    "document_id": "doc-uuid",
+    "page_no": 2,
+    "metadata": {
+      "category": "security"
+    }
+  }
+}
+```
+
+未知字段会返回 HTTP 422。历史字段 `doc_id` 已移除，不提供兼容查询。需要重建已有索引时执行：
+
+```bash
+python -m app.core.indexing.rebuild_search_indexes
+```
+
 ### 3. 响应格式
 
 ```json

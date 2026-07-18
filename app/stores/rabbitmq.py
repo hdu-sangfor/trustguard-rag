@@ -1,4 +1,4 @@
-"""RabbitMQ connection, durable topology and health check."""
+"""RabbitMQ 连接、持久化拓扑与健康检查。"""
 from __future__ import annotations
 
 import time
@@ -15,12 +15,12 @@ DEAD_QUEUE = "rag.dead"
 
 
 async def connect() -> AbstractRobustConnection:
-    """Open a robust Worker connection."""
+    """建立具备自动恢复能力的 Worker 连接。"""
     return await aio_pika.connect_robust(get_settings().rabbitmq_url)
 
 
 async def declare_topology(channel: AbstractChannel) -> None:
-    """Declare command, retry and dead-letter topology idempotently."""
+    """以幂等方式声明命令、重试和死信拓扑。"""
     settings = get_settings()
     exchange = await channel.declare_exchange(
         settings.rabbitmq_exchange,
@@ -64,7 +64,7 @@ async def publish_command(
     retry_count: int = 0,
     retry_queue: str | None = None,
 ) -> None:
-    """Publish a persistent command and wait for broker confirmation."""
+    """发布持久化命令，并等待消息代理确认。"""
     settings = get_settings()
     message = Message(
         command.to_bytes(),

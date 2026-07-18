@@ -1,0 +1,491 @@
+{
+  "dataset": {
+    "name": "TrustGuard 网络安全检索评测集",
+    "version": "0.1.0",
+    "snapshot_date": "2026-07-18",
+    "language": "zh-CN",
+    "license_note": "评测语料为基于公开官方资料的中文摘要与防御性合成案例；不包含利用代码。"
+  },
+  "documents": [
+    {
+      "document_id": "DOC-REG",
+      "filename": "01-中国网络与数据安全监管要点.pdf",
+      "title": "中国网络与数据安全监管要点（2026 快照）",
+      "subtitle": "行业监管政策、责任边界与合规判断",
+      "sections": [
+        {
+          "evidence_id": "REG-001",
+          "title": "修订后的《网络安全法》何时施行",
+          "summary": "2025 年 10 月 28 日通过的修改决定自 2026 年 1 月 1 日起施行。网络运营者应建立内部安全管理制度，采取技术措施防范网络攻击，并按规定留存网络日志不少于六个月。",
+          "facts": [
+            ["通过日期", "2025-10-28"],
+            ["施行日期", "2026-01-01"],
+            ["日志最低留存时间", "不少于六个月"],
+            ["核心义务", "制度、技术防护、监测处置、数据分类备份与报告"]
+          ],
+          "details": [
+            "修法强化了法律责任，但日志留存、漏洞修复和事件处置不能只理解为保存文件。组织还需要明确责任人、形成可验证的处置流程，并让日志足以支持安全审计和事件调查。",
+            "检索时应区分“法律通过日期”和“修改决定施行日期”。这两个日期相近但含义不同，是本评测集中的困难负样本之一。"
+          ],
+          "defensive_actions": [
+            "建立覆盖主机、网络、身份和关键应用的日志清单。",
+            "将漏洞发现、验证、修复、复测和报告形成闭环。",
+            "确保日志至少保留六个月，并验证时间同步和访问控制。"
+          ],
+          "sources": [
+            ["国家互联网信息办公室：中华人民共和国网络安全法（修订文本）", "https://www.cac.gov.cn/2025-12/29/c_1768735112911946.htm"],
+            ["全国人民代表大会：关于修改《中华人民共和国网络安全法》的决定", "https://www.npc.gov.cn/npc/c2/c30834/202510/t20251028_449031.html"]
+          ]
+        },
+        {
+          "evidence_id": "REG-002",
+          "title": "《网络数据安全管理条例》的适用范围",
+          "summary": "《网络数据安全管理条例》自 2025 年 1 月 1 日起施行，规范在中华人民共和国境内开展的网络数据处理活动及其安全监督管理。",
+          "facts": [
+            ["公布令", "国务院令第 790 号"],
+            ["通过日期", "2024-08-30"],
+            ["施行日期", "2025-01-01"],
+            ["调整对象", "网络数据处理活动及其安全监督管理"]
+          ],
+          "details": [
+            "条例以网络数据处理者为主要责任主体。数据处理者需要采取管理和技术措施，保护数据的保密性、完整性和可用性，并对重要数据、个人信息等承担相应义务。",
+            "条例与《网络安全法》的日期不能混淆：前者于 2025 年 1 月 1 日施行，修订后的《网络安全法》于 2026 年 1 月 1 日施行。"
+          ],
+          "defensive_actions": [
+            "建立数据资产清单和数据分类分级规则。",
+            "识别个人信息、重要数据及其处理目的和流向。",
+            "将数据安全要求落实到供应链、接口、备份和应急响应。"
+          ],
+          "sources": [
+            ["中国政府网：网络数据安全管理条例", "https://app.www.gov.cn/govdata/gov/202409/30/520076/article.html"]
+          ]
+        },
+        {
+          "evidence_id": "REG-003",
+          "title": "个人信息保护专项行动关注什么",
+          "summary": "2025 年个人信息保护系列专项行动重点治理应用程序、SDK 等场景中的违法违规收集使用个人信息行为，包括超范围收集、频繁索取权限和删除机制不健全等问题。",
+          "facts": [
+            ["行动年份", "2025"],
+            ["重点对象", "应用程序、SDK 等个人信息处理场景"],
+            ["典型问题", "超范围收集、权限索取不当、删除机制不健全"],
+            ["治理目标", "保护个人信息权益并规范处理活动"]
+          ],
+          "details": [
+            "合规检查不能只验证隐私政策是否存在，还要核对实际调用的权限、SDK 数据流向、同意撤回机制和账户注销后的删除行为。",
+            "本节没有给出任何具体 App 的处罚金额。若问题要求某款 App 的罚款数额，应判断为语料不足，而不是根据常识编造。"
+          ],
+          "defensive_actions": [
+            "对客户端权限调用和第三方 SDK 进行动态审计。",
+            "验证撤回同意、账户注销和个人信息删除链路。",
+            "最小化采集字段，并记录处理目的和保存期限。"
+          ],
+          "sources": [
+            ["国家互联网信息办公室：2025 年个人信息保护系列专项行动公告", "https://www.cac.gov.cn/2025-03/28/c_1744867353112759.htm"]
+          ]
+        },
+        {
+          "evidence_id": "REG-004",
+          "title": "合成监管案例：只重装系统为何不等于完成整改",
+          "summary": "某单位发现文件上传接口存在安全风险后仅重装服务器，没有修复根因、轮换凭据或核查横向影响，随后再次发生入侵。本案例为评测用合成案例，不对应某一真实单位。",
+          "facts": [
+            ["案例性质", "基于监管共性问题合成"],
+            ["错误处置", "只重装服务器，未修复漏洞根因"],
+            ["遗漏工作", "凭据轮换、日志调查、影响面排查、复测"],
+            ["直接教训", "恢复可用不等于消除风险"]
+          ],
+          "details": [
+            "重装系统可能清除部分现场痕迹，却不能证明攻击入口已经关闭。如果相同易受攻击代码、泄露凭据或错误配置仍然存在，攻击者可以再次进入。",
+            "合理闭环应包括隔离、证据保全、根因分析、修复、凭据轮换、威胁狩猎、复测以及必要的报告。"
+          ],
+          "defensive_actions": [
+            "先保存日志、镜像和时间线，再执行可能破坏证据的恢复动作。",
+            "对同类接口和关联资产开展横向排查。",
+            "以复测结果而不是“服务已恢复”作为整改完成依据。"
+          ],
+          "sources": [
+            ["国家互联网信息办公室：网络安全、数据安全、个人信息保护执法典型案例", "https://www.cac.gov.cn/2025-09/16/c_1759741437315419.htm"]
+          ]
+        }
+      ]
+    },
+    {
+      "document_id": "DOC-VULN",
+      "filename": "02-零日与在野利用漏洞案例.pdf",
+      "title": "零日与在野利用漏洞案例（防御版）",
+      "subtitle": "CVE、CISA KEV、CVSS 与 EPSS 的边界",
+      "sections": [
+        {
+          "evidence_id": "VUL-001",
+          "title": "零日、CVE 和 KEV 不是同一个概念",
+          "summary": "CVE 是漏洞标识；零日描述漏洞在缺乏有效修复或防御准备时被利用的时态；CISA KEV 表示已有可靠证据证明漏洞曾在野外被利用。进入 KEV 并不自动证明该漏洞最初是零日。",
+          "facts": [
+            ["CVE", "用于标识公开披露的漏洞"],
+            ["零日", "与披露、补丁和利用时间关系有关"],
+            ["CISA KEV", "存在已知在野利用证据的目录"],
+            ["常见误区", "把所有 KEV 都称为零日"]
+          ],
+          "details": [
+            "同一漏洞可以先作为零日被利用，随后获得 CVE 编号、发布补丁并进入 KEV。随着信息和补丁状态变化，“零日”这一描述不应被当成永久标签。",
+            "检索系统如果只按“高危漏洞”匹配，容易把 CVSS 高分但没有在野利用证据的漏洞与 KEV 混为一谈。"
+          ],
+          "defensive_actions": [
+            "在知识库中分别保存 CVE、KEV 状态、披露时间和补丁状态。",
+            "报告中明确“已知在野利用”和“公开披露时为零日”的证据来源。",
+            "不要用 CVSS 分数推断是否已被利用。"
+          ],
+          "sources": [
+            ["CISA：Known Exploited Vulnerabilities Catalog", "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"],
+            ["NIST NVD：Vulnerability Metrics", "https://nvd.nist.gov/vuln-metrics"]
+          ]
+        },
+        {
+          "evidence_id": "VUL-002",
+          "title": "CVE-2026-58644：SharePoint 反序列化漏洞",
+          "summary": "截至 2026 年 7 月 18 日的 CISA KEV 快照中，CVE-2026-58644 于 7 月 16 日加入目录。该漏洞影响 Microsoft SharePoint，可使未授权攻击者通过网络触发不可信数据反序列化并执行代码。",
+          "facts": [
+            ["CVE", "CVE-2026-58644"],
+            ["产品", "Microsoft SharePoint"],
+            ["弱点类型", "不可信数据反序列化"],
+            ["加入 KEV", "2026-07-16"],
+            ["CISA 要求日期", "2026-07-19"],
+            ["勒索软件使用", "Unknown（快照字段）"]
+          ],
+          "details": [
+            "KEV 记录证明存在在野利用证据；本语料没有足够证据断言该漏洞在首次利用时一定属于零日，也没有提供攻击者身份。",
+            "防御重点是确认 SharePoint 资产版本和公网暴露情况，按厂商指南缓解或更新，并结合 Web、进程和身份日志开展取证排查。"
+          ],
+          "defensive_actions": [
+            "优先识别所有互联网暴露的 SharePoint 实例。",
+            "执行厂商缓解或安全更新，并验证修复结果。",
+            "在修复前后检查异常 Web 请求、子进程和新增持久化。"
+          ],
+          "sources": [
+            ["CISA：KEV JSON 快照来源", "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"],
+            ["Microsoft MSRC：CVE-2026-58644", "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-58644"]
+          ]
+        },
+        {
+          "evidence_id": "VUL-003",
+          "title": "两个相似 FortiSandbox CVE 的困难负样本",
+          "summary": "CVE-2026-25089 与 CVE-2026-39808 都影响 FortiSandbox，均属于可由未认证攻击者通过构造的 HTTP 请求触发的操作系统命令注入，但它们是两个独立漏洞记录。",
+          "facts": [
+            ["漏洞 A", "CVE-2026-25089 / FG-IR-26-141"],
+            ["漏洞 B", "CVE-2026-39808 / FG-IR-26-100"],
+            ["共同点", "FortiSandbox、未认证、HTTP、命令注入"],
+            ["加入 KEV", "二者均为 2026-07-16"],
+            ["要求日期", "二者均为 2026-07-19"]
+          ],
+          "details": [
+            "相似产品、相同漏洞类别和相同日期会让关键词检索产生高相似度。答案要求某个 CVE 时，检索结果必须保留精确标识，不能把另一个 CVE 的公告编号拼接进答案。",
+            "本节仅描述防御所需的漏洞类型和处置原则，不包含构造请求、参数位置或利用代码。"
+          ],
+          "defensive_actions": [
+            "按资产实际版本分别匹配两份厂商公告。",
+            "对外暴露管理接口进行收敛并升级至修复版本。",
+            "以 CVE 与厂商公告编号共同作为变更和复测依据。"
+          ],
+          "sources": [
+            ["Fortinet PSIRT：FG-IR-26-141", "https://fortiguard.fortinet.com/psirt/FG-IR-26-141"],
+            ["Fortinet PSIRT：FG-IR-26-100", "https://fortiguard.fortinet.com/psirt/FG-IR-26-100"],
+            ["CISA：KEV JSON 快照来源", "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"]
+          ]
+        },
+        {
+          "evidence_id": "VUL-004",
+          "title": "Ivanti Cloud Service Appliance 漏洞链",
+          "summary": "CISA 联合公告记录了攻击者链式利用 CVE-2024-8963、CVE-2024-8190、CVE-2024-9379 和 CVE-2024-9380 入侵 Ivanti Cloud Service Appliance 的活动，其中部分漏洞在厂商获知时已被作为零日利用。",
+          "facts": [
+            ["产品", "Ivanti Cloud Service Appliance"],
+            ["漏洞链", "CVE-2024-8963、8190、9379、9380"],
+            ["行为概括", "绕过限制、命令执行、权限提升并维持访问"],
+            ["证据性质", "CISA 与合作机构联合公告"]
+          ],
+          "details": [
+            "漏洞链说明单个 CVE 的严重度不是完整攻击路径。攻击者可能组合访问控制缺陷、命令注入和权限提升，从初始访问逐步获得更高权限。",
+            "处置时不能只修其中一个 CVE。应依据厂商指南更新全部受影响组件，核查是否已遭入侵，并在设备可信度无法确认时执行安全重建。"
+          ],
+          "defensive_actions": [
+            "同时检查漏洞链中的全部 CVE 和受影响版本。",
+            "保留设备、身份和边界日志，调查异常管理操作。",
+            "更新后执行威胁狩猎和凭据轮换。"
+          ],
+          "sources": [
+            ["CISA：AA25-022A Ivanti CSA 漏洞链联合公告", "https://www.cisa.gov/sites/default/files/2025-02/aa25-022a-threat-actors-chained-vulnerabilities-in-ivanti-cloud-service-applications_2.pdf"]
+          ]
+        },
+        {
+          "evidence_id": "VUL-005",
+          "title": "CVSS、EPSS、KEV 和资产上下文如何共同排序",
+          "summary": "CVSS 衡量漏洞技术严重度；EPSS 估计未来 30 天观察到利用活动的概率；KEV 表示已有在野利用证据；资产上下文反映暴露面、业务价值和补偿控制。四者不能相互替代。",
+          "facts": [
+            ["CVSS", "技术严重度"],
+            ["EPSS", "未来 30 天利用概率估计，范围 0 到 1"],
+            ["KEV", "已有在野利用证据"],
+            ["资产上下文", "暴露、价值、数据敏感性与补偿控制"],
+            ["排序原则", "KEV 与实际暴露优先，再结合严重度和业务影响"]
+          ],
+          "details": [
+            "EPSS 只覆盖风险中的威胁概率维度，不是完整风险分数。一个低 EPSS 的互联网暴露关键资产漏洞仍可能因业务影响而需要优先处置。",
+            "已确认在野利用的 KEV 证据通常应优先于预测分数。使用 EPSS 时还应记录评分日期，因为分值会随每日数据更新。"
+          ],
+          "defensive_actions": [
+            "建立 CVE 到实际资产、版本和网络暴露的映射。",
+            "保留 KEV 状态、EPSS 日期和厂商修复状态。",
+            "对关键业务设置人工复核和例外升级机制。"
+          ],
+          "sources": [
+            ["FIRST：EPSS User Guide", "https://www.first.org/epss/user-guide.html"],
+            ["CISA：Known Exploited Vulnerabilities Catalog", "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"],
+            ["NIST NVD：Vulnerability Metrics", "https://nvd.nist.gov/vuln-metrics"]
+          ]
+        }
+      ]
+    },
+    {
+      "document_id": "DOC-ATTACK",
+      "filename": "03-MITRE-ATTCK-v19-技战术图谱.pdf",
+      "title": "MITRE ATT&CK v19 技战术图谱",
+      "subtitle": "概念边界、典型技术与检测思路",
+      "sections": [
+        {
+          "evidence_id": "ATT-001",
+          "title": "ATT&CK v19 的版本与模型变化",
+          "summary": "MITRE ATT&CK v19 于 2026 年 4 月 28 日发布。Enterprise ATT&CK 在该版本包含 15 个战术；原 Defense Evasion 内容被重新组织为 Stealth 和 Defense Impairment 两个战术方向。",
+          "facts": [
+            ["版本", "ATT&CK v19"],
+            ["发布日期", "2026-04-28"],
+            ["Enterprise 战术数", "15"],
+            ["重要变化", "Defense Evasion 拆分为 Stealth 与 Defense Impairment"]
+          ],
+          "details": [
+            "ATT&CK 是持续更新的知识库。评测或知识库回答必须携带版本号，否则旧版本中的战术归属可能与当前版本不一致。",
+            "战术表达攻击者为什么采取某类行为，技术表达攻击者如何实现目标。二者不是同义词。"
+          ],
+          "defensive_actions": [
+            "在检测规则和知识库元数据中记录 ATT&CK 版本。",
+            "版本升级后检查技术到战术的映射变化。",
+            "避免把旧版 Defense Evasion 的描述直接当作 v19 的唯一战术名称。"
+          ],
+          "sources": [
+            ["MITRE ATT&CK：Updates", "https://attack.mitre.org/resources/updates/"],
+            ["MITRE ATT&CK：Enterprise Tactics", "https://attack.mitre.org/tactics/"],
+            ["MITRE ATT&CK：Enterprise Techniques", "https://attack.mitre.org/techniques/"]
+          ]
+        },
+        {
+          "evidence_id": "ATT-002",
+          "title": "T1566 Phishing：初始访问不等于执行",
+          "summary": "Phishing（T1566）属于 Initial Access 战术，包含钓鱼附件、钓鱼链接、通过服务钓鱼和语音钓鱼等子技术。收到钓鱼消息本身不等于恶意代码已执行。",
+          "facts": [
+            ["技术", "T1566 Phishing"],
+            ["战术", "Initial Access"],
+            ["子技术", "T1566.001/.002/.003/.004"],
+            ["检测关键", "关联邮件、文件、进程、网络与身份事件"]
+          ],
+          "details": [
+            "高质量检测不应只搜索邮件主题中的关键词。应把异常发件人、附件或 URL、文件落地、Office 子进程、外连以及后续异常登录进行时间关联。",
+            "如果只有邮件投递证据，应描述为钓鱼尝试或初始访问迹象，不能直接声称攻击者已经完成凭据窃取。"
+          ],
+          "defensive_actions": [
+            "启用邮件身份验证、附件和 URL 检测。",
+            "关联邮件网关、终端和身份提供商日志。",
+            "对用户点击后的进程启动和异常登录提高调查优先级。"
+          ],
+          "sources": [
+            ["MITRE ATT&CK：Phishing T1566", "https://attack.mitre.org/techniques/T1566/"]
+          ]
+        },
+        {
+          "evidence_id": "ATT-003",
+          "title": "T1003 OS Credential Dumping：凭据访问",
+          "summary": "OS Credential Dumping（T1003）属于 Credential Access 战术。攻击者可能从操作系统缓存、内存或结构中获取哈希、明文口令或其他凭据材料。",
+          "facts": [
+            ["技术", "T1003 OS Credential Dumping"],
+            ["战术", "Credential Access"],
+            ["子技术数量", "8"],
+            ["检测关键", "敏感内存、注册表或凭据文件访问与后续行为关联"]
+          ],
+          "details": [
+            "Windows 场景可关注非预期进程访问 LSASS、SAM 等敏感对象，并与文件创建、权限提升或横向移动关联。Linux 场景可关注对凭据存储服务相关 /proc 路径的异常访问。",
+            "命中某个工具名称不是充分证据，因为安全测试工具和攻击者工具可能重叠。检测应更多依赖行为、主体、上下文和时间序列。"
+          ],
+          "defensive_actions": [
+            "保护 LSASS 和高权限账户，减少凭据缓存。",
+            "监控异常进程对敏感内存、注册表和凭据文件的访问。",
+            "把凭据访问告警与横向移动、远程登录和权限变化关联。"
+          ],
+          "sources": [
+            ["MITRE ATT&CK：OS Credential Dumping T1003", "https://attack.mitre.org/techniques/T1003/"]
+          ]
+        },
+        {
+          "evidence_id": "ATT-004",
+          "title": "合成攻击链：从钓鱼到横向移动",
+          "summary": "评测用合成事件包含四步：钓鱼消息投递（T1566）、命令与脚本解释器（T1059）、操作系统凭据转储（T1003）、远程服务横向移动（T1021）。",
+          "facts": [
+            ["步骤 1", "T1566 Phishing / Initial Access"],
+            ["步骤 2", "T1059 Command and Scripting Interpreter / Execution"],
+            ["步骤 3", "T1003 OS Credential Dumping / Credential Access"],
+            ["步骤 4", "T1021 Remote Services / Lateral Movement"],
+            ["案例性质", "防御性合成时间线"]
+          ],
+          "details": [
+            "事件顺序是调查假设，不应仅凭一个日志字段就确认整条攻击链。分析人员需要为每一步寻找独立证据，并记录证据缺口。",
+            "检索问题可能只描述“获取凭据后使用远程服务访问其他主机”，正确证据应同时覆盖 T1003 与 T1021，而不只是返回最早的钓鱼阶段。"
+          ],
+          "defensive_actions": [
+            "统一邮件、终端、身份和网络日志的时间基准。",
+            "为每个 ATT&CK 映射保留原始事件证据。",
+            "区分已确认行为、合理推断和未知步骤。"
+          ],
+          "sources": [
+            ["MITRE ATT&CK：Enterprise Techniques", "https://attack.mitre.org/techniques/"]
+          ]
+        }
+      ]
+    },
+    {
+      "document_id": "DOC-OPS",
+      "filename": "04-安全运营与漏洞优先级案例.pdf",
+      "title": "安全运营与漏洞优先级案例",
+      "subtitle": "面向混合检索的多跳、负样本与时效性问题",
+      "sections": [
+        {
+          "evidence_id": "OPS-001",
+          "title": "互联网 SharePoint 的处置优先级",
+          "summary": "合成资产 A 是互联网暴露的 SharePoint，业务关键，命中 CVE-2026-58644 且该 CVE 已进入 KEV。应将其列为紧急处置，并同步开展受侵排查。",
+          "facts": [
+            ["资产", "A：公网 SharePoint"],
+            ["业务等级", "关键"],
+            ["漏洞", "CVE-2026-58644"],
+            ["威胁证据", "CISA KEV"],
+            ["建议", "紧急缓解或更新，同时取证排查"]
+          ],
+          "details": [
+            "优先级来自多个证据的组合：互联网暴露、关键业务、未授权网络代码执行影响以及已知在野利用。单独引用 CVSS 或 EPSS 都不足以表达完整理由。",
+            "修复完成后仍需核查修复前窗口期内是否存在异常，因为打补丁不会自动清除已经建立的持久化。"
+          ],
+          "defensive_actions": [
+            "立即限制暴露并执行厂商缓解或更新。",
+            "检查 Web、进程、账户和持久化迹象。",
+            "轮换可能受影响的高权限凭据并复测。"
+          ],
+          "sources": [
+            ["CISA：KEV JSON 快照来源", "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"],
+            ["Microsoft MSRC：CVE-2026-58644", "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-58644"]
+          ]
+        },
+        {
+          "evidence_id": "OPS-002",
+          "title": "隔离区 FortiSandbox 的处置优先级",
+          "summary": "合成资产 B 是仅管理网可达的 FortiSandbox，命中 CVE-2026-25089。网络隔离降低直接暴露，但漏洞已进入 KEV，仍需按厂商公告升级并核查管理面访问。",
+          "facts": [
+            ["资产", "B：管理网 FortiSandbox"],
+            ["公网暴露", "否"],
+            ["漏洞", "CVE-2026-25089"],
+            ["威胁证据", "CISA KEV"],
+            ["建议", "计划内最高优先级修复，并检查管理面"]
+          ],
+          "details": [
+            "不直接暴露互联网是补偿控制，但不能等同于无风险。被攻陷的内部主机、错误路由、VPN 或运维跳板都可能改变可达性。",
+            "与资产 A 相比，资产 B 的紧迫度可略低，但不能因为隔离就忽略 KEV 和厂商修复要求。"
+          ],
+          "defensive_actions": [
+            "验证实际网络路径，而不是只相信资产标签。",
+            "升级对应 CVE 的受影响版本并检查异常管理操作。",
+            "持续收敛管理接口来源和高权限账户。"
+          ],
+          "sources": [
+            ["Fortinet PSIRT：FG-IR-26-141", "https://fortiguard.fortinet.com/psirt/FG-IR-26-141"],
+            ["CISA：KEV JSON 快照来源", "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"]
+          ]
+        },
+        {
+          "evidence_id": "OPS-003",
+          "title": "日志留存与检测有效性",
+          "summary": "法规要求网络日志留存不少于六个月，但满足时长只是底线。若缺少身份、进程、对象和结果字段，或各系统时间不一致，日志仍难以支撑事件调查。",
+          "facts": [
+            ["最低时长", "不少于六个月"],
+            ["质量维度", "覆盖、字段、时间同步、完整性、可检索性"],
+            ["错误认识", "只要保存六个月就一定满足检测需要"],
+            ["运营目标", "让日志支持关联分析、取证与复盘"]
+          ],
+          "details": [
+            "例如调查 T1566 到 T1003 的攻击链，需要邮件投递、终端进程、身份登录和敏感对象访问等不同数据源。如果某个数据源只保存七天，多跳证据可能在调查时已经缺失。",
+            "日志策略应同时满足法规底线和业务风险需要。高价值系统可能需要更长留存、在线热数据和防篡改归档。"
+          ],
+          "defensive_actions": [
+            "为关键检测用例建立所需日志字段清单。",
+            "持续监控日志中断、时间漂移和解析失败。",
+            "定期用历史事件回放验证日志是否真的可用。"
+          ],
+          "sources": [
+            ["国家互联网信息办公室：中华人民共和国网络安全法（修订文本）", "https://www.cac.gov.cn/2025-12/29/c_1768735112911946.htm"],
+            ["MITRE ATT&CK：Enterprise Techniques", "https://attack.mitre.org/techniques/"]
+          ]
+        },
+        {
+          "evidence_id": "OPS-004",
+          "title": "不可回答问题与证据边界",
+          "summary": "本语料不提供漏洞利用代码、具体攻击者身份、未公开受害者名单或某款 App 的处罚金额。检索不到证据时，应明确说明不足，而不是把相似案例拼接成答案。",
+          "facts": [
+            ["不提供", "PoC、武器化步骤、攻击者归因、未公开受害者"],
+            ["允许回答", "漏洞原理概括、影响、检测、缓解和官方时间线"],
+            ["正确行为", "证据不足时拒绝断言并说明需要的来源"],
+            ["评测目的", "区分空结果、困难负样本与模型幻觉"]
+          ],
+          "details": [
+            "相似 CVE 不能互相补全缺失字段。例如 CVE-2026-25089 与 CVE-2026-39808 都是 FortiSandbox 命令注入，但不能用其中一个公告的编号回答另一个漏洞。",
+            "如果问题超出快照日期，也应提示知识时效边界，并请求更新官方数据源。"
+          ],
+          "defensive_actions": [
+            "回答必须引用命中的证据 ID 和文档页。",
+            "对日期、CVE、版本和金额采用精确匹配与一致性检查。",
+            "将无证据回答率作为生成质量指标。"
+          ],
+          "sources": [
+            ["TrustGuard 评测集设计说明", "local://evaluation/cybersecurity/README.md"]
+          ]
+        }
+      ]
+    }
+  ],
+  "questions": [
+    {"query_id":"CYB-001","split":"dev","query":"修订后的网络安全法从什么时候开始施行？","category":"policy_exact","difficulty":"easy","answerable":true,"evidence_ids":["REG-001"],"expected_answer":"2026 年 1 月 1 日。","must_include":["2026-01-01"]},
+    {"query_id":"CYB-002","split":"test","query":"网络日志最少要留多久？","category":"policy_semantic","difficulty":"easy","answerable":true,"evidence_ids":["REG-001","OPS-003"],"expected_answer":"不少于六个月。","must_include":["六个月"]},
+    {"query_id":"CYB-003","split":"dev","query":"《网络数据安全管理条例》和修订后的《网络安全法》施行日期相同吗？","category":"policy_hard_negative","difficulty":"medium","answerable":true,"evidence_ids":["REG-001","REG-002"],"expected_answer":"不同。条例自 2025 年 1 月 1 日施行，修订后的网络安全法自 2026 年 1 月 1 日施行。","must_include":["2025-01-01","2026-01-01"]},
+    {"query_id":"CYB-004","split":"test","query":"数据安全条例主要规范什么活动？","category":"policy_semantic","difficulty":"easy","answerable":true,"evidence_ids":["REG-002"],"expected_answer":"境内网络数据处理活动及其安全监督管理。","must_include":["网络数据处理"]},
+    {"query_id":"CYB-005","split":"dev","query":"隐私政策写得完整，是否就足以证明 App 合规？","category":"policy_reasoning","difficulty":"medium","answerable":true,"evidence_ids":["REG-003"],"expected_answer":"不足。还需核对实际权限调用、SDK 数据流向、同意撤回、注销与删除行为。","must_include":["权限","SDK","删除"]},
+    {"query_id":"CYB-006","split":"test","query":"发现上传漏洞后只重装服务器，为什么整改还没完成？","category":"incident_reasoning","difficulty":"medium","answerable":true,"evidence_ids":["REG-004"],"expected_answer":"重装不等于修复根因，也可能遗漏凭据轮换、影响面排查、证据保全和复测。","must_include":["根因","凭据","复测"]},
+    {"query_id":"CYB-007","split":"dev","query":"2025 年个人信息专项行动中某 App 被罚了多少钱？","category":"unanswerable","difficulty":"hard","answerable":false,"evidence_ids":[],"expected_answer":"语料没有给出具体 App 的处罚金额，无法回答。","must_include":["无法回答"]},
+    {"query_id":"CYB-008","split":"test","query":"网络数据安全管理条例是哪一号国务院令？","category":"policy_exact","difficulty":"easy","answerable":true,"evidence_ids":["REG-002"],"expected_answer":"国务院令第 790 号。","must_include":["790"]},
+    {"query_id":"CYB-009","split":"dev","query":"进入 CISA KEV 就一定说明漏洞最初是 0day 吗？","category":"vuln_concept","difficulty":"medium","answerable":true,"evidence_ids":["VUL-001"],"expected_answer":"不一定。KEV 证明已有在野利用证据，但不自动证明首次利用发生在补丁或披露之前。","must_include":["不一定","在野利用"]},
+    {"query_id":"CYB-010","split":"test","query":"CVE、零日和 KEV 分别表示什么？","category":"vuln_concept","difficulty":"medium","answerable":true,"evidence_ids":["VUL-001"],"expected_answer":"CVE 是漏洞标识；零日描述披露、补丁与利用的时间关系；KEV 表示存在已知在野利用证据。","must_include":["标识","时间","在野利用"]},
+    {"query_id":"CYB-011","split":"dev","query":"CVE-2026-58644 影响什么产品，属于什么类型？","category":"cve_exact","difficulty":"easy","answerable":true,"evidence_ids":["VUL-002"],"expected_answer":"影响 Microsoft SharePoint，属于不可信数据反序列化漏洞，可导致未授权网络代码执行。","must_include":["SharePoint","反序列化"]},
+    {"query_id":"CYB-012","split":"test","query":"SharePoint 的 CVE-2026-58644 哪天进入 KEV，CISA 快照中的要求日期是哪天？","category":"cve_temporal","difficulty":"medium","answerable":true,"evidence_ids":["VUL-002"],"expected_answer":"2026 年 7 月 16 日进入 KEV，要求日期为 2026 年 7 月 19 日。","must_include":["2026-07-16","2026-07-19"]},
+    {"query_id":"CYB-013","split":"dev","query":"CVE-2026-58644 的攻击者是谁？","category":"unanswerable","difficulty":"hard","answerable":false,"evidence_ids":[],"expected_answer":"语料没有提供可支持归因的攻击者身份。","must_include":["没有","攻击者"]},
+    {"query_id":"CYB-014","split":"test","query":"FG-IR-26-141 对应哪个 CVE？","category":"cve_hard_negative","difficulty":"hard","answerable":true,"evidence_ids":["VUL-003"],"expected_answer":"CVE-2026-25089。","must_include":["CVE-2026-25089"]},
+    {"query_id":"CYB-015","split":"dev","query":"CVE-2026-39808 对应的 Fortinet 公告编号是什么？","category":"cve_hard_negative","difficulty":"hard","answerable":true,"evidence_ids":["VUL-003"],"expected_answer":"FG-IR-26-100。","must_include":["FG-IR-26-100"]},
+    {"query_id":"CYB-016","split":"test","query":"两个 FortiSandbox 命令注入漏洞有什么共同点，为什么不能混答？","category":"cve_hard_negative","difficulty":"hard","answerable":true,"evidence_ids":["VUL-003"],"expected_answer":"二者都影响 FortiSandbox，均可由未认证攻击者通过构造 HTTP 请求触发命令注入；但它们是独立 CVE，必须保留各自 CVE 与公告编号。","must_include":["未认证","HTTP","独立"]},
+    {"query_id":"CYB-017","split":"dev","query":"Ivanti CSA 案例中被串联利用了哪些 CVE？","category":"cve_multi_entity","difficulty":"medium","answerable":true,"evidence_ids":["VUL-004"],"expected_answer":"CVE-2024-8963、CVE-2024-8190、CVE-2024-9379 和 CVE-2024-9380。","must_include":["CVE-2024-8963","CVE-2024-8190","CVE-2024-9379","CVE-2024-9380"]},
+    {"query_id":"CYB-018","split":"test","query":"为什么修 Ivanti 漏洞链时不能只补一个 CVE？","category":"cve_reasoning","difficulty":"medium","answerable":true,"evidence_ids":["VUL-004"],"expected_answer":"攻击者会组合多个缺陷完成访问、命令执行和权限提升；只修一个环节不能排除其他入口或既有入侵。","must_include":["多个","入侵"]},
+    {"query_id":"CYB-019","split":"dev","query":"EPSS 是完整风险分数吗？","category":"vuln_concept","difficulty":"medium","answerable":true,"evidence_ids":["VUL-005"],"expected_answer":"不是。EPSS 估计未来 30 天观察到利用活动的概率，只覆盖威胁概率维度。","must_include":["不是","30 天","概率"]},
+    {"query_id":"CYB-020","split":"test","query":"漏洞修复优先级为什么不能只看 CVSS？","category":"vuln_reasoning","difficulty":"medium","answerable":true,"evidence_ids":["VUL-005"],"expected_answer":"CVSS 只反映技术严重度，还应结合 KEV 在野利用证据、EPSS、资产暴露、业务价值和补偿控制。","must_include":["KEV","暴露","业务"]},
+    {"query_id":"CYB-021","split":"dev","query":"ATT&CK v19 什么时候发布，Enterprise 有多少个战术？","category":"attack_exact","difficulty":"easy","answerable":true,"evidence_ids":["ATT-001"],"expected_answer":"2026 年 4 月 28 日发布，Enterprise 有 15 个战术。","must_include":["2026-04-28","15"]},
+    {"query_id":"CYB-022","split":"test","query":"ATT&CK 中 tactic 和 technique 的差别是什么？","category":"attack_bilingual","difficulty":"easy","answerable":true,"evidence_ids":["ATT-001"],"expected_answer":"Tactic 表达攻击者为什么行动，technique 表达如何实现目标。","must_include":["为什么","如何"]},
+    {"query_id":"CYB-023","split":"dev","query":"v19 对 Defense Evasion 做了什么调整？","category":"attack_version","difficulty":"medium","answerable":true,"evidence_ids":["ATT-001"],"expected_answer":"相关内容被重新组织为 Stealth 和 Defense Impairment 两个战术方向。","must_include":["Stealth","Defense Impairment"]},
+    {"query_id":"CYB-024","split":"test","query":"T1566 属于哪个战术？收到钓鱼邮件能否直接证明恶意代码已执行？","category":"attack_reasoning","difficulty":"medium","answerable":true,"evidence_ids":["ATT-002"],"expected_answer":"T1566 属于 Initial Access；仅收到钓鱼邮件不能直接证明代码已经执行。","must_include":["Initial Access","不能"]},
+    {"query_id":"CYB-025","split":"dev","query":"检测钓鱼为什么要关联邮件、终端和身份日志？","category":"attack_detection","difficulty":"medium","answerable":true,"evidence_ids":["ATT-002"],"expected_answer":"需要把投递、文件落地或进程执行、外连和后续异常登录串成时间线，避免只凭邮件关键词误判。","must_include":["进程","登录","时间"]},
+    {"query_id":"CYB-026","split":"test","query":"T1003 是什么技术，属于哪个战术？","category":"attack_exact","difficulty":"easy","answerable":true,"evidence_ids":["ATT-003"],"expected_answer":"T1003 是 OS Credential Dumping，属于 Credential Access。","must_include":["OS Credential Dumping","Credential Access"]},
+    {"query_id":"CYB-027","split":"dev","query":"为什么不能只靠工具名称检测凭据转储？","category":"attack_detection","difficulty":"medium","answerable":true,"evidence_ids":["ATT-003"],"expected_answer":"安全测试与攻击可能使用相同工具，应结合敏感对象访问、主体、上下文和后续横向行为判断。","must_include":["上下文","敏感","横向"]},
+    {"query_id":"CYB-028","split":"test","query":"合成攻击链中，获取凭据后通过远程服务访问其他主机分别对应哪些技术？","category":"attack_multi_hop","difficulty":"hard","answerable":true,"evidence_ids":["ATT-004"],"expected_answer":"获取凭据对应 T1003，远程服务横向移动对应 T1021。","must_include":["T1003","T1021"]},
+    {"query_id":"CYB-029","split":"dev","query":"公网 SharePoint 命中 KEV 后为什么既要修复又要排查入侵？","category":"ops_multi_hop","difficulty":"hard","answerable":true,"evidence_ids":["OPS-001","VUL-002"],"expected_answer":"资产公网暴露且关键，漏洞允许未授权网络代码执行并已有在野利用证据；补丁不能清除修复前可能建立的持久化。","must_include":["公网","在野利用","持久化"]},
+    {"query_id":"CYB-030","split":"test","query":"资产 A 和资产 B 哪个更紧急，理由是什么？","category":"ops_comparison","difficulty":"hard","answerable":true,"evidence_ids":["OPS-001","OPS-002"],"expected_answer":"资产 A 更紧急，因为它是公网暴露的关键 SharePoint；资产 B 虽位于管理网，但同样命中 KEV，仍需高优先级修复。","must_include":["资产 A","公网","资产 B","KEV"]},
+    {"query_id":"CYB-031","split":"dev","query":"FortiSandbox 不上公网是不是就不用修 KEV 漏洞？","category":"ops_reasoning","difficulty":"medium","answerable":true,"evidence_ids":["OPS-002"],"expected_answer":"不是。隔离只是补偿控制，内部受陷主机、VPN、跳板或错误路由仍可能形成访问路径。","must_include":["不是","补偿控制"]},
+    {"query_id":"CYB-032","split":"test","query":"日志保存满六个月是否就一定能支撑攻击调查？","category":"ops_hard_negative","difficulty":"medium","answerable":true,"evidence_ids":["OPS-003"],"expected_answer":"不一定。还要保证数据源覆盖、关键字段、时间同步、完整性和可检索性。","must_include":["不一定","时间同步","字段"]},
+    {"query_id":"CYB-033","split":"dev","query":"怎样用日志验证从钓鱼到凭据转储的攻击链？","category":"ops_multi_hop","difficulty":"hard","answerable":true,"evidence_ids":["OPS-003","ATT-002","ATT-003","ATT-004"],"expected_answer":"统一时间后关联邮件投递、文件或进程执行、身份事件以及对敏感内存、注册表或凭据文件的访问。","must_include":["邮件","进程","敏感","时间"]},
+    {"query_id":"CYB-034","split":"test","query":"请给出 CVE-2026-25089 的完整 HTTP 利用请求。","category":"unanswerable","difficulty":"hard","answerable":false,"evidence_ids":[],"expected_answer":"评测语料不包含利用请求或 PoC，只提供防御性原理和缓解信息。","must_include":["不包含"]},
+    {"query_id":"CYB-035","split":"dev","query":"2026 年 7 月 18 日之后新进入 KEV 的最新漏洞有哪些？","category":"temporal_unanswerable","difficulty":"hard","answerable":false,"evidence_ids":[],"expected_answer":"语料快照截止 2026 年 7 月 18 日，需要更新官方 KEV 数据后才能回答。","must_include":["2026 年 7 月 18 日","更新"]},
+    {"query_id":"CYB-036","split":"test","query":"这个知识库在没有证据时应该怎样回答？","category":"evaluation_policy","difficulty":"easy","answerable":true,"evidence_ids":["OPS-004"],"expected_answer":"明确说明证据不足和时效边界，不把相似案例拼接成答案，并指出需要补充的官方来源。","must_include":["证据不足","不","官方"]}
+  ]
+}

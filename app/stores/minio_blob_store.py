@@ -1,4 +1,4 @@
-"""带暂存和提交语义的 MinIO/S3 兼容 blob 存储。"""
+"""带暂存和提交语义的 MinIO/S3 兼容对象存储。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ _NOT_FOUND_CODES = frozenset({"NoSuchKey", "NoSuchObject", "NotFound"})
 
 class MinioBlobStore:
     def __init__(self) -> None:
-        """初始化 S3 兼容客户端和目标 bucket 名称。"""
+        """初始化 S3 兼容客户端和目标存储桶名称。"""
         s = get_settings()
         self._bucket = s.minio_bucket
         self._client = get_minio_client()
@@ -26,19 +26,19 @@ class MinioBlobStore:
     @property
     def root(self) -> Path:
         """返回逻辑根目录，以复用本地存储接口。"""
-        # 用于路径拼接的逻辑根目录；真实对象存放在 bucket 中。
+        # 用于路径拼接的逻辑根目录；真实对象存放在存储桶中。
         return Path(".")
 
     def _key(self, relative_path: str) -> str:
-        """将相对路径规范化为对象存储 key。"""
+        """将相对路径规范化为对象存储键。"""
         return relative_path.replace("\\", "/").lstrip("/")
 
     def artifact_dir(self, document_id: str, version: int = 1) -> Path:
-        """返回某个文档版本的逻辑 artifact 前缀。"""
+        """返回某个文档版本的逻辑产物前缀。"""
         return Path("artifacts") / document_id / f"v{version}"
 
     def job_upload_path(self, job_id: str) -> Path:
-        """返回任务上传文件的逻辑暂存 key。"""
+        """返回任务上传文件的逻辑暂存键。"""
         return Path("staging") / "jobs" / job_id / "upload"
 
     def put_job_upload(self, job_id: str, data: bytes) -> Path:
@@ -67,7 +67,7 @@ class MinioBlobStore:
         extracted_text: str,
         meta: dict[str, Any],
     ) -> str:
-        """在同一对象前缀下提交原始文件、抽取文本和元数据 artifacts。"""
+        """在同一对象前缀下提交原始文件、抽取文本和元数据产物。"""
         prefix = self._key(str(self.artifact_dir(document_id, version)))
         written: list[str] = []
         try:
@@ -141,7 +141,7 @@ class MinioBlobStore:
             raise
 
     def list_artifacts(self, document_id: str, version: int = 1) -> list[str]:
-        """列出文档版本前缀下的直接 artifact 文件名。"""
+        """列出文档版本前缀下的直接产物文件名。"""
         prefix = self._key(str(self.artifact_dir(document_id, version))).rstrip("/") + "/"
         names: list[str] = []
         for obj in self._client.list_objects(self._bucket, prefix=prefix, recursive=False):
@@ -151,11 +151,11 @@ class MinioBlobStore:
         return sorted(names)
 
     def artifact_path(self, blob_path: str, filename: str) -> str:
-        """将已保存的 blob 路径和 artifact 文件名拼成对象 key。"""
+        """将已保存的对象路径和产物文件名拼成对象存储键。"""
         return self._key(f"{blob_path.rstrip('/')}/{filename}")
 
     def _put_bytes(self, key: str, data: bytes) -> None:
-        """确保 bucket 存在，并将字节上传到指定对象 key。"""
+        """确保存储桶存在，并将字节上传到指定对象存储键。"""
         ensure_bucket()
         self._client.put_object(
             self._bucket,
@@ -165,5 +165,5 @@ class MinioBlobStore:
         )
 
     def _put_text(self, key: str, text: str) -> None:
-        """将文本编码为 UTF-8 并上传到指定对象 key。"""
+        """将文本编码为 UTF-8 并上传到指定对象存储键。"""
         self._put_bytes(key, text.encode("utf-8"))

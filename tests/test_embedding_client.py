@@ -1,4 +1,4 @@
-"""Embedding provider tests."""
+"""嵌入提供方测试。"""
 
 from __future__ import annotations
 
@@ -132,6 +132,60 @@ async def test_api_embedding_batches_document_inputs(monkeypatch: pytest.MonkeyP
 
     assert batch_sizes == [2, 2, 1]
     assert len(vectors) == 5
+
+
+@pytest.mark.asyncio
+async def test_api_embedding_aggregates_provider_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Response:
+        def __init__(self, size: int) -> None:
+            self._size = size
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {"index": index, "embedding": [float(index), 1.0]}
+                    for index in range(self._size)
+                ],
+                "usage": {
+                    "prompt_tokens": self._size * 10,
+                    "total_tokens": self._size * 10,
+                },
+            }
+
+    class _AsyncClient:
+        def __init__(self, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json, headers):
+            return _Response(len(json["input"]))
+
+    monkeypatch.setattr("app.core.embedding.client.httpx.AsyncClient", _AsyncClient)
+    settings = Settings(
+        _env_file=None,
+        embedding_provider="api",
+        embedding_base_url="http://embedding.local/v1",
+        embedding_dim=2,
+        embedding_batch_size=2,
+    )
+
+    result = await EmbeddingClient(settings).embed_texts_with_usage(["a", "b", "c"])
+
+    assert len(result.vectors) == 3
+    assert result.usage is not None
+    assert result.usage.prompt_tokens == 30
+    assert result.usage.total_tokens == 30
+    assert result.usage.request_count == 2
 
 
 @pytest.mark.asyncio

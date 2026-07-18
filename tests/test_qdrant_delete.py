@@ -12,7 +12,7 @@ from app.core.indexing.qdrant_indexer import QdrantIndexer
 
 
 @pytest.mark.asyncio
-async def test_delete_document_uses_doc_id_payload_filter(monkeypatch) -> None:
+async def test_delete_document_uses_document_id_payload_filter(monkeypatch) -> None:
     client = AsyncMock()
     client.get_collections.return_value = SimpleNamespace(
         collections=[SimpleNamespace(name="rag_chunks")]
@@ -23,4 +23,6 @@ async def test_delete_document_uses_doc_id_payload_filter(monkeypatch) -> None:
 
     selector = client.delete.call_args.kwargs["points_selector"]
     assert isinstance(selector, FilterSelector)
-    assert selector.filter.must == [FieldCondition(key="doc_id", match=MatchValue(value="doc-1"))]
+    assert selector.filter.must == [
+        FieldCondition(key="document_id", match=MatchValue(value="doc-1"))
+    ]

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.retrieval.reranker import Reranker, normalize_rerank_provider
+from app.core.retrieval.reranker import (
+    RerankError,
+    Reranker,
+    build_rerank_url,
+    normalize_rerank_provider,
+)
 from app.settings import Settings
 
 
@@ -117,18 +122,30 @@ async def test_api_reranker_accepts_dashscope_api_key(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_api_reranker_falls_back_when_not_configured(caplog) -> None:
+async def test_api_reranker_raises_typed_error_when_not_configured() -> None:
     settings = Settings(_env_file=None, rerank_provider="api")
 
-    results = await Reranker(settings).rerank("查询", _candidates(), top_k=2)
-
-    assert results == _candidates()[:2]
-    assert all("rerank_score" not in item for item in results)
-    assert "RAG_RERANK_BASE_URL is required" in caplog.text
+    with pytest.raises(RerankError, match="RAG_RERANK_BASE_URL is required"):
+        await Reranker(settings).rerank("查询", _candidates(), top_k=2)
 
 
 def test_default_reranker_does_not_require_optional_local_model() -> None:
     assert Settings(_env_file=None).rerank_provider == "none"
+
+
+def test_bailian_embedding_base_url_is_corrected_for_rerank() -> None:
+    assert build_rerank_url(
+        "https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    ) == (
+        "https://workspace.cn-beijing.maas.aliyuncs.com/"
+        "compatible-api/v1/reranks"
+    )
+
+
+def test_non_bailian_rerank_base_url_is_not_rewritten() -> None:
+    assert build_rerank_url("https://rerank.example/v1/") == (
+        "https://rerank.example/v1/reranks"
+    )
 
 
 @pytest.mark.parametrize(

@@ -11,6 +11,11 @@ from app.domain.ingest import (
     IngestStep,
     PipelineResult,
 )
+from app.domain.retrieval import (
+    EffectiveSearchMode,
+    RetrievalComponent,
+    SearchStatus,
+)
 from app.domain.worker import ClaimOutcome, CleanupAction, OutboxStatus
 
 __all__ = [
@@ -23,8 +28,11 @@ __all__ = [
     "CleanupAction",
     "DELETABLE_DOCUMENT_STATUSES",
     "DocumentStatus",
+    "EffectiveSearchMode",
     "IngestJobStatus",
     "IngestStep",
     "OutboxStatus",
     "PipelineResult",
+    "RetrievalComponent",
+    "SearchStatus",
 ]

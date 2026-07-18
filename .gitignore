@@ -43,3 +43,12 @@ desktop.ini
 /data/*.zip
 /data/storage/
 /data/cvelistV5*/
+
+# ---- 可重新生成的临时文件 ----
+/tmp/
+
+# ---- 评测生成物（由 evaluation/cybersecurity/build_dataset.py 重建）----
+/output/
+/evaluation/cybersecurity/datasets/
+/evaluation/cybersecurity/datasets-v02-hard/
+/evaluation/cybersecurity/results/*.json

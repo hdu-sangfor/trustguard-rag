@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from app.core.retrieval.filters import build_opensearch_filters, matches_filters
 from app.settings import get_settings
 from app.stores import opensearch_store
 
@@ -40,6 +41,15 @@ class KeywordRetriever:
                     },
                 },
                 "mappings": {
+                    "dynamic_templates": [
+                        {
+                            "metadata_strings": {
+                                "path_match": "metadata.*",
+                                "match_mapping_type": "string",
+                                "mapping": {"type": "keyword"},
+                            }
+                        }
+                    ],
                     "properties": {
                         "chunk_id": {"type": "keyword"},
                         "document_id": {"type": "keyword"},
@@ -48,7 +58,7 @@ class KeywordRetriever:
                         "source_uri": {"type": "keyword"},
                         "original_filename": {"type": "keyword"},
                         "page_no": {"type": "integer"},
-                        "metadata": {"type": "object", "enabled": False},
+                        "metadata": {"type": "object", "dynamic": True},
                     }
                 },
             },
@@ -107,10 +117,7 @@ class KeywordRetriever:
     ) -> list[dict[str, Any]]:
         top_k = top_k or self._settings.search_keyword_top_k
 
-        must_clauses = [{"match": {"text": query}}]
-        if filters:
-            for key, value in filters.items():
-                must_clauses.append({"term": {key: value}})
+        filter_clauses = build_opensearch_filters(filters)
 
         async with _INDEX_INIT_LOCK:
             created = await self.ensure_index()
@@ -123,7 +130,12 @@ class KeywordRetriever:
         response = await client.search(
             index=self._index,
             body={
-                "query": {"bool": {"must": must_clauses}},
+                "query": {
+                    "bool": {
+                        "must": [{"match": {"text": query}}],
+                        "filter": filter_clauses,
+                    }
+                },
                 "size": top_k,
             },
         )
@@ -136,7 +148,7 @@ class KeywordRetriever:
                     "chunk_id": hit["_id"],
                     "text": src.get("text", ""),
                     "score": float(hit["_score"]),
-                    "doc_id": src.get("document_id"),
+                    "document_id": src.get("document_id"),
                     "chunk_index": src.get("chunk_index"),
                     "page_no": src.get("page_no"),
                     "source_uri": src.get("source_uri"),
@@ -158,7 +170,7 @@ class KeywordRetriever:
 
 
 class MockKeywordRetriever:
-    """mock 模式下返回空结果。"""
+    """模拟模式下返回空结果。"""
 
     async def ensure_index(self) -> bool:
         return False
@@ -205,7 +217,7 @@ def _fake_score_from_text(text: str, query: str) -> float:
 
 
 class PseudoKeywordRetriever:
-    """基于原始文本模拟 BM25，无外部依赖，用于 dev/test 场景。"""
+    """基于原始文本模拟 BM25，无外部依赖，用于开发和测试场景。"""
 
     def __init__(self) -> None:
         self._settings = get_settings()
@@ -249,10 +261,8 @@ class PseudoKeywordRetriever:
         top_k = top_k or self._settings.search_keyword_top_k
         scored = []
         for cid, info in self._chunks.items():
-            if filters:
-                match = all(info.get(k) == v for k, v in filters.items())
-                if not match:
-                    continue
+            if not matches_filters(info, filters):
+                continue
             score = _fake_score_from_text(info["text"], query)
             if score > 0:
                 scored.append((score, {**info, "chunk_id": cid, "score": score}))

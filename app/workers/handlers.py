@@ -1,4 +1,4 @@
-"""Idempotent RabbitMQ command handlers."""
+"""幂等的 RabbitMQ 命令处理器。"""
 
 from __future__ import annotations
 
@@ -33,11 +33,11 @@ from app.workers.messages import (
 
 
 class RetryableCommandError(RuntimeError):
-    """A command should be delayed and delivered again."""
+    """命令需要延迟后重新投递。"""
 
 
 class BusyCommandError(RuntimeError):
-    """Another live Worker currently owns this command."""
+    """当前命令已由另一个存活的 Worker 持有。"""
 
 
 _T = TypeVar("_T")
@@ -71,7 +71,7 @@ async def _claim_job(
 
 
 async def _with_heartbeat(lease: JobLease, operation: Awaitable[_T]) -> _T:
-    """Cancel in-flight work promptly when deletion or another claimant revokes its lease."""
+    """删除操作或其他认领者撤销租约时，立即取消正在执行的工作。"""
     lost = asyncio.Event()
     work = asyncio.create_task(operation)
 
