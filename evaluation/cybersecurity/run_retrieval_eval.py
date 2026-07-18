@@ -78,6 +78,112 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[index]
 
 
+def evaluate_question(
+    client: httpx.Client,
+    question: dict[str, Any],
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    """执行单条检索，并把请求或响应失败规范化为可计分的报告项。"""
+    gold = gold_keys(question)
+    started = time.perf_counter()
+    try:
+        response = client.post("/v1/search", json=body)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("搜索响应必须是 JSON 对象")
+        results = payload.get("results")
+        if not isinstance(results, list):
+            raise ValueError("搜索响应缺少 results 数组")
+        search_status = payload.get("search_status")
+        if search_status not in {"ok", "degraded"}:
+            raise ValueError(f"搜索响应包含无效的 search_status: {search_status!r}")
+        retrieved = [
+            f"{filename}#page={page}" for filename, page in map(result_key, results)
+        ]
+    except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        error_info: dict[str, Any] = {
+            "type": type(error).__name__,
+            "message": str(error),
+        }
+        if isinstance(error, httpx.HTTPStatusError):
+            error_info["status_code"] = error.response.status_code
+            if error.response.text:
+                error_info["response_body"] = error.response.text[:1000]
+        return {
+            "query_id": question["query_id"],
+            "query": question["query"],
+            "category": question["category"],
+            "difficulty": question["difficulty"],
+            "answerable": question["answerable"],
+            "gold": [f"{filename}#page={page}" for filename, page in sorted(gold)],
+            "retrieved": [],
+            "metrics": query_metrics([], gold) if question["answerable"] else None,
+            "latency_ms": elapsed_ms,
+            "wall_time_ms": elapsed_ms,
+            "search_status": "failed",
+            "effective_mode": None,
+            "components": {},
+            "degraded_components": [],
+            "results": [],
+            "error": error_info,
+        }
+
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    latency_ms = payload.get("retrieval_time_ms", elapsed_ms)
+    if not isinstance(latency_ms, (int, float)) or isinstance(latency_ms, bool):
+        latency_ms = elapsed_ms
+    return {
+        "query_id": question["query_id"],
+        "query": question["query"],
+        "category": question["category"],
+        "difficulty": question["difficulty"],
+        "answerable": question["answerable"],
+        "gold": [f"{filename}#page={page}" for filename, page in sorted(gold)],
+        "retrieved": retrieved,
+        "metrics": query_metrics(results, gold) if question["answerable"] else None,
+        "latency_ms": latency_ms,
+        "wall_time_ms": elapsed_ms,
+        "search_status": search_status,
+        "effective_mode": payload.get("effective_mode"),
+        "components": payload.get("components", {}),
+        "degraded_components": payload.get("degraded_components", []),
+        "results": results,
+    }
+
+
+def summarize_queries(query_reports: list[dict[str, Any]]) -> dict[str, Any]:
+    """汇总全部查询；可回答问题的失败请求按零分计入相关性指标。"""
+    scored = [item for item in query_reports if item["answerable"]]
+    latencies = [float(item["latency_ms"]) for item in query_reports]
+    failed_queries = sum(item["search_status"] == "failed" for item in query_reports)
+
+    def mean_metric(key: str) -> float:
+        if not scored:
+            return 0.0
+        return statistics.fmean(item["metrics"][key] for item in scored)
+
+    return {
+        "queries": len(query_reports),
+        "successful_queries": len(query_reports) - failed_queries,
+        "answerable_queries": len(scored),
+        "unanswerable_queries": len(query_reports) - len(scored),
+        "hit@1": mean_metric("hit@1"),
+        "hit@3": mean_metric("hit@3"),
+        "hit@5": mean_metric("hit@5"),
+        "hit@10": mean_metric("hit@10"),
+        "recall@10": mean_metric("recall@10"),
+        "mrr": mean_metric("reciprocal_rank"),
+        "ndcg@10": mean_metric("ndcg@10"),
+        "latency_mean_ms": statistics.fmean(latencies) if latencies else 0.0,
+        "latency_p95_ms": percentile(latencies, 0.95),
+        "degraded_queries": sum(bool(item["degraded_components"]) for item in query_reports),
+        "failed_queries": failed_queries,
+        "failure_rate": failed_queries / len(query_reports) if query_reports else 0.0,
+    }
+
+
 def render_report(report: dict[str, Any]) -> str:
     summary = report["summary"]
     config = report["config"]
@@ -103,6 +209,28 @@ def render_report(report: dict[str, Any]) -> str:
             f"| 平均延迟 | {summary['latency_mean_ms']:.1f} ms |",
             f"| P95 延迟 | {summary['latency_p95_ms']:.1f} ms |",
             f"| 降级请求 | {summary['degraded_queries']} |",
+            f"| 成功请求 | {summary['successful_queries']} |",
+            f"| 失败请求 | {summary['failed_queries']} |",
+            f"| 失败率 | {summary['failure_rate']:.2%} |",
+            "",
+            "## 失败请求",
+            "",
+        ]
+    )
+    failures = [item for item in report["queries"] if item["search_status"] == "failed"]
+    if not failures:
+        lines.append("无。")
+    else:
+        for item in failures:
+            error = item.get("error", {})
+            status = error.get("status_code")
+            status_suffix = f"，HTTP {status}" if status is not None else ""
+            lines.append(
+                f"- `{item['query_id']}` {item['query']}："
+                f"{error.get('type', 'Error')}{status_suffix} — {error.get('message', '未知错误')}"
+            )
+    lines.extend(
+        [
             "",
             "## 未命中问题（Top 10）",
             "",
@@ -149,59 +277,15 @@ def main() -> int:
                 "enable_keyword": args.enable_keyword,
                 "enable_rerank": args.enable_rerank,
             }
-            started = time.perf_counter()
-            response = client.post("/v1/search", json=body)
-            elapsed_ms = (time.perf_counter() - started) * 1000
-            response.raise_for_status()
-            payload = response.json()
-            gold = gold_keys(question)
-            metrics = query_metrics(payload["results"], gold) if question["answerable"] else None
-            retrieved = [
-                f"{filename}#page={page}" for filename, page in map(result_key, payload["results"])
-            ]
-            query_reports.append(
-                {
-                    "query_id": question["query_id"],
-                    "query": question["query"],
-                    "category": question["category"],
-                    "difficulty": question["difficulty"],
-                    "answerable": question["answerable"],
-                    "gold": [f"{filename}#page={page}" for filename, page in sorted(gold)],
-                    "retrieved": retrieved,
-                    "metrics": metrics,
-                    "latency_ms": payload.get("retrieval_time_ms", elapsed_ms),
-                    "wall_time_ms": elapsed_ms,
-                    "search_status": payload.get("search_status"),
-                    "effective_mode": payload.get("effective_mode"),
-                    "components": payload.get("components", {}),
-                    "degraded_components": payload.get("degraded_components", []),
-                    "results": payload["results"],
-                }
-            )
+            query_report = evaluate_question(client, question, body)
+            query_reports.append(query_report)
             print(
                 f"[{index:02d}/{len(questions)}] {question['query_id']} "
-                f"status={payload.get('search_status')} results={len(payload['results'])} "
-                f"wall={elapsed_ms:.0f}ms"
+                f"status={query_report['search_status']} results={len(query_report['results'])} "
+                f"wall={query_report['wall_time_ms']:.0f}ms"
             )
 
-    scored = [item for item in query_reports if item["answerable"]]
-    latencies = [float(item["latency_ms"]) for item in query_reports]
-    summary = {
-        "queries": len(query_reports),
-        "answerable_queries": len(scored),
-        "unanswerable_queries": len(query_reports) - len(scored),
-        "hit@1": statistics.fmean(item["metrics"]["hit@1"] for item in scored),
-        "hit@3": statistics.fmean(item["metrics"]["hit@3"] for item in scored),
-        "hit@5": statistics.fmean(item["metrics"]["hit@5"] for item in scored),
-        "hit@10": statistics.fmean(item["metrics"]["hit@10"] for item in scored),
-        "recall@10": statistics.fmean(item["metrics"]["recall@10"] for item in scored),
-        "mrr": statistics.fmean(item["metrics"]["reciprocal_rank"] for item in scored),
-        "ndcg@10": statistics.fmean(item["metrics"]["ndcg@10"] for item in scored),
-        "latency_mean_ms": statistics.fmean(latencies),
-        "latency_p95_ms": percentile(latencies, 0.95),
-        "degraded_queries": sum(bool(item["degraded_components"]) for item in query_reports),
-        "failed_queries": sum(item["search_status"] == "failed" for item in query_reports),
-    }
+    summary = summarize_queries(query_reports)
     report = {
         "name": args.name,
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
