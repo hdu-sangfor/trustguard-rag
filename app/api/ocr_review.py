@@ -1,7 +1,7 @@
 """OCR 人工复核 API（仅后端，无前端）。"""
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response

@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     # 默认拒绝 custom/API OCR 指向内网/回环；本地联调可设 true
     ocr_allow_private_urls: bool = False
 
+    # --- 文档解析器 / MinerU ---
+    pdf_parser: str = "local"  # local | mineru
+    mineru_base_url: str = "http://127.0.0.1:8000"
+    mineru_backend: str = "pipeline"
+    mineru_timeout_seconds: float = 300.0
+
     # --- MySQL（元数据 / 文档 / 分块 / 任务） ---
     mysql_host: str = "localhost"
     mysql_port: int = 3306
@@ -188,12 +194,13 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def reject_mock_retrieval_in_production(self) -> Settings:
         """校验生产检索后端和分块窗口配置。"""
+        if self.pdf_parser.strip().lower() not in {"local", "mineru"}:
+            raise ValueError("RAG_PDF_PARSER 必须是 local 或 mineru")
         if self.chunk_target_tokens <= 0:
             raise ValueError("RAG_CHUNK_TARGET_TOKENS 必须大于 0")
         if not 0 <= self.chunk_overlap_tokens < self.chunk_target_tokens:
             raise ValueError(
-                "RAG_CHUNK_OVERLAP_TOKENS 必须大于等于 0，"
-                "并且小于 RAG_CHUNK_TARGET_TOKENS"
+                "RAG_CHUNK_OVERLAP_TOKENS 必须大于等于 0，并且小于 RAG_CHUNK_TARGET_TOKENS"
             )
         if self.app_env.strip().lower() != "prod":
             return self

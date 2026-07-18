@@ -28,6 +28,18 @@ HF_HUB_DISABLE_XET=1
 需要走本机代理时可设置 `TRUSTGUARD_NETWORK_PROXY`；该代理只在镜像构建依赖安装阶段
 使用，不会污染容器运行时访问 MySQL、Qdrant、OpenSearch 等内部服务的网络。
 
+### 可选 MinerU 文档解析
+
+默认使用 #10 的本地 PDF 文本层与 OCR 解析链路。DOCX 始终由 MinerU 解析；如需让
+PDF 也走 MinerU，在 `.env` 中设置 `RAG_PDF_PARSER=mineru`，并启动 MinerU profile：
+
+```bash
+docker compose --profile mineru up -d --build
+```
+
+首次构建 MinerU 需要下载 CUDA 基础镜像和模型，耗时及磁盘占用较大。相关镜像源可用
+`UBUNTU_APT_MIRROR`、`PIP_INDEX_URL` 和 `MINERU_MODEL_SOURCE` 覆盖。
+
 ## 本地开发（Linux）
 
 ```bash
@@ -47,6 +59,7 @@ uv run python -m pytest
 | 服务 | 端口 |
 |------|------|
 | rag-service | 18200 |
+| mineru-api | 18220 |
 | mysql | 18210 |
 | redis | 18211 |
 | rabbitmq | 18212 / 18213 |
@@ -64,7 +77,7 @@ uv run python -m pytest
 sudo sysctl -w vm.max_map_count=262144
 ```
 
-## 入库（PDF）
+## 入库（PDF / TXT / Markdown / DOCX）
 
 ```bash
 curl -X POST http://localhost:18200/v1/ingest/jobs \
@@ -74,6 +87,22 @@ curl -X POST http://localhost:18200/v1/ingest/jobs \
 curl http://localhost:18200/v1/ingest/jobs/<job_id>
 curl http://localhost:18200/v1/documents/<document_id>/chunks
 ```
+
+PDF 和 DOCX 使用独立 MinerU API 解析为 Markdown；TXT 和 Markdown 由 RAG
+按 UTF-8 直接读取（MinerU 本地 API 不接受这两种文本格式）。使用 Docker 全栈
+启动时 MinerU 会自动启动，API 文档位于 `http://localhost:18220/docs`。
+
+仅做本地 Python 开发、不运行完整 Compose 时，可单独启动 MinerU：
+
+```bash
+mineru-api --host 0.0.0.0 --port 8000
+```
+
+本机运行 RAG 时默认访问 `http://127.0.0.1:8000`；Docker 中通过服务名访问
+`http://mineru-api:8000`。可通过 `RAG_MINERU_BASE_URL`、
+`RAG_MINERU_DOCKER_BASE_URL`、
+`RAG_MINERU_BACKEND` 和 `RAG_MINERU_TIMEOUT_SECONDS` 调整。当前 Word
+支持范围为 `.docx`，旧式二进制 `.doc` 暂不支持。
 
 ## 知识库文档管理
 

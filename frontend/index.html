@@ -45,13 +45,13 @@
           <article class="upload-card">
             <div class="card-heading">
               <div><p class="kicker">INGEST</p><h2>导入知识文档</h2></div>
-              <span class="format-tag">PDF</span>
+              <span class="format-tag">PDF · TXT · MD · DOCX</span>
             </div>
             <div class="dropzone" id="dropzone" tabindex="0" role="button">
-              <input id="file-input" type="file" accept=".pdf,.txt,.md,.markdown,.csv,.json,.html,.htm,.png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff,application/pdf,text/plain,text/markdown,text/csv,application/json,text/html,image/*" hidden>
+              <input id="file-input" type="file" accept=".pdf,.docx,.txt,.log,.text,.md,.markdown,.csv,.json,.html,.htm,.png,.jpg,.jpeg,.webp,.gif,.bmp,.tif,.tiff,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown,text/csv,application/json,text/html,image/*" hidden>
               <div class="upload-symbol">↑</div>
-              <h3>拖放 PDF 到这里</h3>
-              <p>或点击选择文件 · 最大 50 MB · 需包含文本层</p>
+              <h3>拖放 PDF、TXT、Markdown 或 Word 到这里</h3>
+              <p>或点击选择文件 · 最大 50 MB · PDF 默认本地解析，DOCX 由 MinerU 解析</p>
               <div class="selected-file" id="selected-file" hidden></div>
             </div>
             <button class="primary-button" id="upload-button" disabled>
@@ -76,7 +76,7 @@
             <button class="text-button" id="clear-history">清除本地记录</button>
           </div>
           <div id="jobs-list" class="jobs-list"></div>
-          <div id="jobs-empty" class="empty-state"><span>◎</span><h3>还没有入库记录</h3><p>上传第一份 PDF 后，处理进度会显示在这里。</p></div>
+          <div id="jobs-empty" class="empty-state"><span>◎</span><h3>还没有入库记录</h3><p>上传第一份知识文档后，处理进度会显示在这里。</p></div>
         </article>
       </section>
 
@@ -151,7 +151,7 @@
             <button class="text-button" type="button" id="refresh-documents">刷新</button>
           </form>
           <div id="documents-list" class="documents-list"></div>
-          <div id="documents-empty" class="empty-state" hidden><span>▤</span><h3>没有匹配的文档</h3><p>调整筛选条件，或先在工作台导入 PDF。</p></div>
+          <div id="documents-empty" class="empty-state" hidden><span>▤</span><h3>没有匹配的文档</h3><p>调整筛选条件，或先在工作台导入知识文档。</p></div>
           <div class="pagination" id="documents-pagination" hidden>
             <button class="text-button" id="documents-prev">上一页</button>
             <span id="documents-page"></span>

@@ -1,4 +1,5 @@
-"""通过 API 执行 PDF 入库的端到端测试。"""
+"""通过 API 执行本地 PDF 入库的端到端测试。"""
+
 from __future__ import annotations
 
 import pytest

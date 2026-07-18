@@ -1,4 +1,5 @@
 """按 MIME / 魔数路由到具体抽取器。"""
+
 from __future__ import annotations
 
 import mimetypes
@@ -7,6 +8,12 @@ from pathlib import Path
 from app.core.ingest.errors import UNSUPPORTED_MIME, IngestError
 from app.core.ingest.extractors.html_extractor import HtmlExtractor
 from app.core.ingest.extractors.image_extractor import ImageExtractor
+from app.core.ingest.extractors.mineru import (
+    DOCX_MIME,
+    PDF_MIME,
+    MineruDocxExtractor,
+    MineruPdfExtractor,
+)
 from app.core.ingest.extractors.pdf import PdfExtractor
 from app.core.ingest.extractors.text_extractor import (
     CsvExtractor,
@@ -15,8 +22,11 @@ from app.core.ingest.extractors.text_extractor import (
     PlainTextExtractor,
 )
 from app.core.ingest.models import ExtractedDocument
+from app.settings import get_settings
 
-_pdf = PdfExtractor()
+_local_pdf = PdfExtractor()
+_mineru_pdf = MineruPdfExtractor()
+_mineru_docx = MineruDocxExtractor()
 _plain = PlainTextExtractor()
 _md = MarkdownExtractor()
 _csv = CsvExtractor()
@@ -25,7 +35,8 @@ _html = HtmlExtractor()
 _image = ImageExtractor()
 
 MIME_ROUTER: dict[str, object] = {
-    "application/pdf": _pdf,
+    PDF_MIME: _local_pdf,
+    DOCX_MIME: _mineru_docx,
     "text/plain": _plain,
     "text/markdown": _md,
     "text/x-markdown": _md,
@@ -44,7 +55,8 @@ MIME_ROUTER: dict[str, object] = {
 SUPPORTED_MIME_TYPES = sorted(MIME_ROUTER.keys())
 
 _EXT_MIME = {
-    ".pdf": "application/pdf",
+    ".pdf": PDF_MIME,
+    ".docx": DOCX_MIME,
     ".txt": "text/plain",
     ".log": "text/plain",
     ".text": "text/plain",
@@ -68,7 +80,7 @@ _EXT_MIME = {
 def _guess_mime(filename: str, data: bytes) -> str:
     """优先根据文件签名推断 MIME 类型，再回退到扩展名 / mimetypes。"""
     if data.startswith(b"%PDF-"):
-        return "application/pdf"
+        return PDF_MIME
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if data.startswith(b"\xff\xd8\xff"):
@@ -81,10 +93,9 @@ def _guess_mime(filename: str, data: bytes) -> str:
         return "image/webp"
     if data.lstrip().startswith((b"{", b"[")):
         return "application/json"
-    lower = filename.lower()
     if "<html" in data[:2000].decode("utf-8", errors="ignore").lower():
         return "text/html"
-    ext = Path(lower).suffix
+    ext = Path(filename.lower()).suffix
     if ext in _EXT_MIME:
         return _EXT_MIME[ext]
     guessed, _ = mimetypes.guess_type(filename)
@@ -99,11 +110,17 @@ class FileExtractor:
         original_filename: str,
         mime: str | None = None,
     ) -> tuple[str, object]:
-        resolved_mime = mime or _guess_mime(original_filename, data)
-        # 客户端 MIME 不可靠时，魔数优先
-        magic_mime = _guess_mime(original_filename, data)
-        if magic_mime in MIME_ROUTER:
-            resolved_mime = magic_mime
+        guessed_mime = _guess_mime(original_filename, data)
+        if guessed_mime in MIME_ROUTER:
+            resolved_mime = guessed_mime
+        elif mime in MIME_ROUTER:
+            resolved_mime = mime
+        else:
+            resolved_mime = mime or guessed_mime
+
+        if resolved_mime == PDF_MIME and get_settings().pdf_parser.strip().lower() == "mineru":
+            return resolved_mime, _mineru_pdf
+
         extractor = MIME_ROUTER.get(resolved_mime)
         if extractor is None:
             raise IngestError(UNSUPPORTED_MIME, f"Unsupported MIME type: {resolved_mime}")
@@ -119,6 +136,8 @@ class FileExtractor:
         resolved_mime, extractor = self._resolve(
             data, original_filename=original_filename, mime=mime
         )
+        if not hasattr(extractor, "extract"):
+            raise RuntimeError("This document type requires extract_async()")
         return self._dispatch_sync(
             extractor, data, original_filename=original_filename, mime=resolved_mime
         )
@@ -147,25 +166,18 @@ class FileExtractor:
     ) -> ExtractedDocument:
         if mime.startswith("image/"):
             return extractor.extract(  # type: ignore[union-attr]
-                data,
-                original_filename=original_filename,
-                mime=mime,
+                data, original_filename=original_filename, mime=mime
             )
-        if mime in {"text/plain"}:
+        if mime == "text/plain":
             return extractor.extract(  # type: ignore[union-attr]
-                data,
-                original_filename=original_filename,
-                mime=mime,
+                data, original_filename=original_filename, mime=mime
             )
         if mime in {"text/markdown", "text/x-markdown"}:
             return extractor.extract(  # type: ignore[union-attr]
-                data,
-                original_filename=original_filename,
-                mime="text/markdown",
+                data, original_filename=original_filename, mime="text/markdown"
             )
         return extractor.extract(  # type: ignore[union-attr]
-            data,
-            original_filename=original_filename,
+            data, original_filename=original_filename
         )
 
     async def _dispatch_async(
@@ -179,14 +191,9 @@ class FileExtractor:
         if hasattr(extractor, "extract_async"):
             if mime.startswith("image/"):
                 return await extractor.extract_async(  # type: ignore[union-attr]
-                    data,
-                    original_filename=original_filename,
-                    mime=mime,
+                    data, original_filename=original_filename, mime=mime
                 )
             return await extractor.extract_async(  # type: ignore[union-attr]
-                data,
-                original_filename=original_filename,
+                data, original_filename=original_filename
             )
-        return self._dispatch_sync(
-            extractor, data, original_filename=original_filename, mime=mime
-        )
+        return self._dispatch_sync(extractor, data, original_filename=original_filename, mime=mime)
