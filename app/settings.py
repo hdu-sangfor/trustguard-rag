@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -48,6 +47,11 @@ class Settings(BaseSettings):
     ingest_max_pdf_pages: int = 500
     conflict_ttl_hours: int = 168
     chunk_target_tokens: int = 512
+
+    # --- MinerU（Word 等 Office 文档解析服务） ---
+    mineru_base_url: str = "http://127.0.0.1:8000"
+    mineru_backend: str = "pipeline"
+    mineru_timeout_seconds: float = 300.0
 
     # --- MySQL（元数据 / 文档 / 分块 / 任务） ---
     mysql_host: str = "localhost"

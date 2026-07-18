@@ -16,9 +16,20 @@ async def source_capabilities() -> dict:
         "sources": [
             {
                 "source_type": "file",
-                "mime_types": ["application/pdf"],
+                "mime_types": [
+                    "application/pdf",
+                    "text/plain",
+                    "text/markdown",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ],
                 "max_bytes": settings.ingest_max_pdf_bytes,
                 "max_pdf_pages": settings.ingest_max_pdf_pages,
+                "parsers": {
+                    "application/pdf": "mineru",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "mineru",
+                    "text/plain": "utf8-passthrough",
+                    "text/markdown": "utf8-passthrough",
+                },
             }
         ]
     }

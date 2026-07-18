@@ -79,7 +79,7 @@ class IngestPipeline:
                 raise IngestError("FILE_TOO_LARGE", "File exceeds max size")
 
             await self._jobs.mark_running(job_id, "extract")
-            extracted = self._extractor.extract(
+            extracted = await self._extractor.extract_async(
                 file_bytes, original_filename=original_filename, mime=mime
             )
 
@@ -206,7 +206,7 @@ class IngestPipeline:
                 if old_id != pending_id:
                     await self._compensator.supersede_document(old_id)
             file_bytes, original_filename, mime = await self._load_upload(job)
-            extracted = self._extractor.extract(
+            extracted = await self._extractor.extract_async(
                 file_bytes, original_filename=original_filename, mime=mime
             )
             await self._publish_pending(pending_id, extracted, original_filename, job_id)

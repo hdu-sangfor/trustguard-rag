@@ -4,18 +4,21 @@ const terminal = new Set(["succeeded", "failed", "deduplicated", "discarded", "c
 const deletableDocumentStatuses = new Set(["ready", "failed", "superseded"]);
 const statusLabel = { queued:"排队中", running:"处理中", succeeded:"已完成", failed:"失败", deduplicated:"已去重", conflict:"待处理", discarded:"已丢弃" };
 const stepLabel = { validate:"文件校验", extract:"解析文本", dedup:"内容去重", conflict_check:"冲突检查", commit_artifacts:"保存产物", chunk:"文本分块", embed:"生成向量", index:"写入索引", publish:"发布文档" };
+const supportedMimeTypes = new Set(["application/pdf", "text/plain", "text/markdown", "text/x-markdown", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]);
+const supportedExtensions = [".pdf", ".txt", ".md", ".markdown", ".docx"];
 
 function toast(message, error=false){ const el=document.createElement("div"); el.className=`toast${error?" error":""}`; el.textContent=message; $("#toasts").append(el); setTimeout(()=>el.remove(),4500); }
 async function api(path, options={}){ const response=await fetch(path,options); if(!response.ok){ let detail=`HTTP ${response.status}`; try{detail=(await response.json()).detail||detail}catch{} throw new Error(detail); } return response.status===204?null:response.json(); }
 function persist(){ localStorage.setItem("tg-jobs",JSON.stringify(state.jobs.slice(0,30))); }
 function formatTime(value){ if(!value)return "—"; return new Intl.DateTimeFormat("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).format(new Date(value)); }
 function escapeHtml(value=""){ const div=document.createElement("div"); div.textContent=value; return div.innerHTML; }
+function documentFormat(doc){ const mime=(doc.mime_type||"").toLowerCase(), name=(doc.original_filename||"").toLowerCase(); if(mime==="application/pdf"||name.endsWith(".pdf"))return "PDF"; if(mime==="application/vnd.openxmlformats-officedocument.wordprocessingml.document"||name.endsWith(".docx"))return "DOCX"; if(mime==="text/markdown"||mime==="text/x-markdown"||name.endsWith(".md")||name.endsWith(".markdown"))return "MD"; if(mime==="text/plain"||name.endsWith(".txt"))return "TXT"; return "FILE"; }
 
 function renderJobs(){
   const list=$("#jobs-list"), empty=$("#jobs-empty"); list.innerHTML=""; empty.hidden=state.jobs.length>0;
   state.jobs.forEach(job=>{
     const row=document.createElement("div"); row.className="job-row";
-    row.innerHTML=`<span class="job-icon">▧</span><div class="job-name"><strong>${escapeHtml(job.filename||"PDF 文档")}</strong><small>${escapeHtml(job.id)}</small></div><span class="step">${escapeHtml(stepLabel[job.current_step]||job.current_step||"等待处理")}</span><span class="status ${job.status}">${statusLabel[job.status]||job.status}</span><button class="job-action">${job.document_id?"查看":"刷新"}</button>`;
+    row.innerHTML=`<span class="job-icon">▧</span><div class="job-name"><strong>${escapeHtml(job.filename||"知识文档")}</strong><small>${escapeHtml(job.id)}</small></div><span class="step">${escapeHtml(stepLabel[job.current_step]||job.current_step||"等待处理")}</span><span class="status ${job.status}">${statusLabel[job.status]||job.status}</span><button class="job-action">${job.document_id?"查看":"刷新"}</button>`;
     row.querySelector("button").onclick=()=>job.document_id?openDocument(job.document_id):refreshJob(job.id);
     list.append(row);
   });
@@ -52,7 +55,7 @@ function renderDocuments(){
   $("#documents-total").textContent=`${state.documentTotal} DOCUMENTS`;
   state.documents.forEach(doc=>{
     const row=document.createElement("article"); row.className="document-row";
-    row.innerHTML=`<button class="document-main" type="button"><span class="document-symbol">PDF</span><span class="document-name"><strong>${escapeHtml(doc.title||doc.original_filename||"未命名文档")}</strong><small>${escapeHtml(doc.original_filename||doc.source_uri)} · ${formatTime(doc.created_at)}</small></span></button><span class="status ${escapeHtml(doc.status)}">${escapeHtml(doc.status)}</span><div class="document-actions"><button class="text-button edit-document" type="button">编辑</button><button class="text-button danger delete-document" type="button">删除</button></div>`;
+    row.innerHTML=`<button class="document-main" type="button"><span class="document-symbol">${documentFormat(doc)}</span><span class="document-name"><strong>${escapeHtml(doc.title||doc.original_filename||"未命名文档")}</strong><small>${escapeHtml(doc.original_filename||doc.source_uri)} · ${formatTime(doc.created_at)}</small></span></button><span class="status ${escapeHtml(doc.status)}">${escapeHtml(doc.status)}</span><div class="document-actions"><button class="text-button edit-document" type="button">编辑</button><button class="text-button danger delete-document" type="button">删除</button></div>`;
     row.querySelector(".document-main").onclick=()=>openDocument(doc.id);
     row.querySelector(".edit-document").onclick=()=>editDocument(doc);
     const deleteButton=row.querySelector(".delete-document");
@@ -103,7 +106,7 @@ async function openDocument(id){
 }
 
 function switchView(name){ document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===`view-${name}`)); document.querySelectorAll(".nav-item").forEach(v=>v.classList.toggle("active",v.dataset.view===name)); $("#page-title").textContent={workspace:"知识工作台",documents:"知识库管理",system:"系统状态"}[name]; if(name==="documents")loadDocuments(); }
-function chooseFile(file){ if(!file)return; if(file.type!=="application/pdf"&&!file.name.toLowerCase().endsWith(".pdf")){toast("请选择 PDF 文件",true);return;} if(file.size>50*1024*1024){toast("文件不能超过 50 MB",true);return;} state.file=file; const selected=$("#selected-file"); selected.hidden=false; selected.textContent=`${file.name} · ${(file.size/1024/1024).toFixed(2)} MB`; $("#upload-button").disabled=false; }
+function chooseFile(file){ if(!file)return; const name=file.name.toLowerCase(); const supportedType=supportedMimeTypes.has((file.type||"").toLowerCase()); const supportedExtension=supportedExtensions.some(extension=>name.endsWith(extension)); if(!supportedType&&!supportedExtension){toast("请选择 PDF、TXT、Markdown 或 DOCX 文件",true);return;} if(file.size>50*1024*1024){toast("文件不能超过 50 MB",true);return;} state.file=file; const selected=$("#selected-file"); selected.hidden=false; selected.textContent=`${file.name} · ${(file.size/1024/1024).toFixed(2)} MB`; $("#upload-button").disabled=false; }
 
 document.querySelectorAll(".nav-item").forEach(button=>button.onclick=()=>switchView(button.dataset.view));
 $("#dropzone").onclick=()=>$("#file-input").click(); $("#dropzone").onkeydown=e=>{if(["Enter"," "].includes(e.key))$("#file-input").click()};

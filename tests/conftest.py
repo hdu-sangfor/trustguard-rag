@@ -1,19 +1,43 @@
 """Shared pytest fixtures."""
 from __future__ import annotations
 
-import os
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import httpx
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.main import create_app
+from app.core.ingest.extractors.file import MIME_ROUTER
+from app.core.ingest.extractors.mineru import PDF_MIME, MineruPdfExtractor
 from app.settings import get_settings
+from app.settings import Settings
 from app.stores import db
 from app.stores.models import Base
+
+
+@pytest.fixture(autouse=True)
+def mock_mineru_pdf_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep PDF tests deterministic after production routing moved to MinerU."""
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"results": {"document": {"md_content": "MinerU extracted PDF content"}}},
+        )
+
+    settings = Settings(
+        mineru_base_url="http://mineru.test:8000",
+        mineru_backend="pipeline",
+    )
+    monkeypatch.setitem(
+        MIME_ROUTER,
+        PDF_MIME,
+        MineruPdfExtractor(settings, transport=httpx.MockTransport(handler)),
+    )
 
 
 @pytest.fixture
@@ -40,7 +64,6 @@ async def test_engine(tmp_storage: Path, monkeypatch: pytest.MonkeyPatch) -> Asy
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    original = db.get_engine
     db._engine = engine  # type: ignore[attr-defined]
 
     def _get() -> AsyncEngine:

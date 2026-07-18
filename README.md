@@ -10,6 +10,14 @@ docker compose up -d --build
 curl http://localhost:18200/health
 ```
 
+`docker compose up -d --build` 会自动构建并启动 `mineru-api`，随后等待其健康检查
+通过再启动 `rag-service`。首次构建需要下载 CUDA 基础镜像、MinerU 和模型，耗时和
+磁盘占用都明显高于普通服务；后续启动直接复用镜像。
+
+MinerU 镜像构建默认使用清华 Ubuntu/PyPI 镜像和 ModelScope 模型源，并为 APT
+下载配置重试。可通过 `UBUNTU_APT_MIRROR`、`PIP_INDEX_URL` 和
+`MINERU_MODEL_SOURCE` 覆盖。
+
 ## 本地开发（Linux）
 
 ```bash
@@ -27,12 +35,13 @@ uv run python -m pytest
 | 服务 | 端口 |
 |------|------|
 | rag-service | 18200 |
+| mineru-api | 18220 |
 | mysql | 18210 |
 | redis | 18211 |
 | rabbitmq | 18212 / 18213 |
 | qdrant | 18214 / 18215 |
 
-## 入库（PDF）
+## 入库（PDF / TXT / Markdown / DOCX）
 
 ```bash
 curl -X POST http://localhost:18200/v1/ingest/jobs \
@@ -42,6 +51,22 @@ curl -X POST http://localhost:18200/v1/ingest/jobs \
 curl http://localhost:18200/v1/ingest/jobs/<job_id>
 curl http://localhost:18200/v1/documents/<document_id>/chunks
 ```
+
+PDF 和 DOCX 使用独立 MinerU API 解析为 Markdown；TXT 和 Markdown 由 RAG
+按 UTF-8 直接读取（MinerU 本地 API 不接受这两种文本格式）。使用 Docker 全栈
+启动时 MinerU 会自动启动，API 文档位于 `http://localhost:18220/docs`。
+
+仅做本地 Python 开发、不运行完整 Compose 时，可单独启动 MinerU：
+
+```bash
+mineru-api --host 0.0.0.0 --port 8000
+```
+
+本机运行 RAG 时默认访问 `http://127.0.0.1:8000`；Docker 中通过服务名访问
+`http://mineru-api:8000`。可通过 `RAG_MINERU_BASE_URL`、
+`RAG_MINERU_DOCKER_BASE_URL`、
+`RAG_MINERU_BACKEND` 和 `RAG_MINERU_TIMEOUT_SECONDS` 调整。当前 Word
+支持范围为 `.docx`，旧式二进制 `.doc` 暂不支持。
 
 ## 知识库文档管理
 
