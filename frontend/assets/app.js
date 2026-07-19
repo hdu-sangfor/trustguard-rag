@@ -123,6 +123,19 @@ function renderSearchResults(data){
   });
 }
 
+function renderAnswer(data){
+  const results=$("#search-results"), empty=$("#search-empty"), summary=$("#search-summary");
+  const answered=data.status==="answered", degraded=Array.isArray(data.degraded_components)?data.degraded_components:[];
+  empty.hidden=true;summary.hidden=false;results.innerHTML="";
+  const usage=data.usage?` · ${data.usage.total_tokens} tokens`:"";
+  summary.innerHTML=`<span>${answered?"已回答":"证据不足"}</span><span><strong>${Number(data.total_time_ms).toFixed(1)}</strong> ms</span><span>召回 ${data.retrieved_count} · 上下文 ${data.context_chunk_count}</span><span>${data.context_token_count} context tokens</span>${data.model?`<span>${escapeHtml(data.model)}${usage}</span>`:""}${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}`;
+  const card=document.createElement("article");card.className=`answer-card${answered?"":" insufficient"}`;
+  const citations=Array.isArray(data.citations)?data.citations:[];
+  card.innerHTML=`<span class="answer-status">${answered?"GROUNDED ANSWER":"INSUFFICIENT EVIDENCE"}</span><p class="answer-text">${escapeHtml(data.answer||"")}</p>${citations.length?`<div class="answer-citations">${citations.map(item=>`<article class="answer-citation"><strong>[${item.citation_id}]</strong><div class="answer-citation-info"><span>${escapeHtml(item.original_filename||item.source_uri||"未知来源")}</span><small>CHUNK ${(item.chunk_index??0)+1}${item.page_no!=null?` · PAGE ${item.page_no}`:""}</small><p>${escapeHtml((item.excerpt||"").slice(0,240))}${(item.excerpt||"").length>240?"…":""}</p></div>${item.document_id?'<button class="text-button answer-document" type="button">查看原文 →</button>':""}</article>`).join("")}</div>`:""}`;
+  card.querySelectorAll(".answer-document").forEach((button,index)=>button.onclick=()=>openDocument(citations[index].document_id));
+  results.append(card);
+}
+
 async function runSearch(){
   const query=$("#search-query").value.trim();
   const enableVector=$("#search-vector").checked, enableKeyword=$("#search-keyword").checked;
@@ -156,6 +169,41 @@ async function runSearch(){
     renderSearchResults(data);
   }catch(error){results.innerHTML="";empty.hidden=false;empty.querySelector("h3").textContent="检索失败";empty.querySelector("p").textContent="请检查检索服务状态后重试。";toast(`检索失败：${error.message}`,true);}
   finally{button.disabled=false;button.firstChild.textContent="开始检索 ";}
+}
+
+async function runAnswer(){
+  const query=$("#search-query").value.trim();
+  const enableVector=$("#search-vector").checked, enableKeyword=$("#search-keyword").checked;
+  if(!query){toast("请输入要回答的问题",true);$("#search-query").focus();return;}
+  if(!enableVector&&!enableKeyword){toast("请至少启用一种检索方式",true);return;}
+
+  const payload={
+    query,
+    top_k:optionalNumber("#search-top-k"),
+    vector_top_k:optionalNumber("#search-vector-top-k"),
+    keyword_top_k:optionalNumber("#search-keyword-top-k"),
+    fusion_method:$("#search-fusion").value,
+    enable_vector:enableVector,
+    enable_keyword:enableKeyword,
+    enable_rerank:$("#search-rerank").checked,
+  };
+  if(payload.fusion_method==="weighted_score"){
+    payload.vector_weight=optionalNumber("#search-vector-weight");
+    payload.keyword_weight=optionalNumber("#search-keyword-weight");
+    if((payload.vector_weight??0)+(payload.keyword_weight??0)===0){toast("向量权重和关键词权重不能同时为 0",true);return;}
+  }
+  const sourceUri=$("#search-source-uri").value.trim();
+  if(sourceUri)payload.filters={source_uri:sourceUri};
+
+  const button=$("#answer-button"), results=$("#search-results"), empty=$("#search-empty"), summary=$("#search-summary");
+  button.disabled=true;button.firstChild.textContent="正在回答 ";
+  results.innerHTML='<div class="loading">正在检索证据、组装上下文并生成回答…</div>';
+  empty.hidden=true;summary.hidden=true;
+  try{
+    const data=await api("/v1/answer",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    renderAnswer(data);
+  }catch(error){results.innerHTML="";empty.hidden=false;empty.querySelector("h3").textContent="回答失败";empty.querySelector("p").textContent=`服务返回：${error.message}`;toast(`回答失败：${error.message}`,true);}
+  finally{button.disabled=false;button.firstChild.textContent="生成回答 ";}
 }
 
 function syncSearchOptions(){
@@ -219,6 +267,7 @@ $("#refresh-documents").onclick=()=>loadDocuments();
 $("#documents-prev").onclick=()=>{state.documentOffset=Math.max(0,state.documentOffset-state.documentLimit);loadDocuments()};
 $("#documents-next").onclick=()=>{state.documentOffset+=state.documentLimit;loadDocuments()};
 $("#search-form").onsubmit=e=>{e.preventDefault();runSearch()};
+$("#answer-button").onclick=runAnswer;
 $("#search-fusion").onchange=syncSearchOptions;
 $("#search-vector").onchange=syncSearchOptions;
 $("#search-keyword").onchange=syncSearchOptions;

@@ -85,8 +85,8 @@ ATT&CK 相邻技术；结果见 `results/hard-summary.md`。
 - `nDCG@k`：评价相关证据的整体排序；当前可先采用二元相关性。
 - `不可回答误召回率`：不可回答问题中，系统仍返回高置信相关证据的比例。
 
-第一阶段不需要 LLM 回答模块，直接根据搜索结果携带的文档名、页码和证据 ID 计算这些指标。
-后续接入回答模块后，再增加答案事实一致性、引用正确率、无证据断言率和拒答准确率。
+检索评测直接根据搜索结果携带的文档名、页码和证据 ID 计算上述指标。回答层另行计算
+必要事实覆盖、引用正确率和拒答准确率，避免把生成随机性混入检索基线。
 
 ## 执行基线测评
 
@@ -112,6 +112,19 @@ ATT&CK 相邻技术；结果见 `results/hard-summary.md`。
 .\.venv\Scripts\python.exe evaluation\cybersecurity\run_retrieval_eval.py `
   --name keyword-only --no-enable-vector --no-enable-rerank
 ```
+
+## 执行回答测评
+
+启用并配置回答模型后，可在开发集上运行端到端回答测评：
+
+```powershell
+.\.venv\Scripts\python.exe evaluation\cybersecurity\run_answer_eval.py `
+  --name answer-baseline
+```
+
+该脚本调用 `/v1/answer`，输出回答/拒答状态准确率、`must_include` 必要事实覆盖率、按
+文件名和页码计算的引用精确率/召回率、延迟与 Token 用量。必要事实覆盖只是无需裁判模型的
+确定性代理指标，不等同于完整的语义正确性或忠实度；报告应配合人工抽检使用。
 
 ## 时效和来源维护
 

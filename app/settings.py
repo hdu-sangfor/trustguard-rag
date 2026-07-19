@@ -178,6 +178,20 @@ class Settings(BaseSettings):
     rerank_api_timeout_seconds: float = 60.0
     rerank_instruction: str | None = None
 
+    # --- 回答生成 ---
+    # 默认关闭，避免只使用入库/检索能力的部署被迫配置外部 LLM。
+    llm_provider: str = "none"  # none | openai_compatible
+    llm_base_url: str | None = None
+    llm_api_key: str | None = None
+    llm_model: str = "qwen-plus"
+    llm_timeout_seconds: float = 60.0
+    llm_temperature: float = 0.1
+    llm_max_output_tokens: int = 1024
+    llm_json_response_format: bool = True
+    answer_context_max_tokens: int = 6000
+    answer_max_context_chunks: int = 8
+    answer_refusal_message: str = "当前知识库中没有足够证据回答该问题。"
+
     # --- 混合检索 ---
     search_top_k: int = 10  # 最终返回的结果数量
     search_vector_top_k: int = 30  # 向量检索引擎初始召回数量
@@ -202,6 +216,18 @@ class Settings(BaseSettings):
             raise ValueError(
                 "RAG_CHUNK_OVERLAP_TOKENS 必须大于等于 0，并且小于 RAG_CHUNK_TARGET_TOKENS"
             )
+        if self.llm_timeout_seconds <= 0:
+            raise ValueError("RAG_LLM_TIMEOUT_SECONDS 必须大于 0")
+        if not 0 <= self.llm_temperature <= 2:
+            raise ValueError("RAG_LLM_TEMPERATURE 必须位于 [0, 2]")
+        if self.llm_max_output_tokens <= 0:
+            raise ValueError("RAG_LLM_MAX_OUTPUT_TOKENS 必须大于 0")
+        if self.answer_context_max_tokens < 128:
+            raise ValueError("RAG_ANSWER_CONTEXT_MAX_TOKENS 不能小于 128")
+        if self.answer_max_context_chunks <= 0:
+            raise ValueError("RAG_ANSWER_MAX_CONTEXT_CHUNKS 必须大于 0")
+        if not self.answer_refusal_message.strip():
+            raise ValueError("RAG_ANSWER_REFUSAL_MESSAGE 不能为空")
         if self.app_env.strip().lower() != "prod":
             return self
         enabled_mocks: list[str] = []
