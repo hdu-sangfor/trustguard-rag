@@ -47,8 +47,7 @@ desktop.ini
 # ---- 可重新生成的临时文件 ----
 /tmp/
 
-# ---- 评测生成物（由 evaluation/cybersecurity/build_dataset.py 重建）----
+# ---- 评测生成物（由 evaluation/cybersecurity 下脚本重建）----
 /output/
-/evaluation/cybersecurity/datasets/
-/evaluation/cybersecurity/datasets-v02-hard/
-/evaluation/cybersecurity/results/*.json
+/evaluation/cybersecurity/dataset/
+/evaluation/cybersecurity/results/

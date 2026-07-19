@@ -17,7 +17,7 @@ import httpx
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATASET = Path(__file__).with_name("datasets") / "cybersecurity-dev.jsonl"
+DEFAULT_DATASET = Path(__file__).with_name("dataset") / "cybersecurity-dev.jsonl"
 DEFAULT_RESULTS = Path(__file__).with_name("results")
 
 
@@ -57,6 +57,13 @@ def gold_keys(question: dict[str, Any]) -> set[tuple[str, int]]:
     return {(item["filename"], item["page"]) for item in question.get("relevant_evidence", [])}
 
 
+def acceptable_gold_keys(question: dict[str, Any]) -> set[tuple[str, int]]:
+    evidence = question.get("acceptable_evidence")
+    if not isinstance(evidence, list):
+        return gold_keys(question)
+    return {(item["filename"], item["page"]) for item in evidence}
+
+
 def percentile(values: list[float], fraction: float) -> float:
     if not values:
         return 0.0
@@ -83,10 +90,12 @@ def evaluate_payload(question: dict[str, Any], payload: dict[str, Any]) -> dict[
     fact_recall = len(matched_facts) / len(must_include) if must_include else 1.0
 
     gold = gold_keys(question)
+    acceptable_gold = acceptable_gold_keys(question)
     cited = {citation_key(item) for item in citations}
-    matched_citations = cited & gold
-    citation_precision = len(matched_citations) / len(cited) if cited else 0.0
-    citation_recall = len(matched_citations) / len(gold) if gold else 1.0
+    precision_matches = cited & acceptable_gold
+    recall_matches = cited & gold
+    citation_precision = len(precision_matches) / len(cited) if cited else 0.0
+    citation_recall = len(recall_matches) / len(gold) if gold else 1.0
     status_correct = status == "answered" if answerable else status == "insufficient_evidence"
 
     return {
@@ -102,6 +111,9 @@ def evaluate_payload(question: dict[str, Any], payload: dict[str, Any]) -> dict[
             for filename, page in sorted(cited, key=lambda item: (item[0], item[1] or -1))
         ],
         "gold": [f"{filename}#page={page}" for filename, page in sorted(gold)],
+        "acceptable_gold": [
+            f"{filename}#page={page}" for filename, page in sorted(acceptable_gold)
+        ],
         "answer": answer,
     }
 
@@ -124,6 +136,13 @@ def evaluate_question(
         error_info: dict[str, Any] = {"type": type(error).__name__, "message": str(error)}
         if isinstance(error, httpx.HTTPStatusError):
             error_info["status_code"] = error.response.status_code
+            try:
+                response_value = error.response.json()
+                detail = response_value.get("detail") if isinstance(response_value, dict) else None
+                if isinstance(detail, str) and detail:
+                    error_info["response_detail"] = detail[:1000]
+            except (json.JSONDecodeError, ValueError):
+                pass
         return {
             "query_id": question["query_id"],
             "query": question["query"],

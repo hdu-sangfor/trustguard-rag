@@ -5,7 +5,11 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from app.core.generation.citation_validator import parse_answer, validate_citations
+from app.core.generation.citation_validator import (
+    parse_answer,
+    render_declared_citations,
+    validate_citations,
+)
 from app.core.generation.context_builder import ContextBuilder, Evidence
 from app.core.generation.llm_client import LLMClient
 from app.core.generation.prompts import build_messages
@@ -75,7 +79,10 @@ class AnswerService:
         generation_started = time.perf_counter()
         completion = await self._llm.complete(build_messages(query, bundle.context))
         generation_time_ms = round((time.perf_counter() - generation_started) * 1000, 2)
-        parsed = parse_answer(completion.content)
+        parsed = render_declared_citations(
+            parse_answer(completion.content),
+            bundle.evidence,
+        )
         cited_evidence = validate_citations(parsed, bundle.evidence)
         answer_text = parsed.answer
         if parsed.status == AnswerStatus.INSUFFICIENT_EVIDENCE and not answer_text:

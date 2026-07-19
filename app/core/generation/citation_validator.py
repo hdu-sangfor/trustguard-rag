@@ -51,6 +51,41 @@ def parse_answer(content: str) -> ParsedAnswer:
     )
 
 
+def render_declared_citations(
+    parsed: ParsedAnswer,
+    evidence: list[Evidence],
+) -> ParsedAnswer:
+    """用经过校验的结构化编号补齐 answered 正文中遗漏的引用标记。"""
+    if parsed.status != AnswerStatus.ANSWERED:
+        return parsed
+
+    if not parsed.citation_ids:
+        raise LLMResponseError(
+            "Answered response must contain at least one citation or declare citation_ids"
+        )
+
+    evidence_ids = {item.citation_id for item in evidence}
+    if any(citation_id not in evidence_ids for citation_id in parsed.citation_ids):
+        raise LLMResponseError("Answer references evidence that was not provided")
+
+    referenced = {int(value) for value in CITATION_PATTERN.findall(parsed.answer)}
+    # 正文里出现未声明编号时不做猜测，交给严格校验返回 502。这里只补结构化
+    # citation_ids 已声明但正文遗漏的编号。
+    if not referenced.issubset(parsed.citation_ids):
+        return parsed
+
+    missing = [citation_id for citation_id in parsed.citation_ids if citation_id not in referenced]
+    if not missing:
+        return parsed
+
+    rendered = "".join(f"[{citation_id}]" for citation_id in missing)
+    return ParsedAnswer(
+        status=parsed.status,
+        answer=f"{parsed.answer.rstrip()} {rendered}",
+        citation_ids=parsed.citation_ids,
+    )
+
+
 def validate_citations(parsed: ParsedAnswer, evidence: list[Evidence]) -> list[Evidence]:
     """确保声明编号、正文编号和真实证据严格一致。"""
     referenced = [int(value) for value in CITATION_PATTERN.findall(parsed.answer)]

@@ -82,6 +82,24 @@ async def test_answer_service_returns_grounded_answer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_answer_service_renders_valid_declared_citations() -> None:
+    completion = LLMCompletion(
+        content=(
+            '{"status":"answered","answer":"应使用参数化查询。",'
+            '"citation_ids":[1]}'
+        ),
+        model="qwen-plus",
+    )
+    service, _, _ = _service(_search_result([_result()]), completion)
+
+    result = await service.answer("如何防御 SQL 注入？")
+
+    assert result["status"] == AnswerStatus.ANSWERED
+    assert result["answer"] == "应使用参数化查询。 [1]"
+    assert [item["citation_id"] for item in result["citations"]] == [1]
+
+
+@pytest.mark.asyncio
 async def test_answer_service_skips_llm_when_retrieval_is_empty() -> None:
     service, _, llm = _service(_search_result([]), None)
 

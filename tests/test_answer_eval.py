@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import httpx
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1] / "evaluation" / "cybersecurity" / "run_answer_eval.py"
@@ -39,6 +41,31 @@ def test_evaluate_payload_matches_formatted_fact_and_citation() -> None:
     assert result["fact_recall"] == 1.0
     assert result["citation_precision"] == 1.0
     assert result["citation_recall"] == 1.0
+
+
+def test_citation_precision_accepts_cross_dataset_gold_without_inflating_recall() -> None:
+    question = _question()
+    question["acceptable_evidence"] = [
+        {"filename": "policy.pdf", "page": 2},
+        {"filename": "hard-compare.pdf", "page": 7},
+    ]
+
+    result = answer_eval.evaluate_payload(
+        question,
+        {
+            "status": "answered",
+            "answer": "该规定自 2026 年 1 月 1 日施行。[1]",
+            "citations": [{"original_filename": "hard-compare.pdf", "page_no": 7}],
+        },
+    )
+
+    assert result["citation_precision"] == 1.0
+    assert result["citation_recall"] == 0.0
+    assert result["gold"] == ["policy.pdf#page=2"]
+    assert result["acceptable_gold"] == [
+        "hard-compare.pdf#page=7",
+        "policy.pdf#page=2",
+    ]
 
 
 def test_evaluate_payload_scores_correct_refusal() -> None:
@@ -93,3 +120,28 @@ def test_summarize_queries_keeps_answer_and_refusal_metrics_separate() -> None:
     assert summary["refusal_accuracy"] == 1.0
     assert summary["citation_recall"] == 0.5
     assert summary["mean_total_tokens"] == 35
+
+
+def test_evaluate_question_records_safe_api_error_detail() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            502,
+            request=request,
+            json={"detail": "Answered response must contain at least one citation"},
+        )
+
+    with httpx.Client(
+        base_url="http://test",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        report = answer_eval.evaluate_question(
+            client,
+            _question(),
+            {"query": "施行日期是什么？"},
+        )
+
+    assert report["request_status"] == "failed"
+    assert report["error"]["status_code"] == 502
+    assert report["error"]["response_detail"] == (
+        "Answered response must contain at least one citation"
+    )

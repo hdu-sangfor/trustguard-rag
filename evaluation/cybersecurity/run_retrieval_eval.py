@@ -16,7 +16,7 @@ import httpx
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATASET = Path(__file__).with_name("datasets") / "cybersecurity-dev.jsonl"
+DEFAULT_DATASET = Path(__file__).with_name("dataset") / "cybersecurity-dev.jsonl"
 DEFAULT_RESULTS = Path(__file__).with_name("results")
 KS = (1, 3, 5, 10)
 
@@ -54,18 +54,38 @@ def gold_keys(question: dict[str, Any]) -> set[tuple[str, int]]:
     }
 
 
-def query_metrics(results: list[dict[str, Any]], gold: set[tuple[str, int]]) -> dict[str, float]:
+def acceptable_gold_keys(question: dict[str, Any]) -> set[tuple[str, int]]:
+    evidence = question.get("acceptable_evidence")
+    if not isinstance(evidence, list):
+        return gold_keys(question)
+    return {(item["filename"], item["page"]) for item in evidence}
+
+
+def query_metrics(
+    results: list[dict[str, Any]],
+    gold: set[tuple[str, int]],
+    acceptable_gold: set[tuple[str, int]] | None = None,
+) -> dict[str, float]:
+    ranking_gold = acceptable_gold if acceptable_gold is not None else gold
     ranked = [result_key(result) for result in results]
-    first_rank = next((rank for rank, key in enumerate(ranked, start=1) if key in gold), None)
+    first_rank = next(
+        (rank for rank, key in enumerate(ranked, start=1) if key in ranking_gold),
+        None,
+    )
     metrics: dict[str, float] = {"reciprocal_rank": 0.0 if first_rank is None else 1.0 / first_rank}
     for k in KS:
         top = ranked[:k]
-        matched = set(top) & gold
-        dcg = sum(1.0 / math.log2(rank + 1) for rank, key in enumerate(top, start=1) if key in gold)
-        ideal_count = min(len(gold), k)
+        matched = set(top) & ranking_gold
+        required_matched = set(top) & gold
+        dcg = sum(
+            1.0 / math.log2(rank + 1)
+            for rank, key in enumerate(top, start=1)
+            if key in ranking_gold
+        )
+        ideal_count = min(len(ranking_gold), k)
         idcg = sum(1.0 / math.log2(rank + 1) for rank in range(1, ideal_count + 1))
         metrics[f"hit@{k}"] = float(bool(matched))
-        metrics[f"recall@{k}"] = len(matched) / len(gold)
+        metrics[f"recall@{k}"] = len(required_matched) / len(gold)
         metrics[f"ndcg@{k}"] = dcg / idcg if idcg else 0.0
     return metrics
 
@@ -85,6 +105,7 @@ def evaluate_question(
 ) -> dict[str, Any]:
     """执行单条检索，并把请求或响应失败规范化为可计分的报告项。"""
     gold = gold_keys(question)
+    acceptable_gold = acceptable_gold_keys(question)
     started = time.perf_counter()
     try:
         response = client.post("/v1/search", json=body)
@@ -118,8 +139,13 @@ def evaluate_question(
             "difficulty": question["difficulty"],
             "answerable": question["answerable"],
             "gold": [f"{filename}#page={page}" for filename, page in sorted(gold)],
+            "acceptable_gold": [
+                f"{filename}#page={page}" for filename, page in sorted(acceptable_gold)
+            ],
             "retrieved": [],
-            "metrics": query_metrics([], gold) if question["answerable"] else None,
+            "metrics": (
+                query_metrics([], gold, acceptable_gold) if question["answerable"] else None
+            ),
             "latency_ms": elapsed_ms,
             "wall_time_ms": elapsed_ms,
             "search_status": "failed",
@@ -141,8 +167,13 @@ def evaluate_question(
         "difficulty": question["difficulty"],
         "answerable": question["answerable"],
         "gold": [f"{filename}#page={page}" for filename, page in sorted(gold)],
+        "acceptable_gold": [
+            f"{filename}#page={page}" for filename, page in sorted(acceptable_gold)
+        ],
         "retrieved": retrieved,
-        "metrics": query_metrics(results, gold) if question["answerable"] else None,
+        "metrics": (
+            query_metrics(results, gold, acceptable_gold) if question["answerable"] else None
+        ),
         "latency_ms": latency_ms,
         "wall_time_ms": elapsed_ms,
         "search_status": search_status,
