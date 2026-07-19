@@ -19,7 +19,7 @@ import fitz
 import httpx
 
 DEFAULT_BASE = "http://127.0.0.1:18200"
-TIMEOUT = 60.0
+TIMEOUT = 120.0
 
 
 @dataclass
@@ -112,7 +112,8 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         r = client.get("/v1/sources/capabilities")
         r.raise_for_status()
         data = r.json()
-        mimes = set(data["sources"][0]["mime_types"])
+        source = data["sources"][0]
+        mimes = set(source["mime_types"])
         required = {
             "application/pdf",
             "text/plain",
@@ -124,7 +125,10 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         }
         missing = required - mimes
         assert not missing, f"missing mime types: {missing}"
-        return f"mimes={len(mimes)} max_bytes={data['sources'][0]['max_bytes']}"
+        parsers = source.get("parsers") or {}
+        for key in ("text/plain", "text/markdown", "text/csv", "application/json", "text/html"):
+            assert parsers.get(key) == "markitdown", f"parser for {key}: {parsers.get(key)}"
+        return f"mimes={len(mimes)} max_bytes={source['max_bytes']}"
 
     def t_upload_pdf():
         pdf = make_pdf([f"Dynamic test page one {run_id}", f"Dynamic test page two {run_id}"])

@@ -8,9 +8,9 @@ TrustGuard RAG 支持本地上传多种文件格式，并对 PDF 内嵌图片 / 
 |------|----------------|------|
 | PDF | `application/pdf` | 默认 MinerU；可切换为文本层 + 图片区域裁剪 OCR |
 | Word | `.docx` | MinerU 文档解析 |
-| 纯文本 | `.txt` `.log` | UTF-8 / BOM / GBK |
-| Markdown | `.md` | 剥离 YAML front matter（写入 metadata） |
-| CSV / JSON / HTML | `.csv` `.json` `.html` | 转为可读纯文本后分块 |
+| 纯文本 | `.txt` `.log` | MarkItDown；UTF-8 / BOM / GBK 先规范化 |
+| Markdown | `.md` | MarkItDown；剥离 YAML front matter（写入 metadata） |
+| CSV / JSON / HTML | `.csv` `.json` `.html` | MarkItDown 转为 Markdown / 可读文本后分块 |
 | 图片 | `.png` `.jpg` `.webp` `.gif` `.bmp` `.tif` | 整图 OCR（需开启 OCR） |
 
 本期不支持：旧式 `.doc`、其他 Office 格式、音视频、压缩包。
