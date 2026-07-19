@@ -2,23 +2,15 @@
 from __future__ import annotations
 
 import io
-
-from PIL import Image
-
 import json
 
 import pytest
+from PIL import Image
 
 from app.core.ingest.errors import EMPTY_CONTENT, OCR_UNAVAILABLE, UNSUPPORTED_MIME, IngestError
 from app.core.ingest.extractors.file import FileExtractor, SUPPORTED_MIME_TYPES
-from app.core.ingest.extractors.html_extractor import HtmlExtractor
 from app.core.ingest.extractors.image_extractor import ImageExtractor
-from app.core.ingest.extractors.text_extractor import (
-    CsvExtractor,
-    JsonExtractor,
-    MarkdownExtractor,
-    PlainTextExtractor,
-)
+from app.core.ingest.extractors.markitdown_extractor import MarkItDownExtractor
 from app.core.ocr.protocol import OcrRecognizeResult
 from app.settings import get_settings
 
@@ -69,25 +61,32 @@ def test_supported_mime_includes_formats():
 
 def test_plain_text_and_gbk():
     data = "你好世界".encode("gbk")
-    doc = PlainTextExtractor().extract(data, original_filename="a.txt")
+    doc = MarkItDownExtractor().extract(data, original_filename="a.txt", mime="text/plain")
     assert "你好世界" in doc.text
+    assert doc.metadata["parser"] == "markitdown"
 
 
 def test_markdown_front_matter():
     raw = b"---\ntitle: t\n---\n# Hello\nbody"
-    doc = MarkdownExtractor().extract(raw, original_filename="a.md")
+    doc = MarkItDownExtractor().extract(raw, original_filename="a.md", mime="text/markdown")
     assert "Hello" in doc.text
     assert "front_matter" in doc.metadata
+    assert "title: t" in doc.metadata["front_matter"]
 
 
 def test_csv_json_html():
-    csv_doc = CsvExtractor().extract(b"a,b\n1,2\n", original_filename="a.csv")
-    assert "a | b" in csv_doc.text
-    json_doc = JsonExtractor().extract(json.dumps({"k": "v"}).encode(), original_filename="a.json")
-    assert '"k"' in json_doc.text
-    html_doc = HtmlExtractor().extract(
+    mid = MarkItDownExtractor()
+    csv_doc = mid.extract(b"a,b\n1,2\n", original_filename="a.csv", mime="text/csv")
+    assert "a" in csv_doc.text and "1" in csv_doc.text
+    assert csv_doc.metadata["parser"] == "markitdown"
+    json_doc = mid.extract(
+        json.dumps({"k": "v"}).encode(), original_filename="a.json", mime="application/json"
+    )
+    assert "k" in json_doc.text and "v" in json_doc.text
+    html_doc = mid.extract(
         b"<html><script>x</script><body><p>Hi</p></body></html>",
         original_filename="a.html",
+        mime="text/html",
     )
     assert "Hi" in html_doc.text
     assert "x" not in html_doc.text
@@ -95,7 +94,7 @@ def test_csv_json_html():
 
 def test_empty_text_fails():
     with pytest.raises(IngestError) as ei:
-        PlainTextExtractor().extract(b"   ", original_filename="a.txt")
+        MarkItDownExtractor().extract(b"   ", original_filename="a.txt", mime="text/plain")
     assert ei.value.code == EMPTY_CONTENT
 
 
@@ -144,14 +143,18 @@ async def test_image_empty_ocr_still_returns_drafts():
 async def test_sources_capabilities(client):
     resp = await client.get("/v1/sources/capabilities")
     assert resp.status_code == 200
-    mimes = resp.json()["sources"][0]["mime_types"]
-    assert "text/markdown" in mimes
-    assert "image/png" in mimes
+    body = resp.json()["sources"][0]
+    assert "text/markdown" in body["mime_types"]
+    assert "image/png" in body["mime_types"]
+    assert body["parsers"]["text/plain"] == "markitdown"
+    assert body["parsers"]["text/html"] == "markitdown"
 
 
-def test_file_router_txt_md(tmp_path):
+def test_file_router_txt_md():
     fe = FileExtractor()
     txt = fe.extract(b"hello txt", original_filename="note.txt")
     assert txt.mime == "text/plain"
+    assert txt.metadata["parser"] == "markitdown"
     md = fe.extract(b"# title\n", original_filename="note.md")
     assert md.mime == "text/markdown"
+    assert md.metadata["parser"] == "markitdown"

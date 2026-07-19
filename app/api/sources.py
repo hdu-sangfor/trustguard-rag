@@ -24,11 +24,12 @@ async def source_capabilities() -> dict:
                 "parsers": {
                     "application/pdf": settings.pdf_parser,
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "mineru",
-                    "text/plain": "local",
-                    "text/markdown": "local",
-                    "text/csv": "local",
-                    "application/json": "local",
-                    "text/html": "local",
+                    "text/plain": "markitdown",
+                    "text/markdown": "markitdown",
+                    "text/csv": "markitdown",
+                    "application/json": "markitdown",
+                    "text/html": "markitdown",
+                    "application/xhtml+xml": "markitdown",
                     "image/*": "ocr",
                 },
                 "ocr": {

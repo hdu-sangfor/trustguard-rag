@@ -6,8 +6,8 @@ import mimetypes
 from pathlib import Path
 
 from app.core.ingest.errors import UNSUPPORTED_MIME, IngestError
-from app.core.ingest.extractors.html_extractor import HtmlExtractor
 from app.core.ingest.extractors.image_extractor import ImageExtractor
+from app.core.ingest.extractors.markitdown_extractor import MarkItDownExtractor
 from app.core.ingest.extractors.mineru import (
     DOCX_MIME,
     PDF_MIME,
@@ -15,35 +15,37 @@ from app.core.ingest.extractors.mineru import (
     MineruPdfExtractor,
 )
 from app.core.ingest.extractors.pdf import PdfExtractor
-from app.core.ingest.extractors.text_extractor import (
-    CsvExtractor,
-    JsonExtractor,
-    MarkdownExtractor,
-    PlainTextExtractor,
-)
 from app.core.ingest.models import ExtractedDocument
 from app.settings import get_settings
 
 _local_pdf = PdfExtractor()
 _mineru_pdf = MineruPdfExtractor()
 _mineru_docx = MineruDocxExtractor()
-_plain = PlainTextExtractor()
-_md = MarkdownExtractor()
-_csv = CsvExtractor()
-_json = JsonExtractor()
-_html = HtmlExtractor()
+_markitdown = MarkItDownExtractor()
 _image = ImageExtractor()
+
+_MARKITDOWN_MIMES = frozenset(
+    {
+        "text/plain",
+        "text/markdown",
+        "text/x-markdown",
+        "text/csv",
+        "application/json",
+        "text/html",
+        "application/xhtml+xml",
+    }
+)
 
 MIME_ROUTER: dict[str, object] = {
     PDF_MIME: _local_pdf,
     DOCX_MIME: _mineru_docx,
-    "text/plain": _plain,
-    "text/markdown": _md,
-    "text/x-markdown": _md,
-    "text/csv": _csv,
-    "application/json": _json,
-    "text/html": _html,
-    "application/xhtml+xml": _html,
+    "text/plain": _markitdown,
+    "text/markdown": _markitdown,
+    "text/x-markdown": _markitdown,
+    "text/csv": _markitdown,
+    "application/json": _markitdown,
+    "text/html": _markitdown,
+    "application/xhtml+xml": _markitdown,
     "image/png": _image,
     "image/jpeg": _image,
     "image/webp": _image,
@@ -168,13 +170,9 @@ class FileExtractor:
             return extractor.extract(  # type: ignore[union-attr]
                 data, original_filename=original_filename, mime=mime
             )
-        if mime == "text/plain":
+        if mime in _MARKITDOWN_MIMES:
             return extractor.extract(  # type: ignore[union-attr]
                 data, original_filename=original_filename, mime=mime
-            )
-        if mime in {"text/markdown", "text/x-markdown"}:
-            return extractor.extract(  # type: ignore[union-attr]
-                data, original_filename=original_filename, mime="text/markdown"
             )
         return extractor.extract(  # type: ignore[union-attr]
             data, original_filename=original_filename
