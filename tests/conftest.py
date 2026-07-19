@@ -25,7 +25,20 @@ class _TestTokenCounter:
 
 @pytest.fixture(autouse=True)
 def offline_chunk_tokenizer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """为非 tokenizer 集成测试注入确定性离线计数器。"""
+    """隔离本机 provider 配置，并为普通测试注入离线 Token 计数器。"""
+    # 部分开发环境的 pytest 插件会自动把项目 .env 加载到进程环境。测试必须从
+    # 轻量默认值开始，否则真实 API Key/provider 会覆盖 Settings(_env_file=None)。
+    for name in (
+        "RAG_RERANK_PROVIDER",
+        "RAG_RERANK_MODEL",
+        "RAG_RERANK_BASE_URL",
+        "RAG_RERANK_API_KEY",
+        "RAG_LLM_PROVIDER",
+        "RAG_LLM_BASE_URL",
+        "RAG_LLM_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    get_settings.cache_clear()
     counter = _TestTokenCounter()
     monkeypatch.setattr(chunker_module, "get_token_counter", lambda settings=None: counter)
 

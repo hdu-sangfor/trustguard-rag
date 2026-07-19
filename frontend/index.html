@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="TrustGuard RAG 知识库控制台">
   <title>TrustGuard · 知识库</title>
-  <link rel="stylesheet" href="/assets/app.css">
+  <link rel="stylesheet" href="/assets/app.css?v=20260719-answer-layer-2">
 </head>
 <body>
   <div class="shell">
@@ -83,8 +83,8 @@
       <section class="view" id="view-search">
         <article class="panel search-panel">
           <div class="panel-header search-heading">
-            <div><p class="kicker">HYBRID RETRIEVAL</p><h2>检索知识库</h2></div>
-            <span class="format-tag">VECTOR + BM25</span>
+            <div><p class="kicker">GROUNDED RAG</p><h2>检索与问答</h2></div>
+            <span class="format-tag">RETRIEVE + ANSWER</span>
           </div>
           <p class="search-intro">同时使用语义向量和关键词召回，并通过融合与重排获得更相关的知识片段。</p>
 
@@ -94,6 +94,7 @@
               <div>
                 <input id="search-query" type="search" required autocomplete="off" placeholder="例如：如何防御 SQL 注入攻击？">
                 <button class="primary-button" id="search-button" type="submit">开始检索 <b>→</b></button>
+                <button class="primary-button answer-button" id="answer-button" type="button">生成回答 <b>✦</b></button>
               </div>
             </label>
 
@@ -122,11 +123,11 @@
 
         <article class="panel search-output-panel">
           <div class="search-results-header">
-            <div><p class="kicker">RETRIEVAL RESULTS</p><h2>检索结果</h2></div>
+            <div><p class="kicker">KNOWLEDGE RESULTS</p><h2>检索与回答结果</h2></div>
             <div class="search-summary" id="search-summary" hidden></div>
           </div>
           <div id="search-results" class="search-results"></div>
-          <div id="search-empty" class="empty-state"><span>⌕</span><h3>输入问题开始检索</h3><p>结果会显示相关片段、来源文档与各阶段得分。</p></div>
+          <div id="search-empty" class="empty-state"><span>⌕</span><h3>输入问题开始检索或问答</h3><p>可以检查原始召回结果，也可以生成带来源引用的知识库回答。</p></div>
         </article>
       </section>
 
@@ -182,6 +183,6 @@
     </main>
   </div>
   <div class="toast-stack" id="toasts" aria-live="polite"></div>
-  <script src="/assets/app.js" defer></script>
+  <script src="/assets/app.js?v=20260719-answer-layer-2" defer></script>
 </body>
 </html>

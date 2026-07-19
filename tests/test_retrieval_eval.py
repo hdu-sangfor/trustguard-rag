@@ -55,6 +55,20 @@ def test_evaluate_question_records_http_failure_as_zero_score() -> None:
     assert report["results"] == []
 
 
+def test_equivalent_evidence_counts_for_ranking_but_not_required_recall() -> None:
+    gold = {("required.pdf", 1)}
+    acceptable = {("required.pdf", 1), ("equivalent.pdf", 2)}
+    results = [
+        {"source": {"original_filename": "equivalent.pdf", "page_no": 2}}
+    ]
+
+    metrics = retrieval_eval.query_metrics(results, gold, acceptable)
+
+    assert metrics["hit@1"] == 1.0
+    assert metrics["reciprocal_rank"] == 1.0
+    assert metrics["recall@1"] == 0.0
+
+
 def test_evaluate_question_records_timeout_and_invalid_json() -> None:
     def timeout_handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("request timed out", request=request)

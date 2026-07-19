@@ -1,6 +1,6 @@
 # trustguard-rag-platform
 
-TrustGuard 独立 RAG **知识库**服务。
+TrustGuard 独立 RAG **知识库、混合检索与基于证据的回答**服务。
 
 当前项目从启动、入库、MinerU/OCR 到混合检索和故障恢复的完整代码导览，参见
 [`docs/project-code-logic.md`](docs/project-code-logic.md)。
@@ -232,15 +232,34 @@ RAG_RERANK_API_KEY=YOUR_BAILIAN_API_KEY
 完整配置参见 [`docs/hybrid-search.md`](docs/hybrid-search.md)。
 多格式入库与 OCR 参见 [`docs/ocr-and-multiformat-ingest.md`](docs/ocr-and-multiformat-ingest.md)。
 
+## 基于证据的回答
+
+`POST /v1/answer` 复用混合检索链路，将排序后的分块按 Token 预算组装为上下文，
+再调用 OpenAI-compatible Chat Completions API。回答必须包含可映射到真实 Chunk 的
+`[1]`、`[2]` 引用；空检索结果会直接返回 `insufficient_evidence`，不会调用 LLM。
+
+```env
+RAG_LLM_PROVIDER=openai_compatible
+RAG_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+RAG_LLM_API_KEY=YOUR_LLM_API_KEY
+RAG_LLM_MODEL=qwen-plus
+RAG_ANSWER_CONTEXT_MAX_TOKENS=6000
+RAG_ANSWER_MAX_CONTEXT_CHUNKS=8
+```
+
+回答能力默认关闭，不影响只使用入库或 `/v1/search` 的部署。完整接口、错误语义和安全约束
+参见 [`docs/answer-generation.md`](docs/answer-generation.md)。
+
 ## 目录结构（概要）
 
 ```
 app/
-  api/          health, ingest, documents, sources, ocr_review
+  api/          health, ingest, documents, sources, search, answer, ocr_review
   core/ingest/  extractors, pipeline, chunker, compensator
   core/ocr/     Paddle / API / custom OCR providers
   core/indexing/ qdrant_indexer
   core/embedding/ client
+  core/generation/ context builder, LLM client, citation validator, answer service
   stores/       db, blob, document, chunk, job, qdrant, ocr_region
   workers/      outbox publisher, RabbitMQ consumer, command handlers
 docker/

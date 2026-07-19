@@ -17,10 +17,10 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SOURCE = Path(__file__).with_name("source_data.json")
+DEFAULT_SOURCE = Path(__file__).with_name("source.json")
 DEFAULT_OUTPUT = PROJECT_ROOT / "output" / "pdf" / "cybersecurity-eval-corpus"
 DEFAULT_WORK = PROJECT_ROOT / "tmp" / "pdfs" / "cybersecurity-eval-corpus"
-DEFAULT_DATASET_DIR = Path(__file__).with_name("datasets")
+DEFAULT_DATASET_DIR = Path(__file__).with_name("dataset")
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,7 +61,7 @@ def validate_source(data: dict[str, Any]) -> None:
     documents = data.get("documents", [])
     questions = data.get("questions", [])
     if not documents or not questions:
-        raise ValueError("source_data.json 必须包含 documents 和 questions")
+        raise ValueError("评测源文件必须包含 documents 和 questions")
 
     evidence_ids: list[str] = [item["evidence_id"] for item in data.get("external_evidence", [])]
     filenames: list[str] = []
@@ -79,11 +79,29 @@ def validate_source(data: dict[str, Any]) -> None:
     query_ids: list[str] = []
     for question in questions:
         query_ids.append(question["query_id"])
-        unknown = set(question["evidence_ids"]) - valid_evidence
+        evidence_ids_for_question = question["evidence_ids"]
+        acceptable_ids = question.get(
+            "acceptable_evidence_ids",
+            evidence_ids_for_question,
+        )
+        if (
+            not isinstance(evidence_ids_for_question, list)
+            or any(not isinstance(item, str) for item in evidence_ids_for_question)
+            or len(evidence_ids_for_question) != len(set(evidence_ids_for_question))
+            or not isinstance(acceptable_ids, list)
+            or any(not isinstance(item, str) for item in acceptable_ids)
+            or len(acceptable_ids) != len(set(acceptable_ids))
+        ):
+            raise ValueError(f"{question['query_id']} 的证据 ID 必须是无重复数组")
+        unknown = set([*evidence_ids_for_question, *acceptable_ids]) - valid_evidence
         if unknown:
             raise ValueError(f"{question['query_id']} 引用了不存在的证据: {sorted(unknown)}")
-        if question["answerable"] != bool(question["evidence_ids"]):
+        if not set(evidence_ids_for_question).issubset(acceptable_ids):
+            raise ValueError(f"{question['query_id']} 的可接受证据必须包含全部必需证据")
+        if question["answerable"] != bool(evidence_ids_for_question):
             raise ValueError(f"{question['query_id']} 的 answerable 与 evidence_ids 不一致")
+        if not question["answerable"] and acceptable_ids:
+            raise ValueError(f"不可回答问题 {question['query_id']} 不能配置可接受证据")
         if question["split"] not in {"dev", "test"}:
             raise ValueError(f"{question['query_id']} 的 split 只能是 dev 或 test")
     if len(query_ids) != len(set(query_ids)):
@@ -310,6 +328,10 @@ def public_test_row(row: dict[str, Any]) -> dict[str, Any]:
             "relevant_evidence",
             "relevant_documents",
             "relevant_pages",
+            "acceptable_evidence_ids",
+            "acceptable_evidence",
+            "acceptable_documents",
+            "acceptable_pages",
         }
     }
 
@@ -397,11 +419,24 @@ def main() -> int:
     for question in data["questions"]:
         row = dict(question)
         relevant = [evidence_index[evidence_id] for evidence_id in question["evidence_ids"]]
+        acceptable_ids = question.get(
+            "acceptable_evidence_ids",
+            question["evidence_ids"],
+        )
+        acceptable = [evidence_index[evidence_id] for evidence_id in acceptable_ids]
         row["snapshot_date"] = data["dataset"]["snapshot_date"]
         row["relevant_evidence"] = relevant
         row["relevant_documents"] = sorted({item["filename"] for item in relevant})
         row["relevant_pages"] = sorted(
             {f"{item['filename']}#page={item['page']}" for item in relevant}
+        )
+        row["acceptable_evidence_ids"] = acceptable_ids
+        row["acceptable_evidence"] = acceptable
+        row["acceptable_documents"] = sorted(
+            {item["filename"] for item in acceptable}
+        )
+        row["acceptable_pages"] = sorted(
+            {f"{item['filename']}#page={item['page']}" for item in acceptable}
         )
         enriched_questions.append(row)
 
@@ -434,6 +469,10 @@ def main() -> int:
         "answerable": Counter(str(row["answerable"]).lower() for row in enriched_questions),
         "categories": Counter(row["category"] for row in enriched_questions),
         "difficulty": Counter(row["difficulty"] for row in enriched_questions),
+        "questions_with_additional_acceptable_evidence": sum(
+            set(row["acceptable_evidence_ids"]) != set(row["evidence_ids"])
+            for row in enriched_questions
+        ),
     }
     write_json(dataset_dir / "stats.json", stats)
 
