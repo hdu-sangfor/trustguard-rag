@@ -1,4 +1,5 @@
 """Multi-format extractor and MIME routing tests."""
+
 from __future__ import annotations
 
 import io
@@ -7,7 +8,13 @@ import json
 import pytest
 from PIL import Image
 
-from app.core.ingest.errors import EMPTY_CONTENT, OCR_UNAVAILABLE, UNSUPPORTED_MIME, IngestError
+from app.core.ingest.errors import (
+    CORRUPT_FILE,
+    EMPTY_CONTENT,
+    OCR_UNAVAILABLE,
+    UNSUPPORTED_MIME,
+    IngestError,
+)
 from app.core.ingest.extractors.file import FileExtractor, SUPPORTED_MIME_TYPES
 from app.core.ingest.extractors.image_extractor import ImageExtractor
 from app.core.ingest.extractors.markitdown_extractor import MarkItDownExtractor
@@ -90,6 +97,37 @@ def test_csv_json_html():
     )
     assert "Hi" in html_doc.text
     assert "x" not in html_doc.text
+
+
+def test_invalid_json_fails():
+    with pytest.raises(IngestError) as exc_info:
+        MarkItDownExtractor().extract(
+            b"{bad json", original_filename="bad.json", mime="application/json"
+        )
+
+    assert exc_info.value.code == CORRUPT_FILE
+
+
+def test_html_title_is_preserved_when_body_is_empty():
+    doc = MarkItDownExtractor().extract(
+        b"<html><head><title>Important title</title></head><body></body></html>",
+        original_filename="title.html",
+        mime="text/html",
+    )
+
+    assert "Important title" in doc.text
+    assert doc.metadata["title"] == "Important title"
+
+
+def test_magic_detected_mime_wins_over_conflicting_filename():
+    doc = FileExtractor().extract(
+        b"<html><script>secret-token</script><body>Visible</body></html>",
+        original_filename="wrong.json",
+    )
+
+    assert doc.mime == "text/html"
+    assert "Visible" in doc.text
+    assert "secret-token" not in doc.text
 
 
 def test_empty_text_fails():

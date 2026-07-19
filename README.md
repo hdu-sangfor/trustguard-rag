@@ -2,6 +2,9 @@
 
 TrustGuard 独立 RAG **知识库**服务。
 
+当前项目从启动、入库、MinerU/OCR 到混合检索和故障恢复的完整代码导览，参见
+[`docs/project-code-logic.md`](docs/project-code-logic.md)。
+
 ## 快速开始（Docker）
 
 ```bash

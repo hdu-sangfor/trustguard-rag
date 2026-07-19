@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from io import BytesIO
-from pathlib import PurePath
 from typing import Any
 
 from markitdown import MarkItDown
@@ -76,17 +76,21 @@ class MarkItDownExtractor:
 
         resolved_mime = mime if mime in _MIME_EXTENSION else "text/plain"
         extension = _MIME_EXTENSION[resolved_mime]
-        suffix = PurePath(original_filename).suffix.lower()
-        if suffix in {".txt", ".log", ".text", ".md", ".markdown", ".csv", ".json", ".html", ".htm"}:
-            extension = ".md" if suffix == ".markdown" else (".html" if suffix == ".htm" else suffix)
 
         # Normalize encodings so GBK/BOM inputs stay readable for MarkItDown.
         try:
-            stream_bytes = _decode_text(data).encode("utf-8")
+            decoded_text = _decode_text(data)
+            if resolved_mime == "application/json":
+                json.loads(decoded_text)
+            stream_bytes = decoded_text.encode("utf-8")
+        except json.JSONDecodeError as exc:
+            raise IngestError(CORRUPT_FILE, f"Invalid JSON: {exc}") from exc
         except IngestError:
             raise
         except Exception as exc:  # noqa: BLE001
-            raise IngestError(CORRUPT_FILE, f"Unable to prepare text for MarkItDown: {exc}") from exc
+            raise IngestError(
+                CORRUPT_FILE, f"Unable to prepare text for MarkItDown: {exc}"
+            ) from exc
 
         try:
             result = self._engine.convert_stream(
@@ -98,13 +102,22 @@ class MarkItDownExtractor:
         except Exception as exc:  # noqa: BLE001
             raise IngestError(CORRUPT_FILE, f"MarkItDown failed: {exc}") from exc
 
-        text = (getattr(result, "text_content", None) or getattr(result, "markdown", None) or "").strip()
+        text = (
+            getattr(result, "text_content", None) or getattr(result, "markdown", None) or ""
+        ).strip()
         metadata: dict[str, Any] = {
             "original_filename": original_filename,
             "file_size": len(data),
             "parser": "markitdown",
             "extracted_format": "markdown",
         }
+
+        if resolved_mime in {"text/html", "application/xhtml+xml"}:
+            title = str(getattr(result, "title", None) or "").strip()
+            if title:
+                metadata["title"] = title
+                if title not in text:
+                    text = f"# {title}\n\n{text}".strip()
 
         if resolved_mime in {"text/markdown", "text/x-markdown"} or extension == ".md":
             text, front = _strip_front_matter(text)
