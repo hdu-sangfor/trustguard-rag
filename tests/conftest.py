@@ -39,6 +39,7 @@ def offline_chunk_tokenizer(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         monkeypatch.delenv(name, raising=False)
     get_settings.cache_clear()
+    monkeypatch.setenv("RAG_QUERY_PLANNER_LLM_ENABLED", "false")
     counter = _TestTokenCounter()
     monkeypatch.setattr(chunker_module, "get_token_counter", lambda settings=None: counter)
 

@@ -16,6 +16,7 @@ from app.domain.ocr import OcrRegionStatus
 from app.domain.retrieval import (
     EffectiveSearchMode,
     RetrievalComponent,
+    RetrievalMode,
     SearchStatus,
 )
 from app.domain.worker import ClaimOutcome, CleanupAction, OutboxStatus
@@ -38,5 +39,6 @@ __all__ = [
     "OutboxStatus",
     "PipelineResult",
     "RetrievalComponent",
+    "RetrievalMode",
     "SearchStatus",
 ]

@@ -68,10 +68,12 @@ uv run python evaluation/cybersecurity/build_dataset.py --reuse-pdf
 ```powershell
 uv run python evaluation/cybersecurity/run_retrieval_eval.py `
   --knowledge-base-id <knowledge_base_id> `
+  --adaptive-budgets `
   --name retrieval-hybrid-rrf-rerank
 
 uv run python evaluation/cybersecurity/run_answer_eval.py `
   --knowledge-base-id <knowledge_base_id> `
+  --adaptive-budgets `
   --name answer-e2e
 ```
 

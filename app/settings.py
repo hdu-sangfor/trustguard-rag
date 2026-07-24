@@ -205,6 +205,13 @@ class Settings(BaseSettings):
     search_opensearch_mock: bool = True  # 设为 True 时使用内存模拟 BM25，无需真实 OpenSearch
     search_component_max_retries: int = 2
     search_component_retry_backoff_seconds: float = 0.25
+    query_planner_enabled: bool = True
+    query_planner_llm_enabled: bool = True
+    query_planner_timeout_seconds: float = 3.0
+    query_planner_max_rewritten_queries: int = 3
+    query_planner_cache_ttl_seconds: int = 600
+    query_planner_cache_size: int = 256
+    query_planner_min_confidence: float = 0.65
 
     # --- 健康检查 ---
     health_check_timeout_seconds: float = 3.0
@@ -228,6 +235,18 @@ class Settings(BaseSettings):
             raise ValueError(
                 "RAG_SEARCH_COMPONENT_RETRY_BACKOFF_SECONDS 不能小于 0"
             )
+        if self.query_planner_timeout_seconds <= 0:
+            raise ValueError("RAG_QUERY_PLANNER_TIMEOUT_SECONDS 必须大于 0")
+        if not 1 <= self.query_planner_max_rewritten_queries <= 5:
+            raise ValueError(
+                "RAG_QUERY_PLANNER_MAX_REWRITTEN_QUERIES 必须在 1 到 5 之间"
+            )
+        if self.query_planner_cache_ttl_seconds < 0:
+            raise ValueError("RAG_QUERY_PLANNER_CACHE_TTL_SECONDS 不能小于 0")
+        if not 1 <= self.query_planner_cache_size <= 4096:
+            raise ValueError("RAG_QUERY_PLANNER_CACHE_SIZE 必须在 1 到 4096 之间")
+        if not 0 <= self.query_planner_min_confidence <= 1:
+            raise ValueError("RAG_QUERY_PLANNER_MIN_CONFIDENCE 必须位于 [0, 1]")
         if not 1 <= self.embedding_local_model_cache_size <= 8:
             raise ValueError(
                 "RAG_EMBEDDING_LOCAL_MODEL_CACHE_SIZE 必须在 1 到 8 之间"

@@ -153,3 +153,32 @@ async def test_answer_service_rejects_unknown_citation() -> None:
 
     with pytest.raises(LLMResponseError, match="was not provided"):
         await service.answer("问题", knowledge_base_id="kb-test")
+
+
+@pytest.mark.asyncio
+async def test_answer_service_repairs_citation_contract_once() -> None:
+    invalid = LLMCompletion(
+        content=(
+            '{"status":"answered","answer":"应使用参数化查询。[1][2]",'
+            '"citation_ids":[1]}'
+        ),
+        model="qwen-plus",
+        usage=LLMUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+    repaired = LLMCompletion(
+        content=(
+            '{"status":"answered","answer":"应使用参数化查询。[1]",'
+            '"citation_ids":[1]}'
+        ),
+        model="qwen-plus",
+        usage=LLMUsage(prompt_tokens=20, completion_tokens=6, total_tokens=26),
+    )
+    service, _, llm = _service(_search_result([_result()]), invalid)
+    llm.complete.side_effect = [invalid, repaired]
+
+    result = await service.answer("如何防御 SQL 注入？", knowledge_base_id="kb-test")
+
+    assert result["status"] == AnswerStatus.ANSWERED
+    assert result["answer"] == "应使用参数化查询。[1]"
+    assert result["usage"]["total_tokens"] == 41
+    assert llm.complete.await_count == 2

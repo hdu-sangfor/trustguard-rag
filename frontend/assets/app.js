@@ -174,6 +174,7 @@ function renderSearchResults(data){
   const degraded=Array.isArray(data.degraded_components)?data.degraded_components:[];
   const recovered=Array.isArray(data.recovered_components)?data.recovered_components:[];
   const queryEntities=Array.isArray(data.query_entities)?data.query_entities:[];
+  const queryPlan=data.query_plan||{}, planParams=queryPlan.effective_parameters||{};
   const modeLabel={ [EffectiveSearchMode.HYBRID]:"混合检索", [EffectiveSearchMode.VECTOR_ONLY]:"仅向量检索", [EffectiveSearchMode.KEYWORD_ONLY]:"仅关键词检索" }[data.effective_mode]||data.effective_mode;
   const knowledgeBase=state.knowledgeBases.find(item=>item.id===data.knowledge_base_id);
   results.innerHTML="";
@@ -188,7 +189,7 @@ function renderSearchResults(data){
     empty.querySelector("p").textContent=degraded.length?`部分检索引擎不可用：${degraded.join("、")}。请稍后重试。`:abstentionText;
   }
   summary.hidden=false;
-  summary.innerHTML=`<span>范围 <strong>${escapeHtml(knowledgeBase?.name||data.knowledge_base_id)}</strong></span>${queryEntities.length?`<span>精确路由 <strong>${escapeHtml(queryEntities.join("、"))}</strong></span>`:""}<span><strong>${data.total}</strong> 条结果</span>${data.abstained?`<span>已拒答 <strong>${escapeHtml(data.abstention_reason||"low_confidence")}</strong></span>`:""}${data.deduplicated_chunks?`<span>文档去重 <strong>-${data.deduplicated_chunks}</strong> chunks</span>`:""}<span><strong>${Number(data.retrieval_time_ms).toFixed(1)}</strong> ms</span><span>${escapeHtml(modeLabel||"")}</span><span>${escapeHtml(data.fusion_method.toUpperCase())}</span><span>向量 ${data.components?.vector??0} · 关键词 ${data.components?.keyword??0}</span>${recovered.length?`<span>重试恢复：${escapeHtml(recovered.join("、"))}</span>`:""}${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}`;
+  summary.innerHTML=`<span>范围 <strong>${escapeHtml(knowledgeBase?.name||data.knowledge_base_id)}</strong></span>${queryPlan.intent?`<span>规划 <strong>${escapeHtml(queryPlan.intent)}</strong> · ${escapeHtml(queryPlan.source||"")}</span>`:""}${planParams.max_chunks_per_document?`<span>每文档 <strong>${planParams.max_chunks_per_document}</strong> chunks</span>`:""}${queryEntities.length?`<span>精确路由 <strong>${escapeHtml(queryEntities.join("、"))}</strong></span>`:""}<span><strong>${data.total}</strong> 条结果</span>${data.abstained?`<span>已拒答 <strong>${escapeHtml(data.abstention_reason||"low_confidence")}</strong></span>`:""}${data.deduplicated_chunks?`<span>文档去重 <strong>-${data.deduplicated_chunks}</strong> chunks</span>`:""}<span><strong>${Number(data.retrieval_time_ms).toFixed(1)}</strong> ms</span><span>${escapeHtml(modeLabel||"")}</span><span>${escapeHtml(data.fusion_method.toUpperCase())}</span><span>向量 ${data.components?.vector??0} · 关键词 ${data.components?.keyword??0}</span>${recovered.length?`<span>重试恢复：${escapeHtml(recovered.join("、"))}</span>`:""}${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}${data.coverage_warning?`<span>⚠ ${escapeHtml(data.coverage_warning)}</span>`:""}`;
   data.results.forEach((item,index)=>{
     const source=item.source||{};
     const card=document.createElement("article");
@@ -213,7 +214,8 @@ function renderAnswer(data){
   const abstentionLabel={vector_unavailable:"向量组件不可用",no_exact_entity_match:"安全编号未精确命中",low_vector_score:"向量置信度不足"}[data.abstention_reason]||data.abstention_reason;
   empty.hidden=true;summary.hidden=false;results.innerHTML="";
   const usage=data.usage?` · ${data.usage.total_tokens} tokens`:"";
-  summary.innerHTML=`<span>${answered?"已回答":"证据不足"}</span>${abstentionLabel?`<span>拒答原因：${escapeHtml(abstentionLabel)}</span>`:""}<span><strong>${Number(data.total_time_ms).toFixed(1)}</strong> ms</span><span>召回 ${data.retrieved_count} · 上下文 ${data.context_chunk_count}</span><span>${data.context_token_count} context tokens</span>${data.model?`<span>${escapeHtml(data.model)}${usage}</span>`:""}${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}`;
+  const queryPlan=data.query_plan||{};
+  summary.innerHTML=`<span>${answered?"已回答":"证据不足"}</span>${queryPlan.intent?`<span>规划 <strong>${escapeHtml(queryPlan.intent)}</strong> · ${escapeHtml(queryPlan.source||"")}</span>`:""}${abstentionLabel?`<span>拒答原因：${escapeHtml(abstentionLabel)}</span>`:""}<span><strong>${Number(data.total_time_ms).toFixed(1)}</strong> ms</span><span>召回 ${data.retrieved_count} · 上下文 ${data.context_chunk_count}</span><span>${data.context_token_count} context tokens</span>${data.model?`<span>${escapeHtml(data.model)}${usage}</span>`:""}${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}${data.coverage_warning?`<span>⚠ ${escapeHtml(data.coverage_warning)}</span>`:""}`;
   const card=document.createElement("article");card.className=`answer-card${answered?"":" insufficient"}`;
   const citations=Array.isArray(data.citations)?data.citations:[];
   card.innerHTML=`<span class="answer-status">${answered?"GROUNDED ANSWER":"INSUFFICIENT EVIDENCE"}</span><p class="answer-text">${escapeHtml(data.answer||"")}</p>${citations.length?`<div class="answer-citations">${citations.map(item=>`<article class="answer-citation"><strong>[${item.citation_id}]</strong><div class="answer-citation-info"><span>${escapeHtml(item.original_filename||item.source_uri||"未知来源")}</span><small>CHUNK ${(item.chunk_index??0)+1}${item.page_no!=null?` · PAGE ${item.page_no}`:""}</small><p>${escapeHtml((item.excerpt||"").slice(0,240))}${(item.excerpt||"").length>240?"…":""}</p></div>${item.document_id?'<button class="text-button answer-document" type="button">查看原文 →</button>':""}</article>`).join("")}</div>`:""}`;
@@ -235,12 +237,15 @@ async function runSearch(){
     top_k:optionalNumber("#search-top-k"),
     vector_top_k:optionalNumber("#search-vector-top-k"),
     keyword_top_k:optionalNumber("#search-keyword-top-k"),
-    max_chunks_per_document:optionalNumber("#search-max-chunks-per-document")||1,
+    max_chunks_per_document:optionalNumber("#search-max-chunks-per-document"),
+    retrieval_mode:$("#search-retrieval-mode").value,
+    enable_query_rewrite:$("#search-query-rewrite").checked,
     fusion_method:$("#search-fusion").value,
     enable_vector:enableVector,
     enable_keyword:enableKeyword,
     enable_rerank:$("#search-rerank").checked,
     enable_abstention:$("#search-abstention").checked,
+    allow_keyword_fallback:$("#search-keyword-fallback").checked,
     require_exact_entity_match:$("#search-exact-entity").checked,
     min_vector_score:optionalNumber("#search-min-vector-score"),
     component_max_retries:optionalNumber("#search-component-retries"),
@@ -280,13 +285,14 @@ async function runAnswer(){
     top_k:optionalNumber("#search-top-k"),
     vector_top_k:optionalNumber("#search-vector-top-k"),
     keyword_top_k:optionalNumber("#search-keyword-top-k"),
-    max_chunks_per_document:optionalNumber("#search-max-chunks-per-document")||1,
+    max_chunks_per_document:optionalNumber("#search-max-chunks-per-document"),
+    retrieval_mode:$("#search-retrieval-mode").value,
+    enable_query_rewrite:$("#search-query-rewrite").checked,
     fusion_method:$("#search-fusion").value,
     enable_vector:enableVector,
     enable_keyword:enableKeyword,
     enable_rerank:$("#search-rerank").checked,
     enable_abstention:$("#search-abstention").checked,
-    allow_keyword_fallback:$("#search-keyword-fallback").checked,
     allow_keyword_fallback:$("#search-keyword-fallback").checked,
     require_exact_entity_match:$("#search-exact-entity").checked,
     min_vector_score:optionalNumber("#search-min-vector-score"),

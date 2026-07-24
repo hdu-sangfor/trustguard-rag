@@ -44,4 +44,7 @@ async def search(request: SearchRequest) -> SearchResponse:
         min_vector_score=result.get("min_vector_score"),
         component_attempts=result.get("component_attempts", {}),
         recovered_components=result.get("recovered_components", []),
+        query_plan=result.get("query_plan"),
+        coverage_status=result.get("coverage_status", "not_applicable"),
+        coverage_warning=result.get("coverage_warning"),
     )

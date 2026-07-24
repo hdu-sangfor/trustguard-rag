@@ -12,6 +12,7 @@ from app.core.generation.citation_validator import (
 )
 from app.core.generation.context_builder import ContextBuilder, Evidence
 from app.core.generation.llm_client import LLMClient
+from app.core.generation.llm_client import LLMResponseError
 from app.core.generation.prompts import build_messages
 from app.core.retrieval.search import HybridSearch, get_hybrid_search
 from app.domain import AnswerStatus
@@ -55,6 +56,11 @@ class AnswerService:
         min_vector_score: float | None = None,
         require_exact_entity_match: bool = True,
         component_max_retries: int | None = None,
+        semantic_queries: list[str] | None = None,
+        keyword_queries: list[str] | None = None,
+        rerank_candidate_top_k: int | None = None,
+        query_plan: dict[str, Any] | None = None,
+        adjacent_chunk_radius: int = 0,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         search_result = await self._search.search(
@@ -77,8 +83,21 @@ class AnswerService:
             min_vector_score=min_vector_score,
             require_exact_entity_match=require_exact_entity_match,
             component_max_retries=component_max_retries,
+            semantic_queries=semantic_queries,
+            keyword_queries=keyword_queries,
+            rerank_candidate_top_k=rerank_candidate_top_k,
+            query_plan=query_plan,
+            adjacent_chunk_radius=adjacent_chunk_radius,
         )
-        bundle = self._context_builder.build(search_result["results"])
+        context_max_chunks = (
+            ((search_result.get("query_plan") or {}).get("effective_parameters") or {}).get(
+                "context_max_chunks"
+            )
+        )
+        bundle = self._context_builder.build(
+            search_result["results"],
+            max_chunks=context_max_chunks,
+        )
         if not bundle.evidence:
             return self._build_response(
                 query=query,
@@ -94,23 +113,49 @@ class AnswerService:
             )
 
         generation_started = time.perf_counter()
-        completion = await self._llm.complete(build_messages(query, bundle.context))
+        messages = build_messages(query, bundle.context)
+        completion = await self._llm.complete(messages)
+        completions = [completion]
+        try:
+            parsed = render_declared_citations(
+                parse_answer(completion.content),
+                bundle.evidence,
+            )
+            cited_evidence = validate_citations(parsed, bundle.evidence)
+        except LLMResponseError as error:
+            repaired = await self._llm.complete(
+                [
+                    *messages,
+                    {"role": "assistant", "content": completion.content},
+                    {
+                        "role": "user",
+                        "content": (
+                            "上一输出未通过格式或引用校验："
+                            f"{error}。请仅修正 JSON、正文中的 [n] 和 citation_ids，"
+                            "不得增加 EVIDENCE_JSON 中不存在的事实或编号。"
+                        ),
+                    },
+                ]
+            )
+            completions.append(repaired)
+            completion = repaired
+            parsed = render_declared_citations(
+                parse_answer(completion.content),
+                bundle.evidence,
+            )
+            cited_evidence = validate_citations(parsed, bundle.evidence)
         generation_time_ms = round((time.perf_counter() - generation_started) * 1000, 2)
-        parsed = render_declared_citations(
-            parse_answer(completion.content),
-            bundle.evidence,
-        )
-        cited_evidence = validate_citations(parsed, bundle.evidence)
         answer_text = parsed.answer
         if parsed.status == AnswerStatus.INSUFFICIENT_EVIDENCE and not answer_text:
             answer_text = self._settings.answer_refusal_message
 
+        usages = [item.usage for item in completions if item.usage is not None]
         usage = None
-        if completion.usage is not None:
+        if usages:
             usage = {
-                "prompt_tokens": completion.usage.prompt_tokens,
-                "completion_tokens": completion.usage.completion_tokens,
-                "total_tokens": completion.usage.total_tokens,
+                "prompt_tokens": sum(item.prompt_tokens for item in usages),
+                "completion_tokens": sum(item.completion_tokens for item in usages),
+                "total_tokens": sum(item.total_tokens for item in usages),
             }
         return self._build_response(
             query=query,
@@ -169,6 +214,11 @@ class AnswerService:
             "query_entities": search_result.get("query_entities", []),
             "component_attempts": search_result.get("component_attempts", {}),
             "recovered_components": search_result.get("recovered_components", []),
+            "query_plan": search_result.get("query_plan"),
+            "coverage_status": search_result.get(
+                "coverage_status", "not_applicable"
+            ),
+            "coverage_warning": search_result.get("coverage_warning"),
             "retrieved_count": search_result["total"],
             "context_chunk_count": context_chunk_count,
             "context_token_count": context_token_count,

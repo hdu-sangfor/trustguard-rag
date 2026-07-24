@@ -16,6 +16,13 @@ class EffectiveSearchMode(StrEnum):
     KEYWORD_ONLY = "keyword_only"
 
 
+class RetrievalMode(StrEnum):
+    AUTO = "auto"
+    FOCUSED = "focused"
+    COMPREHENSIVE = "comprehensive"
+    ENUMERATION = "enumeration"
+
+
 class RetrievalComponent(StrEnum):
     VECTOR = "vector"
     KEYWORD = "keyword"

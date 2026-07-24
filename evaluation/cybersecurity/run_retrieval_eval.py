@@ -39,6 +39,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-vector", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--enable-keyword", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--enable-rerank", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--retrieval-mode",
+        choices=("auto", "focused", "comprehensive", "enumeration"),
+        default="auto",
+    )
+    parser.add_argument(
+        "--adaptive-budgets",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="不发送固定 Top-K，让服务按查询意图选择预算",
+    )
     parser.add_argument("--timeout", type=float, default=90.0)
     return parser.parse_args()
 
@@ -185,6 +196,8 @@ def evaluate_question(
         "effective_mode": payload.get("effective_mode"),
         "components": payload.get("components", {}),
         "degraded_components": payload.get("degraded_components", []),
+        "query_plan": payload.get("query_plan"),
+        "coverage_status": payload.get("coverage_status"),
         "results": results,
     }
 
@@ -306,14 +319,20 @@ def main() -> int:
             body = {
                 "query": question["query"],
                 "knowledge_base_id": args.knowledge_base_id,
-                "top_k": args.top_k,
-                "vector_top_k": args.vector_top_k,
-                "keyword_top_k": args.keyword_top_k,
                 "fusion_method": args.fusion_method,
                 "enable_vector": args.enable_vector,
                 "enable_keyword": args.enable_keyword,
                 "enable_rerank": args.enable_rerank,
+                "retrieval_mode": getattr(args, "retrieval_mode", "auto"),
             }
+            if not getattr(args, "adaptive_budgets", False):
+                body.update(
+                    {
+                        "top_k": args.top_k,
+                        "vector_top_k": args.vector_top_k,
+                        "keyword_top_k": args.keyword_top_k,
+                    }
+                )
             query_report = evaluate_question(client, question, body)
             query_reports.append(query_report)
             print(
@@ -337,6 +356,8 @@ def main() -> int:
             "enable_vector": args.enable_vector,
             "enable_keyword": args.enable_keyword,
             "enable_rerank": args.enable_rerank,
+            "retrieval_mode": getattr(args, "retrieval_mode", "auto"),
+            "adaptive_budgets": getattr(args, "adaptive_budgets", False),
         },
         "summary": summary,
         "queries": query_reports,
