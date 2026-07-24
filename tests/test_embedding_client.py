@@ -417,11 +417,32 @@ async def test_local_embedding_runs_in_thread_and_validates_dimension(
 def test_local_provider_cache_tracks_behavior_settings(
     monkeypatch: pytest.MonkeyPatch, field: str, value: object
 ) -> None:
-    monkeypatch.setattr(embedding_module, "_LOCAL_PROVIDER", None)
-    monkeypatch.setattr(embedding_module, "_LOCAL_PROVIDER_KEY", None)
+    monkeypatch.setattr(embedding_module, "_LOCAL_PROVIDERS", embedding_module.OrderedDict())
     settings = Settings(embedding_provider="local")
 
     original = embedding_module._get_local_provider(settings)
     changed = settings.model_copy(update={field: value})
 
     assert embedding_module._get_local_provider(changed) is not original
+
+
+def test_local_provider_cache_reuses_recent_profiles_and_evicts_lru(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(embedding_module, "_LOCAL_PROVIDERS", embedding_module.OrderedDict())
+    base = Settings(
+        embedding_provider="local",
+        embedding_local_model_cache_size=2,
+    )
+    first_settings = base.model_copy(update={"embedding_model": "model-1"})
+    second_settings = base.model_copy(update={"embedding_model": "model-2"})
+    third_settings = base.model_copy(update={"embedding_model": "model-3"})
+
+    first = embedding_module._get_local_provider(first_settings)
+    second = embedding_module._get_local_provider(second_settings)
+    assert embedding_module._get_local_provider(first_settings) is first
+
+    embedding_module._get_local_provider(third_settings)
+
+    assert embedding_module._get_local_provider(first_settings) is first
+    assert embedding_module._get_local_provider(second_settings) is not second

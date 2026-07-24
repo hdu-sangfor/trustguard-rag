@@ -21,7 +21,13 @@ from app.core.retrieval.security_entities import build_security_entity_fields
 from app.stores import qdrant_store
 from app.stores.db import get_engine
 from app.stores.knowledge_base_store import KnowledgeBaseStore
-from app.stores.models import Base, ChunkRow, DocumentRow
+from app.stores.models import (
+    Base,
+    ChunkRow,
+    DocumentRow,
+    IngestJobRow,
+    KnowledgeBaseRow,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +45,18 @@ async def ensure_knowledge_base_schema() -> None:
         if "knowledge_base_id" not in columns:
             await conn.execute(
                 text("ALTER TABLE documents ADD COLUMN knowledge_base_id VARCHAR(36) NULL")
+            )
+        job_columns = await conn.run_sync(
+            lambda sync_conn: {
+                item["name"] for item in inspect(sync_conn).get_columns("ingest_jobs")
+            }
+        )
+        if "knowledge_base_id" not in job_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE ingest_jobs "
+                    "ADD COLUMN knowledge_base_id VARCHAR(36) NULL"
+                )
             )
         kb_columns = await conn.run_sync(
             lambda sync_conn: {
@@ -70,6 +88,18 @@ async def ensure_knowledge_base_schema() -> None:
                 text(
                     "CREATE INDEX idx_documents_knowledge_base "
                     "ON documents (knowledge_base_id)"
+                )
+            )
+        job_indexes = await conn.run_sync(
+            lambda sync_conn: {
+                item["name"] for item in inspect(sync_conn).get_indexes("ingest_jobs")
+            }
+        )
+        if "idx_jobs_knowledge_base_status" not in job_indexes:
+            await conn.execute(
+                text(
+                    "CREATE INDEX idx_jobs_knowledge_base_status "
+                    "ON ingest_jobs (knowledge_base_id, status)"
                 )
             )
         if conn.dialect.name == "mysql" and "uq_document_source" in indexes:
@@ -170,6 +200,138 @@ async def migrate_legacy_knowledge_bases() -> int:
         await session.commit()
 
     return len(documents)
+
+
+async def migrate_legacy_job_knowledge_bases() -> int:
+    """把历史任务中的知识库快照回填到显式列，便于并发删除检查。"""
+    store = KnowledgeBaseStore()
+    default_kb = await store.get_default()
+    async with AsyncSession(get_engine()) as session:
+        jobs = list(
+            (
+                await session.execute(
+                    select(IngestJobRow).where(
+                        IngestJobRow.knowledge_base_id.is_(None)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not jobs:
+            return 0
+        requested_ids = {
+            str((job.options_json or {}).get("knowledge_base_id"))
+            for job in jobs
+            if (job.options_json or {}).get("knowledge_base_id")
+        }
+        valid_ids = (
+            set(
+                (
+                    await session.execute(
+                        select(KnowledgeBaseRow.id).where(
+                            KnowledgeBaseRow.id.in_(requested_ids)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if requested_ids
+            else set()
+        )
+        for job in jobs:
+            requested = (job.options_json or {}).get("knowledge_base_id")
+            job.knowledge_base_id = (
+                str(requested) if requested and str(requested) in valid_ids else default_kb.id
+            )
+        await session.commit()
+    return len(jobs)
+
+
+async def enforce_knowledge_base_integrity() -> None:
+    """在回填完成后验证归属，并为 MySQL 收紧非空与外键约束。"""
+    engine = get_engine()
+    async with engine.begin() as conn:
+        null_documents = int(
+            (
+                await conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM documents "
+                        "WHERE knowledge_base_id IS NULL"
+                    )
+                )
+            ).scalar_one()
+        )
+        orphan_documents = int(
+            (
+                await conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM documents d "
+                        "LEFT JOIN knowledge_bases kb "
+                        "ON kb.id = d.knowledge_base_id "
+                        "WHERE kb.id IS NULL"
+                    )
+                )
+            ).scalar_one()
+        )
+        if null_documents or orphan_documents:
+            raise RuntimeError(
+                "Knowledge base migration incomplete: "
+                f"null_documents={null_documents}, "
+                f"orphan_documents={orphan_documents}"
+            )
+        if conn.dialect.name != "mysql":
+            return
+
+        await conn.execute(
+            text(
+                "UPDATE ingest_jobs j LEFT JOIN knowledge_bases kb "
+                "ON kb.id = j.knowledge_base_id "
+                "SET j.knowledge_base_id = NULL "
+                "WHERE j.knowledge_base_id IS NOT NULL AND kb.id IS NULL"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE documents "
+                "MODIFY knowledge_base_id VARCHAR(36) NOT NULL"
+            )
+        )
+        document_has_kb_fk = await conn.run_sync(
+            lambda sync_conn: any(
+                item.get("constrained_columns") == ["knowledge_base_id"]
+                and item.get("referred_table") == "knowledge_bases"
+                and item.get("referred_columns") == ["id"]
+                for item in inspect(sync_conn).get_foreign_keys("documents")
+            )
+        )
+        if not document_has_kb_fk:
+            await conn.execute(
+                text(
+                    "ALTER TABLE documents "
+                    "ADD CONSTRAINT fk_documents_knowledge_base "
+                    "FOREIGN KEY (knowledge_base_id) "
+                    "REFERENCES knowledge_bases(id) ON DELETE RESTRICT"
+                )
+            )
+        job_has_kb_fk = await conn.run_sync(
+            lambda sync_conn: any(
+                item.get("constrained_columns") == ["knowledge_base_id"]
+                and item.get("referred_table") == "knowledge_bases"
+                and item.get("referred_columns") == ["id"]
+                for item in inspect(sync_conn).get_foreign_keys("ingest_jobs")
+            )
+        )
+        if not job_has_kb_fk:
+            await conn.execute(
+                text(
+                    "ALTER TABLE ingest_jobs "
+                    "ADD CONSTRAINT fk_ingest_jobs_knowledge_base "
+                    "FOREIGN KEY (knowledge_base_id) "
+                    "REFERENCES knowledge_bases(id) ON DELETE SET NULL"
+                )
+            )
 
 
 async def backfill_qdrant_knowledge_base_payloads() -> int:

@@ -46,7 +46,7 @@ class DocumentStore:
         blob_path: str | None = None,
         metadata: dict[str, Any] | None = None,
         document_id: str | None = None,
-        knowledge_base_id: str | None = None,
+        knowledge_base_id: str,
     ) -> DocumentRow:
         """创建文档元数据行，可使用调用方提供的 ID。"""
         row = DocumentRow(

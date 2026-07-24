@@ -111,10 +111,11 @@ async def test_keyword_retriever_recreates_missing_index_without_backfill(monkey
 
     retriever = KeywordRetriever()
     assert await retriever.retrieve("查询", top_k=5) == []
+    assert await retriever.retrieve("另一个查询", top_k=5) == []
 
     indices.create.assert_awaited_once()
     backfill.assert_not_awaited()
-    client.search.assert_awaited_once()
+    assert client.search.await_count == 2
     get_settings.cache_clear()
 
 
@@ -199,13 +200,52 @@ async def test_hybrid_search_reports_partial_degradation(search_settings) -> Non
     )
 
     result = await engine.search(
-        "查询", knowledge_base_id="kb-test", enable_rerank=False
+        "查询",
+        knowledge_base_id="kb-test",
+        enable_rerank=False,
+        allow_keyword_fallback=True,
     )
 
     assert result["total"] == 1
     assert result["degraded_components"] == ["vector"]
     assert result["search_status"] is SearchStatus.DEGRADED
     assert result["effective_mode"] is EffectiveSearchMode.KEYWORD_ONLY
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_abstains_when_vector_is_unavailable_by_default(
+    search_settings,
+) -> None:
+    engine = HybridSearch()
+    engine._documents = SimpleNamespace(
+        ready_ids=AsyncMock(return_value={"doc-1"})
+    )
+    engine._vector = SimpleNamespace(
+        retrieve=AsyncMock(side_effect=RuntimeError("vector"))
+    )
+    engine._keyword = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                {
+                    "chunk_id": "chunk-1",
+                    "text": "仅关键词证据",
+                    "score": 1.0,
+                    "document_id": "doc-1",
+                }
+            ]
+        )
+    )
+
+    result = await engine.search(
+        "查询",
+        knowledge_base_id="kb-test",
+        enable_rerank=False,
+    )
+
+    assert result["results"] == []
+    assert result["abstained"] is True
+    assert result["abstention_reason"] == "vector_unavailable"
+    assert result["search_status"] is SearchStatus.DEGRADED
 
 
 @pytest.mark.asyncio

@@ -183,10 +183,11 @@ curl -X POST http://localhost:18200/v1/search \
 
 启动时的 OpenSearch 与 Qdrant 回填会为已有文档补齐这些字段，新文档则在入库时直接写入。
 
-融合和精确命中置顶完成后，服务会按 `document_id` 执行稳定去重，再把不同文档的代表
-chunk 交给 rerank。请求参数 `max_chunks_per_document` 控制每篇文档最多保留多少个分块，
-默认值为 `1`，允许范围为 `1` 到 `10`。响应中的 `deduplicated_chunks` 表示本次去除的
-重复分块数量。若业务需要同一文档的多个上下文片段，可以显式调高该参数。
+融合和精确命中置顶完成后，服务会先限制每篇文档进入 rerank 的候选池，再按 rerank
+结果执行最终文档级去重。这样不会因融合阶段的初始排序过早丢弃同一文档中更相关的
+chunk。请求参数 `max_chunks_per_document` 控制最终每篇文档最多保留多少个分块，默认值为
+`1`，允许范围为 `1` 到 `10`。响应中的 `deduplicated_chunks` 表示本次去除的重复分块
+数量。若业务需要同一文档的多个上下文片段，可以显式调高该参数。
 
 默认启用检索拒答：
 
@@ -194,6 +195,9 @@ chunk 交给 rerank。请求参数 `max_chunks_per_document` 控制每篇文档�
   `abstention_reason=no_exact_entity_match`；
 - 普通语义查询按知识库所绑定 embedding profile 的校准阈值过滤，全部候选低于阈值时
   返回空结果并设置 `abstention_reason=low_vector_score`；
+- 启用了向量检索但向量组件故障时，默认返回空结果并设置
+  `abstention_reason=vector_unavailable`；只有显式设置
+  `allow_keyword_fallback=true` 才会返回纯关键词降级结果；
 - `min_vector_score` 可覆盖模型默认阈值，`enable_abstention=false` 可用于诊断时关闭拒答。
 
 向量和关键词组件临时失败时默认各额外重试 2 次，响应通过 `component_attempts` 返回实际
@@ -340,4 +344,6 @@ tests/
 
 - `GET /health/live` — 存活
 - `GET /health` — 依赖详情
-- `GET /health/ready` — 检查 MySQL、真实启用的 qdrant/opensearch，以及对象或本地存储；RabbitMQ 会报告但不阻止 API 接收 Outbox 任务
+- `GET /health/ready` — 检查 MySQL、真实启用的 qdrant/opensearch、Qdrant
+  `knowledge_base_id` 回填状态，以及对象或本地存储；RabbitMQ 会报告但不阻止 API
+  接收 Outbox 任务

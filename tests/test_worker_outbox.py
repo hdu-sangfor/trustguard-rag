@@ -18,10 +18,15 @@ from app.domain import (
 )
 from app.stores.document_store import DocumentStore
 from app.stores.job_store import JobLease, JobStore, LeaseLostError
+from app.stores.knowledge_base_store import KnowledgeBaseStore
 from app.stores.models import DocumentRow, IngestJobRow
 from app.stores.outbox_store import OutboxStore
 from app.workers.handlers import dispatch_command
 from app.workers.messages import CLEANUP_DOCUMENT, INGEST_DOCUMENT, CommandMessage
+
+
+async def _default_knowledge_base_id() -> str:
+    return (await KnowledgeBaseStore().get_default()).id
 
 
 @pytest.mark.asyncio
@@ -31,6 +36,7 @@ async def test_ingest_job_and_outbox_are_committed_together(test_engine) -> None
         job_id=job_id,
         source_type="file",
         source="queued.pdf",
+        knowledge_base_id=await _default_knowledge_base_id(),
         options={"original_filename": "queued.pdf"},
     )
 
@@ -129,6 +135,7 @@ async def test_conflict_resolution_resets_attempts_and_enqueues_command(test_eng
 @pytest.mark.asyncio
 async def test_delete_state_and_cleanup_outbox_are_committed_together(test_engine) -> None:
     document = await DocumentStore().create(
+        knowledge_base_id=await _default_knowledge_base_id(),
         source_type="file",
         source_uri="upload://delete.pdf",
         content_hash="a" * 64,
@@ -153,6 +160,7 @@ async def test_stale_cleanup_command_does_not_delete_ready_document(
     test_engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     document = await DocumentStore().create(
+        knowledge_base_id=await _default_knowledge_base_id(),
         source_type="file",
         source_uri="upload://ready.pdf",
         content_hash="b" * 64,
@@ -195,6 +203,7 @@ async def test_expired_worker_lease_is_recovered_with_outbox_command(test_engine
     lease = await store.claim(job.id, allowed_statuses=("queued",), owner="worker-a")
     assert isinstance(lease, JobLease)
     document = await DocumentStore().create(
+        knowledge_base_id=await _default_knowledge_base_id(),
         source_type="file",
         source_uri="upload://crashed.pdf",
         content_hash="c" * 64,
@@ -249,6 +258,7 @@ async def test_delete_revokes_running_job_and_blocks_late_publish(test_engine) -
     lease = await store.claim(job.id, allowed_statuses=("queued",))
     assert isinstance(lease, JobLease)
     document = await DocumentStore().create(
+        knowledge_base_id=await _default_knowledge_base_id(),
         source_type="file",
         source_uri="upload://delete-running.pdf",
         content_hash="d" * 64,
@@ -271,6 +281,7 @@ async def test_delete_revokes_running_job_and_blocks_late_publish(test_engine) -
 @pytest.mark.asyncio
 async def test_stale_orphan_indexing_document_is_queued_for_rollback(test_engine) -> None:
     document = await DocumentStore().create(
+        knowledge_base_id=await _default_knowledge_base_id(),
         source_type="file",
         source_uri="upload://orphan.pdf",
         content_hash="e" * 64,
@@ -295,6 +306,7 @@ async def test_stale_orphan_indexing_document_is_queued_for_rollback(test_engine
 @pytest.mark.asyncio
 async def test_conflict_document_is_not_mistaken_for_an_orphan(test_engine) -> None:
     document = await DocumentStore().create(
+        knowledge_base_id=await _default_knowledge_base_id(),
         source_type="file",
         source_uri="upload://waiting-conflict.pdf",
         content_hash="f" * 64,

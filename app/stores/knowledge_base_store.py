@@ -14,8 +14,9 @@ from app.core.embedding.profiles import (
     canonical_embedding_profile_id,
     get_embedding_profile,
 )
+from app.domain import RESUMABLE_JOB_STATUSES
 from app.stores.db import get_engine
-from app.stores.models import DocumentRow, KnowledgeBaseRow
+from app.stores.models import DocumentRow, IngestJobRow, KnowledgeBaseRow
 
 DEFAULT_KNOWLEDGE_BASE_ID = str(uuid5(NAMESPACE_URL, "trustguard:knowledge-base:default"))
 
@@ -167,18 +168,54 @@ class KnowledgeBaseStore:
             return await session.get(KnowledgeBaseRow, knowledge_base_id)
 
     async def delete(self, knowledge_base_id: str) -> bool:
-        row = await self.get(knowledge_base_id)
-        if row is None:
-            return False
-        if row.is_default or row.is_system:
-            raise ValueError("System knowledge base cannot be deleted")
-        if await self.document_count(knowledge_base_id):
-            raise ValueError("Knowledge base is not empty")
         async with AsyncSession(get_engine()) as session:
-            result = await session.execute(
-                delete(KnowledgeBaseRow).where(KnowledgeBaseRow.id == knowledge_base_id)
+            row = (
+                await session.execute(
+                    select(KnowledgeBaseRow)
+                    .where(KnowledgeBaseRow.id == knowledge_base_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return False
+            if row.is_default or row.is_system:
+                raise ValueError("System knowledge base cannot be deleted")
+
+            document_count = int(
+                (
+                    await session.execute(
+                        select(func.count(DocumentRow.id)).where(
+                            DocumentRow.knowledge_base_id == knowledge_base_id
+                        )
+                    )
+                ).scalar_one()
             )
-            await session.commit()
+            if document_count:
+                raise ValueError("Knowledge base is not empty")
+
+            active_job_count = int(
+                (
+                    await session.execute(
+                        select(func.count(IngestJobRow.id)).where(
+                            IngestJobRow.knowledge_base_id == knowledge_base_id,
+                            IngestJobRow.status.in_(RESUMABLE_JOB_STATUSES),
+                        )
+                    )
+                ).scalar_one()
+            )
+            if active_job_count:
+                raise ValueError("Knowledge base has active ingest jobs")
+
+            try:
+                result = await session.execute(
+                    delete(KnowledgeBaseRow).where(
+                        KnowledgeBaseRow.id == knowledge_base_id
+                    )
+                )
+                await session.commit()
+            except IntegrityError as error:
+                await session.rollback()
+                raise ValueError("Knowledge base is still in use") from error
             return bool(result.rowcount)
 
 

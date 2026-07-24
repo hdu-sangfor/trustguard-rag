@@ -15,7 +15,6 @@ from app.core.retrieval.security_entities import (
 from app.settings import get_settings
 from app.stores import opensearch_store
 
-_INDEX_INIT_LOCK = asyncio.Lock()
 _SECURITY_ENTITY_PROPERTIES = {
     "entity_id": {"type": "keyword"},
     "entity_type": {"type": "keyword"},
@@ -32,6 +31,8 @@ class KeywordRetriever:
     def __init__(self) -> None:
         self._settings = get_settings()
         self._index = f"{self._settings.opensearch_index_prefix}chunks"
+        self._index_ready = False
+        self._index_init_lock = asyncio.Lock()
 
     @property
     def index_name(self) -> str:
@@ -51,6 +52,7 @@ class KeywordRetriever:
                     }
                 },
             )
+            self._index_ready = True
             return False
         await client.indices.create(
             index=self._index,
@@ -88,7 +90,16 @@ class KeywordRetriever:
                 },
             },
         )
+        self._index_ready = True
         return True
+
+    async def _ensure_index_once(self) -> None:
+        """在读路径首次使用时检查索引，后续查询跳过重复元数据请求。"""
+        if self._index_ready:
+            return
+        async with self._index_init_lock:
+            if not self._index_ready:
+                await self.ensure_index()
 
     async def index_chunk(
         self,
@@ -197,8 +208,7 @@ class KeywordRetriever:
             }
 
         # 仅确保索引存在；全量回填留给 startup / 运维入口，避免读路径阻塞。
-        async with _INDEX_INIT_LOCK:
-            await self.ensure_index()
+        await self._ensure_index_once()
 
         client = opensearch_store.get_client()
         response = await client.search(

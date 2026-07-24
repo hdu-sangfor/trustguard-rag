@@ -34,7 +34,7 @@ def _job_response(job) -> IngestJobResponse:
         created_at=job.created_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
-        knowledge_base_id=options.get("knowledge_base_id"),
+        knowledge_base_id=job.knowledge_base_id or options.get("knowledge_base_id"),
         embedding_profile=options.get("embedding_profile", "configured"),
         embedding_model=options.get("embedding_model"),
         embedding_dim=options.get("embedding_dim"),
@@ -82,6 +82,7 @@ async def create_ingest_job(
             job_id=job_id,
             source_type=source_type,
             source=original_filename,
+            knowledge_base_id=knowledge_base.id,
             options={
                 "original_filename": original_filename,
                 "mime": mime,

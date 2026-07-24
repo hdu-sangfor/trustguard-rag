@@ -30,11 +30,17 @@ from app.stores import db, opensearch_store, qdrant_store, redis_cache
 from app.stores.outbox_store import ensure_outbox_schema
 from app.stores.knowledge_base_migration import (
     backfill_qdrant_knowledge_base_payloads,
+    enforce_knowledge_base_integrity,
     ensure_knowledge_base_schema,
     migrate_legacy_knowledge_bases,
+    migrate_legacy_job_knowledge_bases,
 )
 from app.stores.models import Base
 from app.stores.db import get_engine
+from app.stores.migration_state_store import (
+    KNOWLEDGE_BASE_INDEX_BACKFILL,
+    set_migration_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +61,37 @@ async def run_opensearch_backfill() -> None:
         logger.warning("OpenSearch startup backfill failed", exc_info=True)
 
 
+async def run_knowledge_base_index_backfill() -> None:
+    """回填 Qdrant 知识库 payload，并持久化可观测状态。"""
+    await set_migration_state(KNOWLEDGE_BASE_INDEX_BACKFILL, "running")
+    try:
+        processed = await backfill_qdrant_knowledge_base_payloads()
+    except asyncio.CancelledError:
+        await set_migration_state(
+            KNOWLEDGE_BASE_INDEX_BACKFILL,
+            "pending",
+            error_message="cancelled during shutdown",
+        )
+        raise
+    except Exception as error:  # noqa: BLE001
+        await set_migration_state(
+            KNOWLEDGE_BASE_INDEX_BACKFILL,
+            "failed",
+            error_message=str(error)[:2000],
+        )
+        logger.exception("knowledge base index backfill failed")
+    else:
+        await set_migration_state(
+            KNOWLEDGE_BASE_INDEX_BACKFILL,
+            "ready",
+            processed_count=processed,
+        )
+        logger.info(
+            "knowledge base index backfill complete: documents=%s",
+            processed,
+        )
+
+
 async def ensure_ocr_schema() -> None:
     """确保 OCR 区域表存在（开发/SQLite 与增量部署）。"""
     try:
@@ -73,14 +110,21 @@ async def lifespan(app: FastAPI):
     logger.info("starting %s v%s (env=%s) on :%s", s.app_name, s.app_version, s.app_env, s.api_port)
     await ensure_outbox_schema()
     await ensure_ocr_schema()
-    try:
-        await ensure_knowledge_base_schema()
-        migrated = await migrate_legacy_knowledge_bases()
-        await backfill_qdrant_knowledge_base_payloads()
-        if migrated:
-            logger.info("knowledge base migration assigned %s legacy documents", migrated)
-    except Exception:  # noqa: BLE001
-        logger.warning("knowledge base migration failed", exc_info=True)
+    await ensure_knowledge_base_schema()
+    migrated_documents = await migrate_legacy_knowledge_bases()
+    migrated_jobs = await migrate_legacy_job_knowledge_bases()
+    await enforce_knowledge_base_integrity()
+    if migrated_documents or migrated_jobs:
+        logger.info(
+            "knowledge base migration assigned documents=%s jobs=%s",
+            migrated_documents,
+            migrated_jobs,
+        )
+    await set_migration_state(KNOWLEDGE_BASE_INDEX_BACKFILL, "pending")
+    knowledge_base_backfill_task = asyncio.create_task(
+        run_knowledge_base_index_backfill(),
+        name="knowledge-base-index-backfill",
+    )
     backfill_task: asyncio.Task[None] | None = None
     if not s.search_opensearch_mock and s.opensearch_backfill_on_startup:
         backfill_task = asyncio.create_task(
@@ -88,10 +132,15 @@ async def lifespan(app: FastAPI):
             name="opensearch-startup-backfill",
         )
     yield
-    if backfill_task is not None and not backfill_task.done():
-        backfill_task.cancel()
+    tasks = [knowledge_base_backfill_task]
+    if backfill_task is not None:
+        tasks.append(backfill_task)
+    for task in tasks:
+        if task.done():
+            continue
+        task.cancel()
         try:
-            await backfill_task
+            await task
         except asyncio.CancelledError:
             pass
     # 优雅关闭各连接

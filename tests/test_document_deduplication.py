@@ -50,7 +50,9 @@ def test_document_deduplication_supports_configurable_chunk_limit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hybrid_search_deduplicates_before_rerank(tmp_storage) -> None:
+async def test_hybrid_search_keeps_multiple_candidates_until_after_rerank(
+    tmp_storage,
+) -> None:
     captured_candidates = []
 
     async def rerank(_query, candidates, _top_k):
@@ -97,6 +99,7 @@ async def test_hybrid_search_deduplicates_before_rerank(tmp_storage) -> None:
 
     assert [item["chunk_id"] for item in captured_candidates] == [
         "doc-1-best",
+        "doc-1-second",
         "doc-2-best",
     ]
     assert [

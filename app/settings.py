@@ -151,6 +151,7 @@ class Settings(BaseSettings):
     embedding_dim: int = 1024
     embedding_device: str = "auto"
     embedding_batch_size: int = 10
+    embedding_local_model_cache_size: int = 2
     embedding_normalize: bool = True
     embedding_query_instruction: str = (
         "Given a cybersecurity search query, retrieve relevant passages that answer the query"
@@ -226,6 +227,10 @@ class Settings(BaseSettings):
         if self.search_component_retry_backoff_seconds < 0:
             raise ValueError(
                 "RAG_SEARCH_COMPONENT_RETRY_BACKOFF_SECONDS 不能小于 0"
+            )
+        if not 1 <= self.embedding_local_model_cache_size <= 8:
+            raise ValueError(
+                "RAG_EMBEDDING_LOCAL_MODEL_CACHE_SIZE 必须在 1 到 8 之间"
             )
         if self.llm_timeout_seconds <= 0:
             raise ValueError("RAG_LLM_TIMEOUT_SECONDS 必须大于 0")

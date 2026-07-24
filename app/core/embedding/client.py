@@ -12,6 +12,8 @@ import logging
 import math
 import os
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -367,6 +369,7 @@ class LocalSentenceTransformerProvider:
         """保存配置并延迟加载实际模型。"""
         self._settings = settings
         self._model = None
+        self._load_lock = threading.Lock()
 
     def encode(self, texts: list[str], is_query: bool) -> list[list[float]]:
         """使用本地模型编码文本并返回普通的 Python 向量列表。"""
@@ -385,24 +388,27 @@ class LocalSentenceTransformerProvider:
         """首次使用时加载 Sentence Transformers 模型并复用实例。"""
         if self._model is not None:
             return self._model
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as e:
-            raise EmbeddingError(
-                "Local embeddings require sentence-transformers. "
-                "Run 'uv sync --extra local-embedding' or switch "
-                "RAG_EMBEDDING_PROVIDER=api/pseudo."
-            ) from e
+        with self._load_lock:
+            if self._model is not None:
+                return self._model
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as e:
+                raise EmbeddingError(
+                    "Local embeddings require sentence-transformers. "
+                    "Run 'uv sync --extra local-embedding' or switch "
+                    "RAG_EMBEDDING_PROVIDER=api/pseudo."
+                ) from e
 
-        model_path = self._resolve_model_path()
-        kwargs: dict[str, Any] = {}
-        device = self._settings.embedding_device
-        if device and device != "auto":
-            kwargs["device"] = device
-        if self._settings.embedding_cache_dir:
-            kwargs["cache_folder"] = self._settings.embedding_cache_dir
-        self._model = SentenceTransformer(model_path, **kwargs)
-        return self._model
+            model_path = self._resolve_model_path()
+            kwargs: dict[str, Any] = {}
+            device = self._settings.embedding_device
+            if device and device != "auto":
+                kwargs["device"] = device
+            if self._settings.embedding_cache_dir:
+                kwargs["cache_folder"] = self._settings.embedding_cache_dir
+            self._model = SentenceTransformer(model_path, **kwargs)
+            return self._model
 
     def _resolve_model_path(self) -> str:
         """根据下载源配置解析本地模型路径或远程模型名称。"""
@@ -445,13 +451,14 @@ class LocalSentenceTransformerProvider:
         return [f"Instruct: {instruction}\nQuery: {text}" for text in texts]
 
 
-_LOCAL_PROVIDER_KEY: tuple[Any, ...] | None = None
-_LOCAL_PROVIDER: LocalSentenceTransformerProvider | None = None
+_LOCAL_PROVIDERS: OrderedDict[
+    tuple[Any, ...], LocalSentenceTransformerProvider
+] = OrderedDict()
+_LOCAL_PROVIDERS_LOCK = threading.Lock()
 
 
 def _get_local_provider(settings: Settings) -> LocalSentenceTransformerProvider:
-    """按关键配置缓存并复用本地模型提供方。"""
-    global _LOCAL_PROVIDER, _LOCAL_PROVIDER_KEY
+    """按关键配置使用有界 LRU 缓存复用本地模型提供方。"""
     key = (
         settings.embedding_model,
         settings.embedding_device,
@@ -465,10 +472,16 @@ def _get_local_provider(settings: Settings) -> LocalSentenceTransformerProvider:
         settings.embedding_normalize,
         settings.embedding_query_instruction,
     )
-    if _LOCAL_PROVIDER is None or _LOCAL_PROVIDER_KEY != key:
-        _LOCAL_PROVIDER = LocalSentenceTransformerProvider(settings)
-        _LOCAL_PROVIDER_KEY = key
-    return _LOCAL_PROVIDER
+    with _LOCAL_PROVIDERS_LOCK:
+        provider = _LOCAL_PROVIDERS.get(key)
+        if provider is not None:
+            _LOCAL_PROVIDERS.move_to_end(key)
+            return provider
+        provider = LocalSentenceTransformerProvider(settings)
+        _LOCAL_PROVIDERS[key] = provider
+        while len(_LOCAL_PROVIDERS) > settings.embedding_local_model_cache_size:
+            _LOCAL_PROVIDERS.popitem(last=False)
+        return provider
 
 
 def get_embedding_client() -> EmbeddingClient:

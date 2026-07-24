@@ -25,7 +25,7 @@ from app.domain import (
     IngestStep,
 )
 from app.stores.db import get_engine
-from app.stores.models import DocumentRow, IngestJobRow
+from app.stores.models import DocumentRow, IngestJobRow, KnowledgeBaseRow
 from app.stores.outbox_store import OutboxEvent, add_outbox_event, event_from_row
 from app.workers.messages import CLEANUP_DOCUMENT, INGEST_DOCUMENT, RESOLVE_CONFLICT
 
@@ -63,10 +63,12 @@ class JobStore:
         options: dict[str, Any] | None = None,
         status: IngestJobStatus | str = IngestJobStatus.QUEUED,
         job_id: str | None = None,
+        knowledge_base_id: str | None = None,
     ) -> IngestJobRow:
         """创建排队状态的入库任务记录，并初始化选项和日志。"""
         row = IngestJobRow(
             id=job_id or str(uuid4()),
+            knowledge_base_id=knowledge_base_id or (options or {}).get("knowledge_base_id"),
             source_type=source_type,
             source=source,
             options_json=options,
@@ -85,18 +87,32 @@ class JobStore:
         job_id: str,
         source_type: str,
         source: str,
+        knowledge_base_id: str,
         options: dict[str, Any] | None = None,
     ) -> tuple[IngestJobRow, OutboxEvent]:
         """以原子方式创建入库任务及其调度事件。"""
-        row = IngestJobRow(
-            id=job_id,
-            source_type=source_type,
-            source=source,
-            options_json=options,
-            status=IngestJobStatus.QUEUED,
-            step_logs=[],
-        )
         async with AsyncSession(get_engine(), expire_on_commit=False) as session:
+            knowledge_base = (
+                await session.execute(
+                    select(KnowledgeBaseRow)
+                    .where(KnowledgeBaseRow.id == knowledge_base_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if knowledge_base is None:
+                raise LookupError("Knowledge base not found")
+            row = IngestJobRow(
+                id=job_id,
+                knowledge_base_id=knowledge_base_id,
+                source_type=source_type,
+                source=source,
+                options_json={
+                    **(options or {}),
+                    "knowledge_base_id": knowledge_base_id,
+                },
+                status=IngestJobStatus.QUEUED,
+                step_logs=[],
+            )
             session.add(row)
             event_row = add_outbox_event(
                 session,

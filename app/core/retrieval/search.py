@@ -55,6 +55,7 @@ class HybridSearch:
         filters: dict[str, Any] | None = None,
         embedding_profile: str = "configured",
         enable_abstention: bool = True,
+        allow_keyword_fallback: bool = False,
         min_vector_score: float | None = None,
         require_exact_entity_match: bool = True,
         component_max_retries: int | None = None,
@@ -203,7 +204,19 @@ class HybridSearch:
         abstained = False
         abstention_reason: str | None = None
         active_min_vector_score: float | None = None
-        if enable_abstention and query_entity_ids and require_exact_entity_match:
+        vector_unavailable = (
+            enable_vector
+            and RetrievalComponent.VECTOR in degraded_components
+        )
+        if (
+            enable_abstention
+            and vector_unavailable
+            and not allow_keyword_fallback
+        ):
+            merged = []
+            abstained = True
+            abstention_reason = "vector_unavailable"
+        elif enable_abstention and query_entity_ids and require_exact_entity_match:
             merged = [
                 item for item in merged if item.get("exact_entity_match") is not None
             ]
@@ -236,13 +249,14 @@ class HybridSearch:
                 merged = []
                 abstained = True
                 abstention_reason = "low_vector_score"
-        merged, deduplicated_chunks = _deduplicate_by_document(
-            merged,
-            max_chunks_per_document=max_chunks_per_document,
-        )
-
+        deduplicated_chunks = 0
         if enable_rerank and merged:
-            rerank_candidates = merged[: self._settings.rerank_top_k]
+            candidate_pool, removed_before_rerank = _deduplicate_by_document(
+                merged,
+                max_chunks_per_document=max(max_chunks_per_document, 3),
+            )
+            deduplicated_chunks += removed_before_rerank
+            rerank_candidates = candidate_pool[: self._settings.rerank_top_k]
             try:
                 merged = await self._reranker.rerank(query, rerank_candidates, top_k)
             except RerankError as error:
@@ -254,6 +268,16 @@ class HybridSearch:
                 )
                 merged = rerank_candidates[:top_k]
             merged = _promote_exact_entity_matches(merged, query_entity_ids)
+            merged, removed_after_rerank = _deduplicate_by_document(
+                merged,
+                max_chunks_per_document=max_chunks_per_document,
+            )
+            deduplicated_chunks += removed_after_rerank
+        else:
+            merged, deduplicated_chunks = _deduplicate_by_document(
+                merged,
+                max_chunks_per_document=max_chunks_per_document,
+            )
 
         results = _format_results(merged[:top_k])
         retrieval_time_ms = round((time.perf_counter() - t0) * 1000, 2)

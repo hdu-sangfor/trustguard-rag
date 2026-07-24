@@ -8,6 +8,11 @@ import pytest
 from app.api.health import _ingest_reported, _ingest_required
 from app.settings import get_settings
 from app.stores import opensearch_store
+from app.stores.migration_state_store import (
+    KNOWLEDGE_BASE_INDEX_BACKFILL,
+    check_knowledge_base_index_backfill,
+    set_migration_state,
+)
 
 
 def test_ingest_health_requires_real_search_backends(monkeypatch) -> None:
@@ -20,6 +25,7 @@ def test_ingest_health_requires_real_search_backends(monkeypatch) -> None:
         "mysql",
         "local_storage",
         "qdrant",
+        "knowledge_base_index",
         "opensearch",
         "mineru",
     )
@@ -84,4 +90,26 @@ async def test_opensearch_health_requires_business_index(monkeypatch) -> None:
 
     assert result.status == "down"
     assert result.detail == "missing index: rag_chunks"
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_knowledge_base_backfill_health_tracks_persisted_state(
+    test_engine, monkeypatch
+) -> None:
+    monkeypatch.setenv("RAG_QDRANT_MOCK", "false")
+    get_settings.cache_clear()
+
+    pending = await check_knowledge_base_index_backfill()
+    assert pending.status == "down"
+
+    await set_migration_state(
+        KNOWLEDGE_BASE_INDEX_BACKFILL,
+        "ready",
+        processed_count=12,
+    )
+    ready = await check_knowledge_base_index_backfill()
+
+    assert ready.status == "up"
+    assert ready.detail == "processed 12 documents"
     get_settings.cache_clear()

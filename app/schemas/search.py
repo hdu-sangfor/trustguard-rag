@@ -98,6 +98,10 @@ class SearchRequest(BaseModel):
         default=True,
         description="启用精确实体缺失和低向量置信度拒答",
     )
+    allow_keyword_fallback: bool = Field(
+        default=False,
+        description="向量组件故障时是否允许退化为纯关键词结果",
+    )
     min_vector_score: float | None = Field(
         default=None,
         ge=-1.0,
@@ -152,7 +156,10 @@ class SearchResponse(BaseModel):
     abstained: bool = Field(default=False, description="是否因低置信度或精确实体缺失拒答")
     abstention_reason: str | None = Field(
         default=None,
-        description="拒答原因：no_exact_entity_match 或 low_vector_score",
+        description=(
+            "拒答原因：vector_unavailable、no_exact_entity_match "
+            "或 low_vector_score"
+        ),
     )
     min_vector_score: float | None = None
     component_attempts: dict[str, int] = Field(

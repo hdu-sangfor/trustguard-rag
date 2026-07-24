@@ -210,9 +210,10 @@ function renderSearchResults(data){
 function renderAnswer(data){
   const results=$("#search-results"), empty=$("#search-empty"), summary=$("#search-summary");
   const answered=data.status==="answered", degraded=Array.isArray(data.degraded_components)?data.degraded_components:[];
+  const abstentionLabel={vector_unavailable:"向量组件不可用",no_exact_entity_match:"安全编号未精确命中",low_vector_score:"向量置信度不足"}[data.abstention_reason]||data.abstention_reason;
   empty.hidden=true;summary.hidden=false;results.innerHTML="";
   const usage=data.usage?` · ${data.usage.total_tokens} tokens`:"";
-  summary.innerHTML=`<span>${answered?"已回答":"证据不足"}</span><span><strong>${Number(data.total_time_ms).toFixed(1)}</strong> ms</span><span>召回 ${data.retrieved_count} · 上下文 ${data.context_chunk_count}</span><span>${data.context_token_count} context tokens</span>${data.model?`<span>${escapeHtml(data.model)}${usage}</span>`:""}${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}`;
+  summary.innerHTML=`<span>${answered?"已回答":"证据不足"}</span>${abstentionLabel?`<span>拒答原因：${escapeHtml(abstentionLabel)}</span>`:""}<span><strong>${Number(data.total_time_ms).toFixed(1)}</strong> ms</span><span>召回 ${data.retrieved_count} · 上下文 ${data.context_chunk_count}</span><span>${data.context_token_count} context tokens</span>${data.model?`<span>${escapeHtml(data.model)}${usage}</span>`:""}${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}`;
   const card=document.createElement("article");card.className=`answer-card${answered?"":" insufficient"}`;
   const citations=Array.isArray(data.citations)?data.citations:[];
   card.innerHTML=`<span class="answer-status">${answered?"GROUNDED ANSWER":"INSUFFICIENT EVIDENCE"}</span><p class="answer-text">${escapeHtml(data.answer||"")}</p>${citations.length?`<div class="answer-citations">${citations.map(item=>`<article class="answer-citation"><strong>[${item.citation_id}]</strong><div class="answer-citation-info"><span>${escapeHtml(item.original_filename||item.source_uri||"未知来源")}</span><small>CHUNK ${(item.chunk_index??0)+1}${item.page_no!=null?` · PAGE ${item.page_no}`:""}</small><p>${escapeHtml((item.excerpt||"").slice(0,240))}${(item.excerpt||"").length>240?"…":""}</p></div>${item.document_id?'<button class="text-button answer-document" type="button">查看原文 →</button>':""}</article>`).join("")}</div>`:""}`;
@@ -285,6 +286,8 @@ async function runAnswer(){
     enable_keyword:enableKeyword,
     enable_rerank:$("#search-rerank").checked,
     enable_abstention:$("#search-abstention").checked,
+    allow_keyword_fallback:$("#search-keyword-fallback").checked,
+    allow_keyword_fallback:$("#search-keyword-fallback").checked,
     require_exact_entity_match:$("#search-exact-entity").checked,
     min_vector_score:optionalNumber("#search-min-vector-score"),
     component_max_retries:optionalNumber("#search-component-retries"),

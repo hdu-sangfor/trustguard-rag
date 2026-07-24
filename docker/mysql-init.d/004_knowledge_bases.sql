@@ -29,6 +29,21 @@ PREPARE statement FROM @add_column;
 EXECUTE statement;
 DEALLOCATE PREPARE statement;
 
+SET @job_column_exists = (
+    SELECT COUNT(*) FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'ingest_jobs'
+      AND COLUMN_NAME = 'knowledge_base_id'
+);
+SET @add_job_column = IF(
+    @job_column_exists = 0,
+    'ALTER TABLE ingest_jobs ADD COLUMN knowledge_base_id CHAR(36) NULL, ADD KEY idx_jobs_knowledge_base_status (knowledge_base_id, status)',
+    'SELECT 1'
+);
+PREPARE statement FROM @add_job_column;
+EXECUTE statement;
+DEALLOCATE PREPARE statement;
+
 SET @old_unique_exists = (
     SELECT COUNT(*) FROM information_schema.STATISTICS
     WHERE TABLE_SCHEMA = DATABASE()

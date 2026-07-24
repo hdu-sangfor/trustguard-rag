@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain import DocumentStatus
+from app.core.embedding.profiles import get_embedding_profile
 from app.stores.chunk_store import ChunkStore
 from app.stores.document_store import DocumentStore
+from app.stores.job_store import JobStore
 from app.stores.knowledge_base_migration import migrate_legacy_knowledge_bases
 from app.stores.knowledge_base_store import KnowledgeBaseStore
+from app.stores.models import DocumentRow
 
 
 @pytest.mark.asyncio
@@ -165,17 +171,23 @@ async def test_core_search_overrides_conflicting_scope_filter(
 
 @pytest.mark.asyncio
 async def test_legacy_documents_are_grouped_by_embedding_profile(test_engine) -> None:
-    document = await DocumentStore().create(
-        source_type="file",
-        source_uri="upload://legacy.txt",
-        content_hash="a" * 64,
-        status=DocumentStatus.READY,
-        original_filename="legacy.txt",
-    )
+    document_id = str(uuid4())
+    async with AsyncSession(test_engine) as session:
+        document = DocumentRow(
+            id=document_id,
+            knowledge_base_id=None,
+            source_type="file",
+            source_uri="upload://legacy.txt",
+            content_hash="a" * 64,
+            status=DocumentStatus.READY,
+            original_filename="legacy.txt",
+        )
+        session.add(document)
+        await session.commit()
     await ChunkStore().create_many(
         [
-            {
-                "document_id": document.id,
+                {
+                    "document_id": document_id,
                 "chunk_index": 0,
                 "text": "legacy content",
                 "metadata": {"embedding_profile": "bge-m3"},
@@ -184,8 +196,39 @@ async def test_legacy_documents_are_grouped_by_embedding_profile(test_engine) ->
     )
 
     assert await migrate_legacy_knowledge_bases() == 1
-    migrated = await DocumentStore().get(document.id)
+    migrated = await DocumentStore().get(document_id)
     assert migrated is not None and migrated.knowledge_base_id
     knowledge_base = await KnowledgeBaseStore().get(migrated.knowledge_base_id)
     assert knowledge_base is not None
     assert knowledge_base.embedding_profile == "bge-m3"
+
+
+@pytest.mark.asyncio
+async def test_active_ingest_job_blocks_knowledge_base_deletion(test_engine) -> None:
+    store = KnowledgeBaseStore()
+    knowledge_base = await store.create(
+        name="等待入库的知识库",
+        profile=get_embedding_profile("configured"),
+    )
+    await JobStore().create_ingest_command(
+        job_id=str(uuid4()),
+        source_type="file",
+        source="queued.pdf",
+        knowledge_base_id=knowledge_base.id,
+    )
+
+    with pytest.raises(ValueError, match="active ingest jobs"):
+        await store.delete(knowledge_base.id)
+
+    assert await store.get(knowledge_base.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_ingest_command_rejects_deleted_knowledge_base(test_engine) -> None:
+    with pytest.raises(LookupError, match="Knowledge base not found"):
+        await JobStore().create_ingest_command(
+            job_id=str(uuid4()),
+            source_type="file",
+            source="orphan.pdf",
+            knowledge_base_id=str(uuid4()),
+        )
