@@ -14,7 +14,10 @@ from app.domain.ingest import (
 )
 from app.domain.ocr import OcrRegionStatus
 from app.domain.retrieval import (
+    CoverageStatus,
     EffectiveSearchMode,
+    QueryIntent,
+    QueryPlanSource,
     RetrievalComponent,
     SearchStatus,
 )
@@ -31,12 +34,15 @@ __all__ = [
     "CleanupAction",
     "DELETABLE_DOCUMENT_STATUSES",
     "DocumentStatus",
+    "CoverageStatus",
     "EffectiveSearchMode",
     "IngestJobStatus",
     "IngestStep",
     "OcrRegionStatus",
     "OutboxStatus",
     "PipelineResult",
+    "QueryIntent",
+    "QueryPlanSource",
     "RetrievalComponent",
     "SearchStatus",
 ]

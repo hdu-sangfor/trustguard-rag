@@ -25,6 +25,7 @@ from app.domain import (
     IngestStep,
 )
 from app.stores.db import get_engine
+from app.stores.document_store import increment_content_revision
 from app.stores.models import DocumentRow, IngestJobRow, KnowledgeBaseRow
 from app.stores.outbox_store import OutboxEvent, add_outbox_event, event_from_row
 from app.workers.messages import CLEANUP_DOCUMENT, INGEST_DOCUMENT, RESOLVE_CONFLICT
@@ -420,6 +421,7 @@ class JobStore:
                 )
             doc.status = DocumentStatus.READY
             doc.updated_at = now
+            await increment_content_revision(session, doc.knowledge_base_id)
             job.status = IngestJobStatus.SUCCEEDED
             job.document_id = document_id
             job.finished_at = now

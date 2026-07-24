@@ -21,3 +21,23 @@ class RetrievalComponent(StrEnum):
     KEYWORD = "keyword"
     RERANK = "rerank"
 
+
+class QueryIntent(StrEnum):
+    AUTO = "auto"
+    FOCUSED = "focused"
+    COMPREHENSIVE = "comprehensive"
+    ENUMERATION = "enumeration"
+
+
+class QueryPlanSource(StrEnum):
+    EXPLICIT = "explicit"
+    HEURISTIC = "heuristic"
+    LLM = "llm"
+
+
+class CoverageStatus(StrEnum):
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    NOT_APPLICABLE = "not_applicable"
+    UNKNOWN = "unknown"
+

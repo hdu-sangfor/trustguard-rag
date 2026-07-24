@@ -75,6 +75,7 @@ services:
       RAG_MYSQL_USER: ${MYSQL_USER:-trustguard}
       RAG_MYSQL_PASSWORD: ${MYSQL_PASSWORD:-trustguard}
       RAG_MYSQL_DB: ${MYSQL_DATABASE:-trustguard_rag}
+      RAG_INTERNAL_SERVICE_TOKEN: ${RAG_INTERNAL_SERVICE_TOKEN:-}
       RAG_QDRANT_HOST: qdrant
       RAG_QDRANT_PORT: "6333"
       RAG_OPENSEARCH_HOST: opensearch

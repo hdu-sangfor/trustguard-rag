@@ -9,7 +9,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.stores.db import get_engine
-from app.stores.models import ChunkRow
+from app.domain import DocumentStatus
+from app.stores.models import ChunkRow, DocumentRow, KnowledgeBaseRow
 
 
 class ChunkStore:
@@ -75,6 +76,27 @@ class ChunkStore:
         async with AsyncSession(get_engine()) as session:
             result = await session.execute(select(ChunkRow).where(ChunkRow.id.in_(chunk_ids)))
             return list(result.scalars().all())
+
+    async def get_scoped_active(
+        self, *, knowledge_base_id: str, chunk_id: str
+    ) -> tuple[ChunkRow, DocumentRow, KnowledgeBaseRow] | None:
+        """精确读取指定知识库内仍可检索的 Chunk，禁止跨库和读取未发布文档。"""
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(
+                select(ChunkRow, DocumentRow, KnowledgeBaseRow)
+                .join(DocumentRow, DocumentRow.id == ChunkRow.document_id)
+                .join(
+                    KnowledgeBaseRow,
+                    KnowledgeBaseRow.id == DocumentRow.knowledge_base_id,
+                )
+                .where(
+                    ChunkRow.id == chunk_id,
+                    ChunkRow.status == "active",
+                    DocumentRow.knowledge_base_id == knowledge_base_id,
+                    DocumentRow.status == DocumentStatus.READY,
+                )
+            )
+            return result.one_or_none()
 
     async def delete_for_document(self, document_id: str) -> list[str]:
         """删除文档分块，并返回需要清理的向量点 ID。"""

@@ -21,7 +21,7 @@ from app.domain import (
 )
 from app.settings import get_settings
 from app.stores.db import get_engine
-from app.stores.models import DocumentRow, IngestJobRow
+from app.stores.models import DocumentRow, IngestJobRow, KnowledgeBaseRow
 from app.stores.outbox_store import OutboxEvent, add_outbox_event, event_from_row
 from app.workers.messages import CLEANUP_DOCUMENT
 
@@ -29,6 +29,22 @@ from app.workers.messages import CLEANUP_DOCUMENT
 def _utcnow() -> datetime:
     """返回适用于 MySQL datetime 字段的无时区 UTC 时间。"""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+async def increment_content_revision(
+    session: AsyncSession, knowledge_base_id: str | None
+) -> None:
+    """在当前事务内递增知识库内容版本；历史空归属文档由迁移流程处理。"""
+    if not knowledge_base_id:
+        return
+    await session.execute(
+        update(KnowledgeBaseRow)
+        .where(KnowledgeBaseRow.id == knowledge_base_id)
+        .values(
+            content_revision=KnowledgeBaseRow.content_revision + 1,
+            updated_at=_utcnow(),
+        )
+    )
 
 
 class DocumentStore:
@@ -198,15 +214,19 @@ class DocumentStore:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """更新文档状态和可选的发布元数据。"""
-        values: dict[str, Any] = {"status": status, "updated_at": _utcnow()}
-        if blob_path is not None:
-            values["blob_path"] = blob_path
-        if metadata is not None:
-            values["metadata_json"] = metadata
         async with AsyncSession(get_engine()) as session:
-            await session.execute(
-                update(DocumentRow).where(DocumentRow.id == document_id).values(**values)
-            )
+            row = await session.get(DocumentRow, document_id, with_for_update=True)
+            if row is None:
+                return
+            was_ready = row.status == DocumentStatus.READY
+            row.status = status
+            row.updated_at = _utcnow()
+            if blob_path is not None:
+                row.blob_path = blob_path
+            if metadata is not None:
+                row.metadata_json = metadata
+            if was_ready != (status == DocumentStatus.READY):
+                await increment_content_revision(session, row.knowledge_base_id)
             await session.commit()
 
     async def list_by_status(self, status: DocumentStatus) -> list[DocumentRow]:
@@ -239,8 +259,11 @@ class DocumentStore:
                 raise LookupError("Document not found")
             if doc.status not in DELETABLE_DOCUMENT_STATUSES:
                 raise ValueError(f"Document cannot be deleted while status is {doc.status}")
+            was_ready = doc.status == DocumentStatus.READY
             doc.status = DocumentStatus.DELETING
             doc.updated_at = _utcnow()
+            if was_ready:
+                await increment_content_revision(session, doc.knowledge_base_id)
             await session.execute(
                 update(IngestJobRow)
                 .where(

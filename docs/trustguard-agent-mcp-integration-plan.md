@@ -1,6 +1,6 @@
 # TrustGuard RAG MCP 化与多 Workflow 接入计划
 
-> 文档状态：Phase 0 已冻结，Phase 1 尚未实施<br>
+> 文档状态：Phase 0～1 已完成，Phase 2 尚未实施<br>
 > 文档日期：2026-07-24<br>
 > RAG 基线分支：`origin/main`<br>
 > RAG 基线提交：`93d08d0`<br>
@@ -1669,18 +1669,34 @@ Fixture 后，Phase 3 开始前还需在 Agent CI 中启用对应消费者测试
 
 ### Phase 1：RAG 基础契约和版本
 
-- [ ] 实现 `content_revision`；
-- [ ] 实现稳定 Search Schema；
-- [ ] 实现结构化错误；
-- [ ] 实现按 KB 和 Chunk 精确读取；
-- [ ] 实现内部 REST Service Auth；
-- [ ] 补齐迁移和回滚测试。
+- [x] 实现 `content_revision`；
+- [x] 实现稳定 Search Schema；
+- [x] 实现结构化错误；
+- [x] 实现按 KB 和 Chunk 精确读取；
+- [x] 实现内部 REST Service Auth；
+- [x] 补齐迁移和回滚测试。
 
 完成条件：
 
 - 文档生命周期正确递增 revision；
 - 不能跨知识库读取 Chunk；
 - 现有 RAG 评测无回归。
+
+Phase 1 实现说明：
+
+- `knowledge_bases.content_revision` 在文档进入或离开 `ready` 可检索集合时，
+  与状态更新在同一数据库事务内原子递增；
+- 旧数据库通过幂等增量迁移补充 `content_revision INTEGER NOT NULL DEFAULT 0`；
+- `POST /v1/search` 增加 `trustguard-search-v1`、`request_id`、
+  `content_revision`、结构化 `query_plan` 和枚举化 `coverage`；
+- v1 HTTP 错误使用 `trustguard-error-v1` 信封，并暂时保留兼容字段 `detail`；
+- `GET /v1/internal/knowledge-bases/{knowledge_base_id}/chunks/{chunk_id}`
+  只允许携带 `RAG_INTERNAL_SERVICE_TOKEN` 的 Bearer 调用，且只读取匹配知识库中
+  `ready` 文档的 `active` Chunk；
+- 跨库访问和不存在统一返回 404，避免通过错误差异枚举 Chunk 归属；
+- `tests/test_phase1_contract.py` 覆盖迁移幂等、发布/删除/失败路径、请求 ID、
+  错误信封、鉴权以及跨库和未发布内容隔离；
+- Phase 1 完成时全量测试为 295 项通过，检索评测测试无回归。
 
 ### Phase 2：只读 MCP Gateway
 

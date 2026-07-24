@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 18200
     rag_mode: str = "ingest"  # 健康检查模式取值：ingest | full
+    internal_service_token: str | None = None
 
     # --- 入库 ---
     ingest_max_pdf_bytes: int = 52_428_800

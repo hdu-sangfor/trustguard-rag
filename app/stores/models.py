@@ -48,6 +48,7 @@ class KnowledgeBaseRow(Base):
     )
     embedding_model: Mapped[str] = mapped_column(String(128))
     embedding_dim: Mapped[int] = mapped_column(Integer)
+    content_revision: Mapped[int] = mapped_column(Integer, default=0)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     is_system: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(

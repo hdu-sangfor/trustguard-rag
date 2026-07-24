@@ -1,7 +1,7 @@
 """搜索 HTTP API。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.core.retrieval.request_context import resolve_search_execution
 from app.core.retrieval.search import SearchUnavailableError, get_hybrid_search
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/v1/search", tags=["search"])
 
 
 @router.post("", response_model=SearchResponse)
-async def search(request: SearchRequest) -> SearchResponse:
+async def search(request: SearchRequest, http_request: Request) -> SearchResponse:
     try:
         context = await resolve_search_execution(request)
     except LookupError as error:
@@ -26,8 +26,10 @@ async def search(request: SearchRequest) -> SearchResponse:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
     return SearchResponse(
+        request_id=getattr(http_request.state, "request_id", ""),
         query=request.query,
         knowledge_base_id=context.knowledge_base.id,
+        content_revision=context.knowledge_base.content_revision,
         search_status=result["search_status"],
         effective_mode=result["effective_mode"],
         results=result["results"],

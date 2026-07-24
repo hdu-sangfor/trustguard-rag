@@ -10,7 +10,8 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -19,10 +20,17 @@ from app.api import (
     documents,
     health,
     ingest,
+    internal,
     knowledge_bases,
     ocr_review,
     search,
     sources,
+)
+from app.api.errors import (
+    http_exception_handler,
+    resolve_request_id,
+    unhandled_exception_handler,
+    validation_exception_handler,
 )
 from app.core.indexing.opensearch_backfill import backfill_ready_documents
 from app.settings import get_settings
@@ -160,9 +168,22 @@ def create_app() -> FastAPI:
         description="TrustGuard 独立 RAG 知识库：入库、检索与基于证据的回答。",
         lifespan=lifespan,
     )
+
+    @app.middleware("http")
+    async def request_context(request: Request, call_next):
+        request_id = resolve_request_id(request.headers.get("X-Request-ID"))
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+    app.add_exception_handler(HTTPException, http_exception_handler)
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(Exception, unhandled_exception_handler)
     
     app.include_router(health.router)
     app.include_router(ingest.router)
+    app.include_router(internal.router)
     app.include_router(knowledge_bases.router)
     app.include_router(documents.router)
     app.include_router(sources.router)
