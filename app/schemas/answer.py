@@ -37,12 +37,18 @@ class AnswerResponse(BaseModel):
     """带来源引用和检索诊断信息的回答。"""
 
     query: str
+    knowledge_base_id: str
     status: AnswerStatus
     answer: str
     citations: list[AnswerCitation]
     search_status: SearchStatus
     effective_mode: EffectiveSearchMode
     degraded_components: list[str] = Field(default_factory=list)
+    abstained: bool = False
+    abstention_reason: str | None = None
+    query_entities: list[str] = Field(default_factory=list)
+    component_attempts: dict[str, int] = Field(default_factory=dict)
+    recovered_components: list[str] = Field(default_factory=list)
     retrieved_count: int = Field(ge=0)
     context_chunk_count: int = Field(ge=0)
     context_token_count: int = Field(ge=0)

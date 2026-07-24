@@ -37,9 +37,11 @@ class AnswerService:
         self,
         query: str,
         *,
+        knowledge_base_id: str,
         top_k: int | None = None,
         vector_top_k: int | None = None,
         keyword_top_k: int | None = None,
+        max_chunks_per_document: int = 1,
         fusion_method: str | None = None,
         vector_weight: float | None = None,
         keyword_weight: float | None = None,
@@ -47,13 +49,21 @@ class AnswerService:
         enable_vector: bool = True,
         enable_keyword: bool = True,
         filters: dict[str, Any] | None = None,
+        embedding_profile: str = "configured",
+        enable_abstention: bool = True,
+        allow_keyword_fallback: bool = False,
+        min_vector_score: float | None = None,
+        require_exact_entity_match: bool = True,
+        component_max_retries: int | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         search_result = await self._search.search(
             query=query,
+            knowledge_base_id=knowledge_base_id,
             top_k=top_k,
             vector_top_k=vector_top_k,
             keyword_top_k=keyword_top_k,
+            max_chunks_per_document=max_chunks_per_document,
             fusion_method=fusion_method,
             vector_weight=vector_weight,
             keyword_weight=keyword_weight,
@@ -61,11 +71,18 @@ class AnswerService:
             enable_vector=enable_vector,
             enable_keyword=enable_keyword,
             filters=filters,
+            embedding_profile=embedding_profile,
+            enable_abstention=enable_abstention,
+            allow_keyword_fallback=allow_keyword_fallback,
+            min_vector_score=min_vector_score,
+            require_exact_entity_match=require_exact_entity_match,
+            component_max_retries=component_max_retries,
         )
         bundle = self._context_builder.build(search_result["results"])
         if not bundle.evidence:
             return self._build_response(
                 query=query,
+                knowledge_base_id=knowledge_base_id,
                 search_result=search_result,
                 status=AnswerStatus.INSUFFICIENT_EVIDENCE,
                 answer=self._settings.answer_refusal_message,
@@ -97,6 +114,7 @@ class AnswerService:
             }
         return self._build_response(
             query=query,
+            knowledge_base_id=knowledge_base_id,
             search_result=search_result,
             status=parsed.status,
             answer=answer_text,
@@ -113,6 +131,7 @@ class AnswerService:
     def _build_response(
         *,
         query: str,
+        knowledge_base_id: str,
         search_result: dict[str, Any],
         status: AnswerStatus,
         answer: str,
@@ -126,6 +145,7 @@ class AnswerService:
     ) -> dict[str, Any]:
         return {
             "query": query,
+            "knowledge_base_id": knowledge_base_id,
             "status": status,
             "answer": answer,
             "citations": [
@@ -144,6 +164,11 @@ class AnswerService:
             "search_status": search_result["search_status"],
             "effective_mode": search_result["effective_mode"],
             "degraded_components": search_result["degraded_components"],
+            "abstained": search_result.get("abstained", False),
+            "abstention_reason": search_result.get("abstention_reason"),
+            "query_entities": search_result.get("query_entities", []),
+            "component_attempts": search_result.get("component_attempts", {}),
+            "recovered_components": search_result.get("recovered_components", []),
             "retrieved_count": search_result["total"],
             "context_chunk_count": context_chunk_count,
             "context_token_count": context_token_count,

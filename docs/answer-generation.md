@@ -57,6 +57,7 @@ tokenizer 计数，以便在调用 LLM 前确定性地限制证据大小。
 ```json
 {
   "query": "如何防御 SQL 注入？",
+  "knowledge_base_id": "<knowledge_base_id>",
   "top_k": 10,
   "enable_vector": true,
   "enable_keyword": true,
@@ -72,6 +73,7 @@ tokenizer 计数，以便在调用 LLM 前确定性地限制证据大小。
 ```json
 {
   "query": "如何防御 SQL 注入？",
+  "knowledge_base_id": "<knowledge_base_id>",
   "status": "answered",
   "answer": "应使用参数化查询，并限制数据库账户权限。[1][2]",
   "citations": [

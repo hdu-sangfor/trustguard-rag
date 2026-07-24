@@ -17,16 +17,28 @@ from qdrant_client.models import (
 )
 
 from app.core.ingest.errors import INDEX_FAILED, IngestError
+from app.core.embedding.profiles import EmbeddingProfile, collection_name
 from app.core.indexing.qdrant_mock import MockQdrantIndexer
-from app.settings import get_settings
+from app.core.retrieval.security_entities import build_security_entity_fields
+from app.settings import Settings, get_settings
 from app.stores import qdrant_store
 
 
 class QdrantIndexer:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        profile: EmbeddingProfile | None = None,
+    ) -> None:
         """读取向量配置并生成目标分块集合名。"""
-        self._settings = get_settings()
-        self._collection = f"{self._settings.qdrant_collection_prefix}chunks"
+        self._settings = settings or get_settings()
+        self._profile = profile
+        self._collection = (
+            collection_name(profile, self._settings)
+            if profile is not None
+            else f"{self._settings.qdrant_collection_prefix}chunks"
+        )
         self._collection_ready = False
 
     @property
@@ -50,6 +62,12 @@ class QdrantIndexer:
                 ),
             )
         for field_name, field_schema in (
+            ("knowledge_base_id", PayloadSchemaType.KEYWORD),
+            ("entity_id", PayloadSchemaType.KEYWORD),
+            ("entity_type", PayloadSchemaType.KEYWORD),
+            ("entity_ids", PayloadSchemaType.KEYWORD),
+            ("entity_types", PayloadSchemaType.KEYWORD),
+            ("aliases", PayloadSchemaType.KEYWORD),
             ("document_id", PayloadSchemaType.KEYWORD),
             ("source_uri", PayloadSchemaType.KEYWORD),
             ("original_filename", PayloadSchemaType.KEYWORD),
@@ -88,13 +106,21 @@ class QdrantIndexer:
             points = []
             for chunk, vector in zip(chunks, vectors):
                 point_id = chunk["id"]
+                security_fields = build_security_entity_fields(
+                    text=chunk["text"],
+                    original_filename=original_filename,
+                    metadata=chunk.get("metadata"),
+                )
                 payload = {
                     "chunk_text": chunk["text"],
+                    "knowledge_base_id": chunk.get("knowledge_base_id")
+                    or (chunk.get("metadata") or {}).get("knowledge_base_id"),
                     "document_id": document_id,
                     "chunk_index": chunk["chunk_index"],
                     "page_no": chunk.get("page_no"),
                     "source_uri": source_uri,
                     "original_filename": original_filename,
+                    **security_fields,
                     "metadata": chunk.get("metadata") or {},
                     "embedding_model": self._settings.embedding_model,
                     "embedding_dim": self._settings.embedding_dim,
@@ -116,32 +142,37 @@ class QdrantIndexer:
             return
         client = qdrant_store.get_client()
         collections = await client.get_collections()
-        if self._collection not in {item.name for item in collections.collections}:
-            return
-        await client.delete(
-            collection_name=self._collection,
-            points_selector=[_to_point_id(pid) for pid in point_ids],
-        )
+        for collection in self._delete_collections(collections.collections):
+            await client.delete(
+                collection_name=collection,
+                points_selector=[_to_point_id(pid) for pid in point_ids],
+            )
 
     async def delete_document(self, document_id: str) -> None:
         """按载荷中的文档 ID 删除全部向量，覆盖分块尚未落库的情况。"""
         client = qdrant_store.get_client()
         collections = await client.get_collections()
-        if self._collection not in {item.name for item in collections.collections}:
-            return
-        await client.delete(
-            collection_name=self._collection,
-            points_selector=FilterSelector(
-                filter=Filter(
-                    must=[
-                        FieldCondition(
-                            key="document_id",
-                            match=MatchValue(value=document_id),
-                        )
-                    ]
-                )
-            ),
-        )
+        for collection in self._delete_collections(collections.collections):
+            await client.delete(
+                collection_name=collection,
+                points_selector=FilterSelector(
+                    filter=Filter(
+                        must=[
+                            FieldCondition(
+                                key="document_id",
+                                match=MatchValue(value=document_id),
+                            )
+                        ]
+                    )
+                ),
+            )
+
+    def _delete_collections(self, collections: list[Any]) -> list[str]:
+        names = {item.name for item in collections}
+        if self._profile is not None:
+            return [self._collection] if self._collection in names else []
+        base = f"{self._settings.qdrant_collection_prefix}chunks"
+        return sorted(name for name in names if name == base or name.startswith(f"{base}__"))
 
 
 def _to_point_id(value: str) -> str:
@@ -149,8 +180,13 @@ def _to_point_id(value: str) -> str:
     return str(UUID(value))
 
 
-def get_qdrant_indexer() -> QdrantIndexer | MockQdrantIndexer:
+def get_qdrant_indexer(
+    settings: Settings | None = None,
+    *,
+    profile: EmbeddingProfile | None = None,
+) -> QdrantIndexer | MockQdrantIndexer:
     """根据配置选择真实或模拟 Qdrant 索引器。"""
-    if get_settings().qdrant_mock:
+    settings = settings or get_settings()
+    if settings.qdrant_mock:
         return MockQdrantIndexer()
-    return QdrantIndexer()
+    return QdrantIndexer(settings, profile=profile)

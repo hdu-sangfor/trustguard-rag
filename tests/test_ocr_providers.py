@@ -19,6 +19,11 @@ from app.core.ocr.none_provider import NoneOcrProvider
 from app.core.ocr.openai_compatible_provider import OpenAICompatibleOcrProvider
 from app.core.ocr.protocol import OcrRecognizeResult
 from app.settings import get_settings
+from app.stores.knowledge_base_store import KnowledgeBaseStore
+
+
+async def _default_knowledge_base_id() -> str:
+    return (await KnowledgeBaseStore().get_default()).id
 
 
 class FakeOcr:
@@ -299,6 +304,7 @@ async def test_ocr_review_api_approve_and_correct(client, test_engine, tmp_stora
         mime_type="application/pdf",
         original_filename="a.pdf",
         document_id="11111111-1111-1111-1111-111111111111",
+        knowledge_base_id=await _default_knowledge_base_id(),
     )
     blobs = get_blob_store()
     blobs.commit_bundle(
@@ -377,6 +383,7 @@ async def test_ocr_approve_does_not_reindex(client, test_engine, tmp_storage, mo
         status=DocumentStatus.READY,
         mime_type="image/png",
         original_filename="a.png",
+        knowledge_base_id=await _default_knowledge_base_id(),
     )
     blobs = get_blob_store()
     blobs.commit_bundle(
@@ -437,6 +444,7 @@ async def test_ocr_correct_reindexes_chunks(client, test_engine, tmp_storage, mo
         status=DocumentStatus.READY,
         mime_type="image/png",
         original_filename="scan.png",
+        knowledge_base_id=await _default_knowledge_base_id(),
     )
     blobs = get_blob_store()
     blobs.commit_bundle(

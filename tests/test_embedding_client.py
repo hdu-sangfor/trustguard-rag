@@ -135,6 +135,68 @@ async def test_api_embedding_batches_document_inputs(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_bailian_embedding_uses_native_retrieval_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict, dict]] = []
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "output": {
+                    "embeddings": [
+                        {"text_index": 0, "embedding": [1.0, 0.0]}
+                    ]
+                },
+                "usage": {"total_tokens": 3},
+            }
+
+    class _AsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json, headers):
+            calls.append((url, json, headers))
+            return _Response()
+
+    monkeypatch.setattr("app.core.embedding.client.httpx.AsyncClient", _AsyncClient)
+    settings = Settings(
+        _env_file=None,
+        embedding_provider="bailian",
+        embedding_base_url="https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        embedding_api_key="secret",
+        embedding_model="qwen3.7-text-embedding",
+        embedding_dim=2,
+        embedding_query_instruction="Retrieve cybersecurity evidence",
+    )
+
+    vector = await EmbeddingClient(settings).embed_query("查询")
+
+    assert vector == [1.0, 0.0]
+    url, payload, headers = calls[0]
+    assert url.endswith("/api/v1/services/embeddings/text-embedding/text-embedding")
+    assert payload["input"] == {"texts": ["查询"]}
+    assert payload["parameters"] == {
+        "dimension": 2,
+        "output_type": "dense",
+        "text_type": "query",
+        "instruct": "Retrieve cybersecurity evidence",
+    }
+    assert headers["Authorization"] == "Bearer secret"
+
+
+@pytest.mark.asyncio
 async def test_api_embedding_aggregates_provider_usage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -355,11 +417,32 @@ async def test_local_embedding_runs_in_thread_and_validates_dimension(
 def test_local_provider_cache_tracks_behavior_settings(
     monkeypatch: pytest.MonkeyPatch, field: str, value: object
 ) -> None:
-    monkeypatch.setattr(embedding_module, "_LOCAL_PROVIDER", None)
-    monkeypatch.setattr(embedding_module, "_LOCAL_PROVIDER_KEY", None)
+    monkeypatch.setattr(embedding_module, "_LOCAL_PROVIDERS", embedding_module.OrderedDict())
     settings = Settings(embedding_provider="local")
 
     original = embedding_module._get_local_provider(settings)
     changed = settings.model_copy(update={field: value})
 
     assert embedding_module._get_local_provider(changed) is not original
+
+
+def test_local_provider_cache_reuses_recent_profiles_and_evicts_lru(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(embedding_module, "_LOCAL_PROVIDERS", embedding_module.OrderedDict())
+    base = Settings(
+        embedding_provider="local",
+        embedding_local_model_cache_size=2,
+    )
+    first_settings = base.model_copy(update={"embedding_model": "model-1"})
+    second_settings = base.model_copy(update={"embedding_model": "model-2"})
+    third_settings = base.model_copy(update={"embedding_model": "model-3"})
+
+    first = embedding_module._get_local_provider(first_settings)
+    second = embedding_module._get_local_provider(second_settings)
+    assert embedding_module._get_local_provider(first_settings) is first
+
+    embedding_module._get_local_provider(third_settings)
+
+    assert embedding_module._get_local_provider(first_settings) is first
+    assert embedding_module._get_local_provider(second_settings) is not second

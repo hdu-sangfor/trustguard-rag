@@ -24,6 +24,11 @@ KS = (1, 3, 5, 10)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-url", default="http://127.0.0.1:18200")
+    parser.add_argument(
+        "--knowledge-base-id",
+        required=True,
+        help="评测语料所在的知识库 ID",
+    )
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_RESULTS)
     parser.add_argument("--name", default="hybrid-rrf-rerank")
@@ -300,6 +305,7 @@ def main() -> int:
         for index, question in enumerate(questions, start=1):
             body = {
                 "query": question["query"],
+                "knowledge_base_id": args.knowledge_base_id,
                 "top_k": args.top_k,
                 "vector_top_k": args.vector_top_k,
                 "keyword_top_k": args.keyword_top_k,
@@ -323,6 +329,7 @@ def main() -> int:
         "dataset": str(args.dataset.resolve().relative_to(PROJECT_ROOT)),
         "api_url": args.api_url,
         "config": {
+            "knowledge_base_id": args.knowledge_base_id,
             "top_k": args.top_k,
             "vector_top_k": args.vector_top_k,
             "keyword_top_k": args.keyword_top_k,

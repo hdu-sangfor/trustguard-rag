@@ -11,6 +11,7 @@ from app.core.generation.llm_client import LLMConfigurationError, LLMTimeoutErro
 def _answer_result() -> dict:
     return {
         "query": "如何防御 SQL 注入？",
+        "knowledge_base_id": "kb-test",
         "status": "answered",
         "answer": "应使用参数化查询。[1]",
         "citations": [
@@ -43,11 +44,15 @@ def _answer_result() -> dict:
 async def test_answer_endpoint_returns_structured_answer(client, monkeypatch) -> None:
     service = SimpleNamespace(answer=AsyncMock(return_value=_answer_result()))
     monkeypatch.setattr("app.api.answer.get_answer_service", lambda: service)
+    knowledge_bases = await client.get("/v1/knowledge-bases")
+    knowledge_base_id = knowledge_bases.json()["items"][0]["id"]
+    service.answer.return_value["knowledge_base_id"] = knowledge_base_id
 
     response = await client.post(
         "/v1/answer",
         json={
             "query": "如何防御 SQL 注入？",
+            "knowledge_base_id": knowledge_base_id,
             "enable_vector": True,
             "enable_keyword": True,
             "enable_rerank": True,
@@ -58,17 +63,25 @@ async def test_answer_endpoint_returns_structured_answer(client, monkeypatch) ->
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "answered"
+    assert body["knowledge_base_id"] == knowledge_base_id
     assert body["citations"][0]["chunk_id"] == "chunk-1"
     assert body["usage"]["total_tokens"] == 28
-    assert service.answer.await_args.kwargs["filters"] == {"source_uri": "upload://security.pdf"}
+    assert service.answer.await_args.kwargs["filters"] == {
+        "source_uri": "upload://security.pdf",
+        "knowledge_base_id": knowledge_base_id,
+    }
+    assert service.answer.await_args.kwargs["knowledge_base_id"] == knowledge_base_id
 
 
 @pytest.mark.asyncio
 async def test_answer_endpoint_requires_retrieval_backend(client) -> None:
+    knowledge_bases = await client.get("/v1/knowledge-bases")
+    knowledge_base_id = knowledge_bases.json()["items"][0]["id"]
     response = await client.post(
         "/v1/answer",
         json={
             "query": "问题",
+            "knowledge_base_id": knowledge_base_id,
             "enable_vector": False,
             "enable_keyword": False,
         },
@@ -89,11 +102,14 @@ async def test_answer_endpoint_maps_llm_errors(
 ) -> None:
     service = SimpleNamespace(answer=AsyncMock(side_effect=error))
     monkeypatch.setattr("app.api.answer.get_answer_service", lambda: service)
+    knowledge_bases = await client.get("/v1/knowledge-bases")
+    knowledge_base_id = knowledge_bases.json()["items"][0]["id"]
 
     response = await client.post(
         "/v1/answer",
         json={
             "query": "问题",
+            "knowledge_base_id": knowledge_base_id,
             "enable_vector": False,
             "enable_keyword": True,
             "enable_rerank": False,

@@ -12,6 +12,7 @@ from app.stores.blob_store import BlobStore
 from app.stores.chunk_store import ChunkStore
 from app.stores.document_store import DocumentStore
 from app.stores.job_store import JobStore
+from app.stores.knowledge_base_store import KnowledgeBaseStore
 
 
 async def _create_document(
@@ -22,6 +23,7 @@ async def _create_document(
 ):
     store = DocumentStore()
     return await store.create(
+        knowledge_base_id=(await KnowledgeBaseStore().get_default()).id,
         source_type="file",
         source_uri=f"upload://{filename}",
         content_hash=uuid4().hex * 2,

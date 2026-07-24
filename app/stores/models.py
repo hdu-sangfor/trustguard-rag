@@ -6,7 +6,19 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import DateTime, Enum as SqlEnum, Float, Index, Integer, JSON, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum as SqlEnum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.domain import DocumentStatus, IngestJobStatus, IngestStep, OutboxStatus, OcrRegionStatus
@@ -21,10 +33,55 @@ class Base(DeclarativeBase):
     pass
 
 
-class DocumentRow(Base):
-    __tablename__ = "documents"
+class KnowledgeBaseRow(Base):
+    """知识库配置；模型在知识库级冻结，避免请求级向量空间混用。"""
+
+    __tablename__ = "knowledge_bases"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    description: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    embedding_profile: Mapped[str] = mapped_column(String(64))
+    embedding_provider: Mapped[str] = mapped_column(String(32))
+    embedding_api_driver: Mapped[str] = mapped_column(
+        String(32), default="openai_compatible"
+    )
+    embedding_model: Mapped[str] = mapped_column(String(128))
+    embedding_dim: Mapped[int] = mapped_column(Integer)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MigrationStateRow(Base):
+    """记录可重入后台迁移的状态，供 readiness 和运维排障使用。"""
+
+    __tablename__ = "migration_states"
+
+    name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32))
+    processed_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DocumentRow(Base):
+    __tablename__ = "documents"
+    __table_args__ = (Index("idx_documents_knowledge_base", "knowledge_base_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    knowledge_base_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("knowledge_bases.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     source_type: Mapped[str] = mapped_column(String(32))
     source_uri: Mapped[str] = mapped_column(String(2048))
     content_hash: Mapped[str] = mapped_column(String(64))
@@ -71,9 +128,17 @@ class ChunkRow(Base):
 
 class IngestJobRow(Base):
     __tablename__ = "ingest_jobs"
-    __table_args__ = (Index("idx_jobs_lease", "status", "lease_expires_at"),)
+    __table_args__ = (
+        Index("idx_jobs_lease", "status", "lease_expires_at"),
+        Index("idx_jobs_knowledge_base_status", "knowledge_base_id", "status"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    knowledge_base_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("knowledge_bases.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     source_type: Mapped[str] = mapped_column(String(32))
     source: Mapped[str] = mapped_column(Text)
     options_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

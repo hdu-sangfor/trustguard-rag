@@ -25,6 +25,7 @@ curl -X POST http://localhost:18200/v1/search \
   -H "Content-Type: application/json" \
   -d '{
     "query": "SQL注入攻击防御方法",
+    "knowledge_base_id": "<knowledge_base_id>",
     "top_k": 10
   }'
 
@@ -33,6 +34,7 @@ curl -X POST http://localhost:18200/v1/search \
   -H "Content-Type: application/json" \
   -d '{
     "query": "网络安全威胁检测",
+    "knowledge_base_id": "<knowledge_base_id>",
     "enable_keyword": false
   }'
 
@@ -41,6 +43,7 @@ curl -X POST http://localhost:18200/v1/search \
   -H "Content-Type: application/json" \
   -d '{
     "query": "XSS跨站脚本攻击",
+    "knowledge_base_id": "<knowledge_base_id>",
     "enable_vector": false
   }'
 
@@ -49,6 +52,7 @@ curl -X POST http://localhost:18200/v1/search \
   -H "Content-Type: application/json" \
   -d '{
     "query": "密码学安全协议",
+    "knowledge_base_id": "<knowledge_base_id>",
     "fusion_method": "weighted_score",
     "vector_weight": 0.7,
     "keyword_weight": 0.3,
@@ -90,6 +94,7 @@ python -m app.core.indexing.rebuild_search_indexes
 ```json
 {
   "query": "SQL注入攻击防御方法",
+  "knowledge_base_id": "<knowledge_base_id>",
   "results": [
     {
       "chunk_id": "uuid",

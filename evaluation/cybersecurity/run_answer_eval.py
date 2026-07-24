@@ -24,6 +24,11 @@ DEFAULT_RESULTS = Path(__file__).with_name("results")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-url", default="http://127.0.0.1:18200")
+    parser.add_argument(
+        "--knowledge-base-id",
+        required=True,
+        help="评测语料所在的知识库 ID",
+    )
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_RESULTS)
     parser.add_argument("--name", default="answer-baseline")
@@ -278,6 +283,7 @@ def main() -> int:
     args = parse_args()
     dataset = load_jsonl(args.dataset)
     config = {
+        "knowledge_base_id": args.knowledge_base_id,
         "top_k": args.top_k,
         "vector_top_k": args.vector_top_k,
         "keyword_top_k": args.keyword_top_k,

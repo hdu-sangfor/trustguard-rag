@@ -118,6 +118,7 @@ def test_main_continues_after_failed_query_and_reports_failure(
     output_dir = tmp_path / "results"
     args = argparse.Namespace(
         api_url="http://test",
+        knowledge_base_id="kb-test",
         dataset=dataset,
         output_dir=output_dir,
         name="failure-test",

@@ -385,6 +385,7 @@ class TestHybridSearch:
         search = HybridSearch()
         result = await search.search(
             query="SQL注入攻击",
+            knowledge_base_id="kb-test",
             enable_vector=False,
             enable_keyword=True,
             enable_rerank=False,
@@ -403,6 +404,7 @@ class TestHybridSearch:
         search = HybridSearch()
         result = await search.search(
             query="网络安全",
+            knowledge_base_id="kb-test",
             enable_vector=True,
             enable_keyword=False,
             enable_rerank=False,
@@ -414,6 +416,7 @@ class TestHybridSearch:
         search = HybridSearch()
         result = await search.search(
             query="网络安全",
+            knowledge_base_id="kb-test",
             enable_vector=False,
             enable_keyword=True,
             enable_rerank=False,
@@ -424,6 +427,7 @@ class TestHybridSearch:
         search = HybridSearch()
         result = await search.search(
             query="安全",
+            knowledge_base_id="kb-test",
             top_k=3,
             enable_vector=False,
             enable_keyword=True,
@@ -435,6 +439,7 @@ class TestHybridSearch:
         search = HybridSearch()
         result = await search.search(
             query="安全",
+            knowledge_base_id="kb-test",
             enable_vector=False,
             enable_keyword=True,
             enable_rerank=False,
@@ -446,6 +451,7 @@ class TestHybridSearch:
         search = HybridSearch()
         result = await search.search(
             query="安全",
+            knowledge_base_id="kb-test",
             fusion_method="weighted_score",
             vector_weight=0.5,
             keyword_weight=0.5,
@@ -458,11 +464,18 @@ class TestHybridSearch:
 
 @pytest.mark.asyncio
 class TestSearchAPI:
+    @staticmethod
+    async def knowledge_base_id(client) -> str:
+        response = await client.get("/v1/knowledge-bases")
+        return response.json()["items"][0]["id"]
+
     async def test_search_endpoint_exists(self, client) -> None:
+        knowledge_base_id = await self.knowledge_base_id(client)
         response = await client.post(
             "/v1/search",
             json={
                 "query": "SQL注入攻击",
+                "knowledge_base_id": knowledge_base_id,
                 "enable_vector": False,
                 "enable_keyword": True,
                 "enable_rerank": False,
@@ -479,10 +492,12 @@ class TestSearchAPI:
         assert data["effective_mode"] == "keyword_only"
 
     async def test_search_endpoint_invalid_fusion(self, client) -> None:
+        knowledge_base_id = await self.knowledge_base_id(client)
         response = await client.post(
             "/v1/search",
             json={
                 "query": "test",
+                "knowledge_base_id": knowledge_base_id,
                 "fusion_method": "invalid_method",
                 "enable_vector": False,
                 "enable_keyword": True,
@@ -492,10 +507,12 @@ class TestSearchAPI:
         assert response.status_code == 422
 
     async def test_search_endpoint_both_disabled(self, client) -> None:
+        knowledge_base_id = await self.knowledge_base_id(client)
         response = await client.post(
             "/v1/search",
             json={
                 "query": "test",
+                "knowledge_base_id": knowledge_base_id,
                 "enable_vector": False,
                 "enable_keyword": False,
                 "enable_rerank": False,
@@ -504,10 +521,12 @@ class TestSearchAPI:
         assert response.status_code == 400
 
     async def test_search_endpoint_with_defaults(self, client) -> None:
+        knowledge_base_id = await self.knowledge_base_id(client)
         response = await client.post(
             "/v1/search",
             json={
                 "query": "网络安全威胁",
+                "knowledge_base_id": knowledge_base_id,
                 "enable_vector": False,
                 "enable_keyword": True,
                 "enable_rerank": False,
@@ -518,10 +537,12 @@ class TestSearchAPI:
         assert data["total"] >= 0
 
     async def test_search_endpoint_top_k_limit(self, client) -> None:
+        knowledge_base_id = await self.knowledge_base_id(client)
         response = await client.post(
             "/v1/search",
             json={
                 "query": "安全",
+                "knowledge_base_id": knowledge_base_id,
                 "top_k": 5,
                 "enable_vector": False,
                 "enable_keyword": True,
@@ -533,10 +554,12 @@ class TestSearchAPI:
         assert data["total"] <= 5
 
     async def test_search_with_all_engines(self, client) -> None:
+        knowledge_base_id = await self.knowledge_base_id(client)
         response = await client.post(
             "/v1/search",
             json={
                 "query": "SQL注入攻击防御方法",
+                "knowledge_base_id": knowledge_base_id,
                 "enable_vector": True,
                 "enable_keyword": True,
                 "enable_rerank": False,

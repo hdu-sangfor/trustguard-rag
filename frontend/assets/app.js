@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { file: null, jobs: JSON.parse(localStorage.getItem("tg-jobs") || "[]"), timers: new Map(), documents: [], documentOffset: 0, documentLimit: 10, documentTotal: 0 };
+const state = { file: null, jobs: JSON.parse(localStorage.getItem("tg-jobs") || "[]"), timers: new Map(), documents: [], knowledgeBases: [], embeddingProfiles: [], documentOffset: 0, documentLimit: 10, documentTotal: 0 };
 const JobStatus = Object.freeze({ QUEUED:"queued", RUNNING:"running", CONFLICT:"conflict", RESOLVING:"resolving", INGEST_RETRYING:"ingest_retrying", RESOLVE_RETRYING:"resolve_retrying", SUCCEEDED:"succeeded", DEDUPLICATED:"deduplicated", FAILED:"failed", CANCELLED:"cancelled", DISCARDED:"discarded" });
 const DocumentStatus = Object.freeze({ STAGING:"staging", INDEXING:"indexing", READY:"ready", FAILED:"failed", DELETING:"deleting", SUPERSEDED:"superseded" });
 const IngestStep = Object.freeze({ QUEUED:"queued", RECOVER:"recover", VALIDATE:"validate", EXTRACT:"extract", DEDUP:"dedup", CONFLICT_CHECK:"conflict_check", COMMIT_ARTIFACTS:"commit_artifacts", CHUNK:"chunk", EMBED:"embed", INDEX:"index", OPENSEARCH_INDEX:"opensearch_index", PUBLISH:"publish", RETRY_WAIT:"retry_wait", RESOLVE:"resolve", RESOLVE_SUPERSEDE:"resolve_supersede", SUPERSEDE_CLEANUP:"supersede_cleanup", RESOLVE_PUBLISH:"resolve_publish", RESOLVE_DISCARD:"resolve_discard", CANCELLED:"cancelled", FAILED:"failed" });
@@ -13,6 +13,77 @@ const stepLabel = { [IngestStep.QUEUED]:"等待处理", [IngestStep.RECOVER]:"�
 
 function toast(message, error=false){ const el=document.createElement("div"); el.className=`toast${error?" error":""}`; el.textContent=message; $("#toasts").append(el); setTimeout(()=>el.remove(),4500); }
 async function api(path, options={}){ const response=await fetch(path,options); if(!response.ok){ let detail=`HTTP ${response.status}`; try{detail=(await response.json()).detail||detail}catch{} throw new Error(detail); } return response.status===204||response.headers.get("content-length")==="0"?null:response.json(); }
+async function loadCapabilities(){
+  try{
+    const data=await api("/v1/sources/capabilities");
+    const profiles=Array.isArray(data.embedding_profiles)?data.embedding_profiles:[];
+    state.embeddingProfiles=profiles;
+    const select=$("#knowledge-base-profile");select.innerHTML="";
+    profiles.forEach(profile=>{const option=document.createElement("option");option.value=profile.id;option.textContent=`${profile.label} · ${profile.dimension}维${profile.available?"":"（不可用）"}`;option.disabled=!profile.available;option.title=profile.unavailable_reason||"";option.selected=Boolean(profile.default);select.append(option);});
+  }catch(error){toast(`模型列表加载失败：${error.message}`,true);}
+}
+
+function populateKnowledgeBaseSelect(selector,{includeAll=false,requireSelection=false}={}){
+  const select=$(selector), previous=select.value;
+  const remembered=selector==="#search-knowledge-base"?localStorage.getItem("tg-search-knowledge-base"):"";
+  select.innerHTML="";
+  if(includeAll){const option=document.createElement("option");option.value="";option.textContent="全部知识库";select.append(option);}
+  if(requireSelection){const option=document.createElement("option");option.value="";option.textContent="请选择知识库";option.disabled=true;select.append(option);}
+  state.knowledgeBases.forEach(kb=>{const option=document.createElement("option");option.value=kb.id;option.textContent=`${kb.name} · ${kb.embedding_model} · ${kb.embedding_dim}维`;select.append(option);});
+  const candidate=previous||remembered;
+  if([...select.options].some(option=>option.value===candidate))select.value=candidate;
+}
+
+function updateKnowledgeBaseHint(){
+  const id=$("#upload-knowledge-base").value,kb=state.knowledgeBases.find(item=>item.id===id);
+  $("#upload-embedding-hint").textContent=kb?`固定模型：${kb.embedding_model} · ${kb.embedding_dim}维 · ${kb.document_count} 个文档`:"请先创建或选择知识库";
+}
+
+function updateSearchScopeHint({clearResults=false}={}){
+  const id=$("#search-knowledge-base").value;
+  const kb=state.knowledgeBases.find(item=>item.id===id);
+  $("#search-scope-hint").textContent=kb
+    ? `检索范围：仅“${kb.name}” · ${kb.embedding_model} · ${kb.embedding_dim}维 · ${kb.document_count} 个文档`
+    :"请选择一个知识库；本次检索不会访问其他知识库。";
+  $("#search-button").disabled=!kb;
+  $("#answer-button").disabled=!kb;
+  if(kb)localStorage.setItem("tg-search-knowledge-base",kb.id);
+  else localStorage.removeItem("tg-search-knowledge-base");
+  if(clearResults){
+    $("#search-results").innerHTML="";
+    $("#search-summary").hidden=true;
+    $("#search-empty").hidden=false;
+    $("#search-empty h3").textContent="输入问题开始检索";
+    $("#search-empty p").textContent="结果只会来自当前选中的知识库。";
+  }
+}
+
+function renderKnowledgeBases(){
+  const container=$("#knowledge-base-summary");container.innerHTML="";
+  state.knowledgeBases.forEach(kb=>{
+    const card=document.createElement("article");card.className="knowledge-base-card";
+    card.innerHTML=`<div><strong>${escapeHtml(kb.name)}</strong><small>${escapeHtml(kb.embedding_model)} · ${kb.embedding_dim}维 · ${kb.embedding_provider==="api"?`API / ${escapeHtml(kb.embedding_api_driver||"openai_compatible")}`:"本地"}</small></div><span>${kb.document_count} 个文档</span><div class="knowledge-base-actions"><button class="text-button use-knowledge-base" type="button">选择</button><button class="text-button danger delete-knowledge-base" type="button">删除</button></div>`;
+    card.querySelector(".use-knowledge-base").onclick=()=>{$("#upload-knowledge-base").value=kb.id;$("#search-knowledge-base").value=kb.id;$("#documents-knowledge-base").value=kb.id;updateKnowledgeBaseHint();updateSearchScopeHint({clearResults:true});loadDocuments(true);toast(`已选择知识库：${kb.name}`);};
+    const remove=card.querySelector(".delete-knowledge-base");remove.disabled=kb.is_system||kb.is_default||kb.document_count>0;remove.title=remove.disabled?(kb.document_count>0?"请先删除知识库中的文档":"系统知识库不能删除"):"删除空知识库";remove.onclick=async()=>{if(!window.confirm(`确定删除空知识库“${kb.name}”吗？`))return;try{await api(`/v1/knowledge-bases/${kb.id}`,{method:"DELETE"});await loadKnowledgeBases();toast("知识库已删除");}catch(error){toast(`知识库删除失败：${error.message}`,true);}};
+    container.append(card);
+  });
+}
+
+async function loadKnowledgeBases(){
+  try{
+    const data=await api("/v1/knowledge-bases");state.knowledgeBases=data.items||[];
+    populateKnowledgeBaseSelect("#upload-knowledge-base");populateKnowledgeBaseSelect("#search-knowledge-base",{requireSelection:true});populateKnowledgeBaseSelect("#documents-knowledge-base",{includeAll:true});
+    renderKnowledgeBases();
+    updateKnowledgeBaseHint();
+    updateSearchScopeHint();
+  }catch(error){toast(`知识库列表加载失败：${error.message}`,true);}
+}
+
+async function createKnowledgeBase(){
+  const name=$("#knowledge-base-name").value.trim(),embeddingProfile=$("#knowledge-base-profile").value;if(!name)return;
+  try{const kb=await api("/v1/knowledge-bases",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,embedding_profile:embeddingProfile})});$("#knowledge-base-name").value="";await loadKnowledgeBases();$("#upload-knowledge-base").value=kb.id;$("#search-knowledge-base").value=kb.id;updateKnowledgeBaseHint();updateSearchScopeHint({clearResults:true});toast("知识库已创建，向量化模型已固定");}
+  catch(error){toast(`知识库创建失败：${error.message}`,true);}
+}
 function persist(){ localStorage.setItem("tg-jobs",JSON.stringify(state.jobs.slice(0,30))); }
 function formatTime(value){ if(!value)return "—"; return new Intl.DateTimeFormat("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).format(new Date(value)); }
 function escapeHtml(value=""){ const div=document.createElement("div"); div.textContent=value; return div.innerHTML; }
@@ -44,12 +115,12 @@ async function refreshHealth(){
 }
 
 async function upload(){
-  if(!state.file)return; const button=$("#upload-button"); button.disabled=true; button.querySelector("span").textContent="正在上传…";
+  if(!state.file)return; const knowledgeBaseId=$("#upload-knowledge-base").value;if(!knowledgeBaseId){toast("请先选择知识库",true);return;} const button=$("#upload-button"); button.disabled=true; button.querySelector("span").textContent="正在上传…";
   try{
-    const form=new FormData(); form.append("source_type","file"); form.append("file",state.file);
+    const form=new FormData(); form.append("source_type","file"); form.append("knowledge_base_id",knowledgeBaseId); form.append("file",state.file);
     const result=await api("/v1/ingest/jobs",{method:"POST",body:form});
     state.jobs.unshift({id:result.job_id,status:result.status,filename:state.file.name,created_at:new Date().toISOString()}); persist(); renderJobs(); pollJob(result.job_id); toast("文件已提交，正在解析入库");
-    state.file=null; $("#selected-file").hidden=true; $("#file-input").value="";
+    state.file=null; $("#selected-file").hidden=true; $("#file-input").value="";await loadKnowledgeBases();
   }catch(error){toast(`上传失败：${error.message}`,true)}finally{button.disabled=!state.file; button.querySelector("span").textContent="开始解析入库";}
 }
 async function refreshJob(id){
@@ -90,8 +161,9 @@ function renderDocuments(){
 async function loadDocuments(reset=false){
   if(reset)state.documentOffset=0;
   const params=new URLSearchParams({offset:state.documentOffset,limit:state.documentLimit});
-  const query=$("#documents-query").value.trim(), status=$("#documents-status").value;
+  const query=$("#documents-query").value.trim(), status=$("#documents-status").value, knowledgeBaseId=$("#documents-knowledge-base").value;
   if(query)params.set("q",query); if(status)params.set("status",status);
+  if(knowledgeBaseId)params.set("knowledge_base_id",knowledgeBaseId);
   $("#documents-list").innerHTML='<div class="loading">正在加载知识库…</div>';
   try{const data=await api(`/v1/documents?${params}`);state.documents=data.items;state.documentTotal=data.total;renderDocuments();}
   catch(error){$("#documents-list").innerHTML="";toast(`文档列表加载失败：${error.message}`,true);}
@@ -100,12 +172,23 @@ async function loadDocuments(reset=false){
 function renderSearchResults(data){
   const results=$("#search-results"), empty=$("#search-empty"), summary=$("#search-summary");
   const degraded=Array.isArray(data.degraded_components)?data.degraded_components:[];
+  const recovered=Array.isArray(data.recovered_components)?data.recovered_components:[];
+  const queryEntities=Array.isArray(data.query_entities)?data.query_entities:[];
   const modeLabel={ [EffectiveSearchMode.HYBRID]:"混合检索", [EffectiveSearchMode.VECTOR_ONLY]:"仅向量检索", [EffectiveSearchMode.KEYWORD_ONLY]:"仅关键词检索" }[data.effective_mode]||data.effective_mode;
+  const knowledgeBase=state.knowledgeBases.find(item=>item.id===data.knowledge_base_id);
   results.innerHTML="";
   empty.hidden=data.results.length>0;
-  if(!data.results.length){empty.querySelector("h3").textContent="没有找到相关内容";empty.querySelector("p").textContent=degraded.length?`部分检索引擎不可用：${degraded.join("、")}。请稍后重试。`:"尝试更换关键词、增加召回数量或启用另一种检索方式。";}
+  if(!data.results.length){
+    empty.querySelector("h3").textContent=data.abstained?"知识库中没有足够可信的答案":"没有找到相关内容";
+    const abstentionText=data.abstention_reason==="no_exact_entity_match"
+      ?"查询中的 CVE/CWE/CAPEC 在当前知识库没有精确命中。"
+      :data.abstention_reason==="low_vector_score"
+        ?`最高候选未达到当前模型的向量置信度要求${data.min_vector_score!=null?`（${formatScore(data.min_vector_score)}）`:""}。`
+        :"尝试更换关键词、增加召回数量或启用另一种检索方式。";
+    empty.querySelector("p").textContent=degraded.length?`部分检索引擎不可用：${degraded.join("、")}。请稍后重试。`:abstentionText;
+  }
   summary.hidden=false;
-  summary.innerHTML=`<span><strong>${data.total}</strong> 条结果</span><span><strong>${Number(data.retrieval_time_ms).toFixed(1)}</strong> ms</span><span>${escapeHtml(modeLabel||"")}</span><span>${escapeHtml(data.fusion_method.toUpperCase())}</span><span>向量 ${data.components?.vector??0} · 关键词 ${data.components?.keyword??0}</span>${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}`;
+  summary.innerHTML=`<span>范围 <strong>${escapeHtml(knowledgeBase?.name||data.knowledge_base_id)}</strong></span>${queryEntities.length?`<span>精确路由 <strong>${escapeHtml(queryEntities.join("、"))}</strong></span>`:""}<span><strong>${data.total}</strong> 条结果</span>${data.abstained?`<span>已拒答 <strong>${escapeHtml(data.abstention_reason||"low_confidence")}</strong></span>`:""}${data.deduplicated_chunks?`<span>文档去重 <strong>-${data.deduplicated_chunks}</strong> chunks</span>`:""}<span><strong>${Number(data.retrieval_time_ms).toFixed(1)}</strong> ms</span><span>${escapeHtml(modeLabel||"")}</span><span>${escapeHtml(data.fusion_method.toUpperCase())}</span><span>向量 ${data.components?.vector??0} · 关键词 ${data.components?.keyword??0}</span>${recovered.length?`<span>重试恢复：${escapeHtml(recovered.join("、"))}</span>`:""}${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}`;
   data.results.forEach((item,index)=>{
     const source=item.source||{};
     const card=document.createElement("article");
@@ -116,7 +199,8 @@ function renderSearchResults(data){
       ["关键词",item.keyword_score],
       ["重排",item.rerank_score],
     ].filter(([,value])=>value!=null);
-    card.innerHTML=`<div class="result-rank">${String(index+1).padStart(2,"0")}</div><div class="result-content"><div class="result-topline"><div class="result-source"><strong>${escapeHtml(source.original_filename||source.source_uri||"未知来源")}</strong><span>CHUNK ${(source.chunk_index??0)+1}${source.page_no!=null?` · PAGE ${source.page_no}`:""}</span></div><div class="score-list">${scores.map(([name,value])=>`<span>${name} <b>${formatScore(value)}</b></span>`).join("")}</div></div><p>${escapeHtml(item.text||"该结果没有可显示的文本内容。")}</p><div class="result-footer"><code>${escapeHtml(source.document_id||"")}</code>${source.document_id?'<button class="text-button result-document" type="button">查看原文 →</button>':""}</div></div>`;
+    const entityLabel=item.entity_id?`${item.entity_id}${item.exact_entity_match?` · ${item.exact_entity_match==="primary"?"主实体精确命中":"关联实体命中"}`:""}`:"";
+    card.innerHTML=`<div class="result-rank">${String(index+1).padStart(2,"0")}</div><div class="result-content"><div class="result-topline"><div class="result-source"><strong>${escapeHtml(item.title||source.original_filename||source.source_uri||"未知来源")}</strong><span>${entityLabel?`${escapeHtml(entityLabel)} · `:""}CHUNK ${(source.chunk_index??0)+1}${source.page_no!=null?` · PAGE ${source.page_no}`:""}</span></div><div class="score-list">${scores.map(([name,value])=>`<span>${name} <b>${formatScore(value)}</b></span>`).join("")}</div></div><p>${escapeHtml(item.text||"该结果没有可显示的文本内容。")}</p><div class="result-footer"><code>${escapeHtml(source.document_id||"")}</code>${source.document_id?'<button class="text-button result-document" type="button">查看原文 →</button>':""}</div></div>`;
     const openButton=card.querySelector(".result-document");
     if(openButton)openButton.onclick=()=>openDocument(source.document_id);
     results.append(card);
@@ -126,9 +210,10 @@ function renderSearchResults(data){
 function renderAnswer(data){
   const results=$("#search-results"), empty=$("#search-empty"), summary=$("#search-summary");
   const answered=data.status==="answered", degraded=Array.isArray(data.degraded_components)?data.degraded_components:[];
+  const abstentionLabel={vector_unavailable:"向量组件不可用",no_exact_entity_match:"安全编号未精确命中",low_vector_score:"向量置信度不足"}[data.abstention_reason]||data.abstention_reason;
   empty.hidden=true;summary.hidden=false;results.innerHTML="";
   const usage=data.usage?` · ${data.usage.total_tokens} tokens`:"";
-  summary.innerHTML=`<span>${answered?"已回答":"证据不足"}</span><span><strong>${Number(data.total_time_ms).toFixed(1)}</strong> ms</span><span>召回 ${data.retrieved_count} · 上下文 ${data.context_chunk_count}</span><span>${data.context_token_count} context tokens</span>${data.model?`<span>${escapeHtml(data.model)}${usage}</span>`:""}${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}`;
+  summary.innerHTML=`<span>${answered?"已回答":"证据不足"}</span>${abstentionLabel?`<span>拒答原因：${escapeHtml(abstentionLabel)}</span>`:""}<span><strong>${Number(data.total_time_ms).toFixed(1)}</strong> ms</span><span>召回 ${data.retrieved_count} · 上下文 ${data.context_chunk_count}</span><span>${data.context_token_count} context tokens</span>${data.model?`<span>${escapeHtml(data.model)}${usage}</span>`:""}${degraded.length?`<span>已降级：${escapeHtml(degraded.join("、"))}</span>`:""}`;
   const card=document.createElement("article");card.className=`answer-card${answered?"":" insufficient"}`;
   const citations=Array.isArray(data.citations)?data.citations:[];
   card.innerHTML=`<span class="answer-status">${answered?"GROUNDED ANSWER":"INSUFFICIENT EVIDENCE"}</span><p class="answer-text">${escapeHtml(data.answer||"")}</p>${citations.length?`<div class="answer-citations">${citations.map(item=>`<article class="answer-citation"><strong>[${item.citation_id}]</strong><div class="answer-citation-info"><span>${escapeHtml(item.original_filename||item.source_uri||"未知来源")}</span><small>CHUNK ${(item.chunk_index??0)+1}${item.page_no!=null?` · PAGE ${item.page_no}`:""}</small><p>${escapeHtml((item.excerpt||"").slice(0,240))}${(item.excerpt||"").length>240?"…":""}</p></div>${item.document_id?'<button class="text-button answer-document" type="button">查看原文 →</button>':""}</article>`).join("")}</div>`:""}`;
@@ -140,17 +225,25 @@ async function runSearch(){
   const query=$("#search-query").value.trim();
   const enableVector=$("#search-vector").checked, enableKeyword=$("#search-keyword").checked;
   if(!query)return;
+  const knowledgeBaseId=$("#search-knowledge-base").value;
+  if(!knowledgeBaseId){toast("请先选择知识库",true);return;}
   if(!enableVector&&!enableKeyword){toast("请至少启用一种检索方式",true);return;}
 
   const payload={
     query,
+    knowledge_base_id:knowledgeBaseId,
     top_k:optionalNumber("#search-top-k"),
     vector_top_k:optionalNumber("#search-vector-top-k"),
     keyword_top_k:optionalNumber("#search-keyword-top-k"),
+    max_chunks_per_document:optionalNumber("#search-max-chunks-per-document")||1,
     fusion_method:$("#search-fusion").value,
     enable_vector:enableVector,
     enable_keyword:enableKeyword,
     enable_rerank:$("#search-rerank").checked,
+    enable_abstention:$("#search-abstention").checked,
+    require_exact_entity_match:$("#search-exact-entity").checked,
+    min_vector_score:optionalNumber("#search-min-vector-score"),
+    component_max_retries:optionalNumber("#search-component-retries"),
   };
   if(payload.fusion_method==="weighted_score"){
     payload.vector_weight=optionalNumber("#search-vector-weight");
@@ -166,26 +259,38 @@ async function runSearch(){
   empty.hidden=true;summary.hidden=true;
   try{
     const data=await api("/v1/search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(data.knowledge_base_id!==knowledgeBaseId)throw new Error("服务返回的知识库范围与请求不一致");
+    if($("#search-knowledge-base").value!==knowledgeBaseId)return;
     renderSearchResults(data);
   }catch(error){results.innerHTML="";empty.hidden=false;empty.querySelector("h3").textContent="检索失败";empty.querySelector("p").textContent="请检查检索服务状态后重试。";toast(`检索失败：${error.message}`,true);}
-  finally{button.disabled=false;button.firstChild.textContent="开始检索 ";}
+  finally{button.disabled=!$("#search-knowledge-base").value;button.firstChild.textContent="开始检索 ";}
 }
 
 async function runAnswer(){
   const query=$("#search-query").value.trim();
   const enableVector=$("#search-vector").checked, enableKeyword=$("#search-keyword").checked;
   if(!query){toast("请输入要回答的问题",true);$("#search-query").focus();return;}
+  const knowledgeBaseId=$("#search-knowledge-base").value;
+  if(!knowledgeBaseId){toast("请先选择知识库",true);return;}
   if(!enableVector&&!enableKeyword){toast("请至少启用一种检索方式",true);return;}
 
   const payload={
     query,
+    knowledge_base_id:knowledgeBaseId,
     top_k:optionalNumber("#search-top-k"),
     vector_top_k:optionalNumber("#search-vector-top-k"),
     keyword_top_k:optionalNumber("#search-keyword-top-k"),
+    max_chunks_per_document:optionalNumber("#search-max-chunks-per-document")||1,
     fusion_method:$("#search-fusion").value,
     enable_vector:enableVector,
     enable_keyword:enableKeyword,
     enable_rerank:$("#search-rerank").checked,
+    enable_abstention:$("#search-abstention").checked,
+    allow_keyword_fallback:$("#search-keyword-fallback").checked,
+    allow_keyword_fallback:$("#search-keyword-fallback").checked,
+    require_exact_entity_match:$("#search-exact-entity").checked,
+    min_vector_score:optionalNumber("#search-min-vector-score"),
+    component_max_retries:optionalNumber("#search-component-retries"),
   };
   if(payload.fusion_method==="weighted_score"){
     payload.vector_weight=optionalNumber("#search-vector-weight");
@@ -201,9 +306,11 @@ async function runAnswer(){
   empty.hidden=true;summary.hidden=true;
   try{
     const data=await api("/v1/answer",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(data.knowledge_base_id!==knowledgeBaseId)throw new Error("服务返回的知识库范围与请求不一致");
+    if($("#search-knowledge-base").value!==knowledgeBaseId)return;
     renderAnswer(data);
   }catch(error){results.innerHTML="";empty.hidden=false;empty.querySelector("h3").textContent="回答失败";empty.querySelector("p").textContent=`服务返回：${error.message}`;toast(`回答失败：${error.message}`,true);}
-  finally{button.disabled=false;button.firstChild.textContent="生成回答 ";}
+  finally{button.disabled=!$("#search-knowledge-base").value;button.firstChild.textContent="生成回答 ";}
 }
 
 function syncSearchOptions(){
@@ -238,7 +345,7 @@ async function openDocument(id){
   }catch(error){target.innerHTML="";toast(`文档查询失败：${error.message}`,true)}
 }
 
-function switchView(name){ document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===`view-${name}`)); document.querySelectorAll(".nav-item").forEach(v=>v.classList.toggle("active",v.dataset.view===name)); $("#page-title").textContent={workspace:"知识工作台",search:"知识检索",documents:"知识库管理",system:"系统状态"}[name]; if(name==="documents")loadDocuments(); if(name==="search")setTimeout(()=>$("#search-query").focus(),0); }
+function switchView(name){ document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===`view-${name}`)); document.querySelectorAll(".nav-item").forEach(v=>v.classList.toggle("active",v.dataset.view===name)); $("#page-title").textContent={workspace:"知识工作台",search:"知识检索",documents:"知识库管理",system:"系统状态"}[name]; if(name==="documents"){loadKnowledgeBases();loadDocuments();} if(name==="search")setTimeout(()=>$("#search-query").focus(),0); }
 function chooseFile(file){
   if(!file)return;
   const name=file.name.toLowerCase();
@@ -263,13 +370,16 @@ $("#upload-button").onclick=upload; $("#refresh-all").onclick=()=>{refreshHealth
 $("#clear-history").onclick=()=>{state.jobs=[];persist();renderJobs()};
 $("#document-form").onsubmit=e=>{e.preventDefault();const id=$("#document-id").value.trim();if(id)openDocument(id)};
 $("#documents-filter").onsubmit=e=>{e.preventDefault();loadDocuments(true)};
+$("#knowledge-base-create").onsubmit=e=>{e.preventDefault();createKnowledgeBase()};
+$("#upload-knowledge-base").onchange=updateKnowledgeBaseHint;
 $("#refresh-documents").onclick=()=>loadDocuments();
 $("#documents-prev").onclick=()=>{state.documentOffset=Math.max(0,state.documentOffset-state.documentLimit);loadDocuments()};
 $("#documents-next").onclick=()=>{state.documentOffset+=state.documentLimit;loadDocuments()};
 $("#search-form").onsubmit=e=>{e.preventDefault();runSearch()};
+$("#search-knowledge-base").onchange=()=>updateSearchScopeHint({clearResults:true});
 $("#answer-button").onclick=runAnswer;
 $("#search-fusion").onchange=syncSearchOptions;
 $("#search-vector").onchange=syncSearchOptions;
 $("#search-keyword").onchange=syncSearchOptions;
 setInterval(()=>$("#clock").textContent=new Date().toLocaleString("zh-CN",{hour12:false}),1000);
-syncSearchOptions(); renderJobs(); refreshHealth(); state.jobs.filter(j=>!terminal.has(j.status)).forEach(j=>pollJob(j.id));
+syncSearchOptions(); loadCapabilities(); loadKnowledgeBases(); renderJobs(); refreshHealth(); state.jobs.filter(j=>!terminal.has(j.status)).forEach(j=>pollJob(j.id));

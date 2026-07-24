@@ -12,6 +12,8 @@ import logging
 import math
 import os
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
@@ -74,13 +76,25 @@ def _pseudo_vector(text: str, dim: int) -> list[float]:
 def normalize_embedding_provider(provider: str) -> str:
     """将外部配置的提供方名称归一化为内部分发值。"""
     value = provider.strip().lower()
-    if value in {"api", "openai", "openai_compatible", "remote"}:
+    if value in {
+        "api", "openai", "openai_compatible", "remote", "bailian", "dashscope", "aliyun"
+    }:
         return "api"
     if value in {"local", "huggingface", "hf", "modelscope"}:
         return "local"
     if value in {"pseudo", "mock", "fake"}:
         return "pseudo"
     raise EmbeddingError(f"Unsupported embedding provider: {provider}")
+
+
+def normalize_embedding_api_driver(driver: str) -> str:
+    """将远程 API 协议名称归一化，provider 只保留 local/api 层级。"""
+    value = driver.strip().lower()
+    if value in {"openai", "openai_compatible", "compatible"}:
+        return "openai_compatible"
+    if value in {"bailian", "dashscope", "aliyun"}:
+        return "bailian"
+    raise EmbeddingError(f"Unsupported embedding API driver: {driver}")
 
 
 def _validate_vectors(vectors: list[list[float]], expected_dim: int) -> list[list[float]]:
@@ -100,7 +114,13 @@ class EmbeddingClient:
     def __init__(self, settings: Settings | None = None) -> None:
         """初始化嵌入客户端并缓存归一化后的提供方类型。"""
         self._settings = settings or get_settings()
-        self._provider = normalize_embedding_provider(self._settings.embedding_provider)
+        raw_provider = self._settings.embedding_provider.strip().lower()
+        self._provider = normalize_embedding_provider(raw_provider)
+        self._api_driver = normalize_embedding_api_driver(
+            "bailian"
+            if raw_provider in {"bailian", "dashscope", "aliyun"}
+            else self._settings.embedding_api_driver
+        )
 
     @property
     def model_name(self) -> str:
@@ -129,7 +149,11 @@ class EmbeddingClient:
         if not texts:
             return EmbeddingBatchResult(vectors=[])
         if self._provider == "api":
-            result = await self._remote_embed(texts, is_query=is_query)
+            result = (
+                await self._bailian_embed(texts, is_query=is_query)
+                if self._api_driver == "bailian"
+                else await self._remote_embed(texts, is_query=is_query)
+            )
         elif self._provider == "local":
             result = EmbeddingBatchResult(vectors=await self._local_embed(texts, is_query=is_query))
         else:
@@ -166,6 +190,11 @@ class EmbeddingClient:
                     "model": self._settings.embedding_model,
                     "input": batch,
                 }
+                if self._settings.embedding_model in {
+                    "qwen3.7-text-embedding",
+                    "text-embedding-v4",
+                }:
+                    payload["dimensions"] = self._settings.embedding_dim
                 try:
                     resp = await client.post(url, json=payload, headers=headers)
                     resp.raise_for_status()
@@ -234,6 +263,92 @@ class EmbeddingClient:
             )
         return EmbeddingBatchResult(vectors=vectors, usage=aggregate_usage)
 
+    async def _bailian_embed(
+        self, texts: list[str], *, is_query: bool
+    ) -> EmbeddingBatchResult:
+        """调用百炼 DashScope 原生接口，显式区分 query/document。"""
+        if not self._settings.embedding_base_url:
+            raise EmbeddingError("RAG_EMBEDDING_BASE_URL is required for Bailian embeddings")
+        base = self._settings.embedding_base_url.rstrip("/")
+        if base.endswith("/compatible-mode/v1"):
+            base = base.removesuffix("/compatible-mode/v1") + "/api/v1"
+        url = (
+            base
+            if base.endswith("/services/embeddings/text-embedding/text-embedding")
+            else f"{base}/services/embeddings/text-embedding/text-embedding"
+        )
+        headers = {}
+        if self._settings.embedding_api_key:
+            headers["Authorization"] = f"Bearer {self._settings.embedding_api_key}"
+        batch_size = max(1, self._settings.embedding_batch_size)
+        vectors: list[list[float]] = []
+        total_tokens = 0
+        usage_seen = False
+        request_count = 0
+        async with httpx.AsyncClient(
+            timeout=self._settings.embedding_api_timeout_seconds
+        ) as client:
+            for start in range(0, len(texts), batch_size):
+                batch = texts[start : start + batch_size]
+                parameters: dict[str, Any] = {
+                    "dimension": self._settings.embedding_dim,
+                    "output_type": "dense",
+                    "text_type": "query" if is_query else "document",
+                }
+                if is_query and self._settings.embedding_query_instruction:
+                    parameters["instruct"] = (
+                        self._settings.embedding_query_instruction.strip()
+                    )
+                payload = {
+                    "model": self._settings.embedding_model,
+                    "input": {"texts": batch},
+                    "parameters": parameters,
+                }
+                try:
+                    resp = await client.post(url, json=payload, headers=headers)
+                    resp.raise_for_status()
+                    body = resp.json()
+                    data = body["output"]["embeddings"]
+                    batch_vectors = [
+                        item["embedding"]
+                        for item in sorted(data, key=lambda item: item["text_index"])
+                    ]
+                except httpx.HTTPStatusError as error:
+                    retryable = error.response.status_code == 429 or error.response.status_code >= 500
+                    raise EmbeddingError(
+                        f"Bailian embedding API request failed: "
+                        f"{error.response.status_code} {error.response.text}",
+                        retryable=retryable,
+                    ) from error
+                except httpx.RequestError as error:
+                    raise EmbeddingError(
+                        f"Bailian embedding API request failed: {error}", retryable=True
+                    ) from error
+                except (KeyError, TypeError, ValueError) as error:
+                    raise EmbeddingError(
+                        "Bailian embedding API returned an invalid response"
+                    ) from error
+                if len(batch_vectors) != len(batch):
+                    raise EmbeddingError(
+                        "Bailian embedding API returned a different number of vectors than inputs"
+                    )
+                vectors.extend(batch_vectors)
+                request_count += 1
+                usage = body.get("usage")
+                if isinstance(usage, dict) and isinstance(usage.get("total_tokens"), int):
+                    total_tokens += usage["total_tokens"]
+                    usage_seen = True
+        usage = (
+            EmbeddingUsage(
+                prompt_tokens=total_tokens,
+                total_tokens=total_tokens,
+                request_count=request_count,
+            )
+            if usage_seen
+            else None
+        )
+        return EmbeddingBatchResult(vectors=vectors, usage=usage)
+
     async def _local_embed(self, texts: list[str], *, is_query: bool) -> list[list[float]]:
         """在线程池中调用本地 Sentence Transformers 模型。"""
         provider = _get_local_provider(self._settings)
@@ -254,6 +369,7 @@ class LocalSentenceTransformerProvider:
         """保存配置并延迟加载实际模型。"""
         self._settings = settings
         self._model = None
+        self._load_lock = threading.Lock()
 
     def encode(self, texts: list[str], is_query: bool) -> list[list[float]]:
         """使用本地模型编码文本并返回普通的 Python 向量列表。"""
@@ -272,24 +388,27 @@ class LocalSentenceTransformerProvider:
         """首次使用时加载 Sentence Transformers 模型并复用实例。"""
         if self._model is not None:
             return self._model
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as e:
-            raise EmbeddingError(
-                "Local embeddings require sentence-transformers. "
-                "Run 'uv sync --extra local-embedding' or switch "
-                "RAG_EMBEDDING_PROVIDER=api/pseudo."
-            ) from e
+        with self._load_lock:
+            if self._model is not None:
+                return self._model
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as e:
+                raise EmbeddingError(
+                    "Local embeddings require sentence-transformers. "
+                    "Run 'uv sync --extra local-embedding' or switch "
+                    "RAG_EMBEDDING_PROVIDER=api/pseudo."
+                ) from e
 
-        model_path = self._resolve_model_path()
-        kwargs: dict[str, Any] = {}
-        device = self._settings.embedding_device
-        if device and device != "auto":
-            kwargs["device"] = device
-        if self._settings.embedding_cache_dir:
-            kwargs["cache_folder"] = self._settings.embedding_cache_dir
-        self._model = SentenceTransformer(model_path, **kwargs)
-        return self._model
+            model_path = self._resolve_model_path()
+            kwargs: dict[str, Any] = {}
+            device = self._settings.embedding_device
+            if device and device != "auto":
+                kwargs["device"] = device
+            if self._settings.embedding_cache_dir:
+                kwargs["cache_folder"] = self._settings.embedding_cache_dir
+            self._model = SentenceTransformer(model_path, **kwargs)
+            return self._model
 
     def _resolve_model_path(self) -> str:
         """根据下载源配置解析本地模型路径或远程模型名称。"""
@@ -332,13 +451,14 @@ class LocalSentenceTransformerProvider:
         return [f"Instruct: {instruction}\nQuery: {text}" for text in texts]
 
 
-_LOCAL_PROVIDER_KEY: tuple[Any, ...] | None = None
-_LOCAL_PROVIDER: LocalSentenceTransformerProvider | None = None
+_LOCAL_PROVIDERS: OrderedDict[
+    tuple[Any, ...], LocalSentenceTransformerProvider
+] = OrderedDict()
+_LOCAL_PROVIDERS_LOCK = threading.Lock()
 
 
 def _get_local_provider(settings: Settings) -> LocalSentenceTransformerProvider:
-    """按关键配置缓存并复用本地模型提供方。"""
-    global _LOCAL_PROVIDER, _LOCAL_PROVIDER_KEY
+    """按关键配置使用有界 LRU 缓存复用本地模型提供方。"""
     key = (
         settings.embedding_model,
         settings.embedding_device,
@@ -352,10 +472,16 @@ def _get_local_provider(settings: Settings) -> LocalSentenceTransformerProvider:
         settings.embedding_normalize,
         settings.embedding_query_instruction,
     )
-    if _LOCAL_PROVIDER is None or _LOCAL_PROVIDER_KEY != key:
-        _LOCAL_PROVIDER = LocalSentenceTransformerProvider(settings)
-        _LOCAL_PROVIDER_KEY = key
-    return _LOCAL_PROVIDER
+    with _LOCAL_PROVIDERS_LOCK:
+        provider = _LOCAL_PROVIDERS.get(key)
+        if provider is not None:
+            _LOCAL_PROVIDERS.move_to_end(key)
+            return provider
+        provider = LocalSentenceTransformerProvider(settings)
+        _LOCAL_PROVIDERS[key] = provider
+        while len(_LOCAL_PROVIDERS) > settings.embedding_local_model_cache_size:
+            _LOCAL_PROVIDERS.popitem(last=False)
+        return provider
 
 
 def get_embedding_client() -> EmbeddingClient:

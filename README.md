@@ -86,9 +86,16 @@ sudo sysctl -w vm.max_map_count=262144
 
 ## 入库（PDF / TXT / Markdown / DOCX）
 
+先创建知识库并固定向量化模型，再向该知识库上传文档：
+
 ```bash
+curl -X POST http://localhost:18200/v1/knowledge-bases \
+  -H "Content-Type: application/json" \
+  -d '{"name":"安全运营知识库","embedding_profile":"qwen3-embedding-0.6b"}'
+
 curl -X POST http://localhost:18200/v1/ingest/jobs \
   -F "source_type=file" \
+  -F "knowledge_base_id=<knowledge_base_id>" \
   -F "file=@report.pdf"
 
 curl http://localhost:18200/v1/ingest/jobs/<job_id>
@@ -113,11 +120,12 @@ mineru-api --host 0.0.0.0 --port 8000
 
 ## 知识库文档管理
 
-文档由入库任务创建；入库后可通过文档 API 完成查询、更新和级联删除：
+模型在知识库创建时冻结，上传和检索只选择知识库，不能按请求临时更换模型。文档由入库任务创建；
+入库后可通过文档 API 完成查询、更新和级联删除：
 
 ```bash
 # 分页列表、关键词搜索与状态筛选
-curl "http://localhost:18200/v1/documents?offset=0&limit=20&q=安全&status=ready"
+curl "http://localhost:18200/v1/documents?knowledge_base_id=<knowledge_base_id>&offset=0&limit=20&q=安全&status=ready"
 
 # 查询详情
 curl http://localhost:18200/v1/documents/<document_id>
@@ -143,6 +151,59 @@ Worker 会延迟重试，超过任务最大尝试次数后才标记为失败。
 默认最多执行 3 次，并在第 3 次失败时立即终止，不会再等待额外队列投递。文件损坏、
 无文本层、参数错误以及 Embedding API 的普通 4xx 属于不可重试错误；网络错误、429、
 5xx 和索引后端临时故障才进入重试。
+
+## 知识库检索
+
+每次检索必须显式指定一个 `knowledge_base_id`。服务不会回退到默认知识库，也不再接受
+用 `embedding_profile` 代替知识库范围；向量检索、关键词检索和最终文档状态校验都会使用
+同一个知识库条件：
+
+```bash
+curl -X POST http://localhost:18200/v1/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query":"如何防御 SQL 注入？",
+    "knowledge_base_id":"<knowledge_base_id>",
+    "enable_vector":true,
+    "enable_keyword":true,
+    "enable_rerank":false
+  }'
+```
+
+查询中出现 CVE、CWE 或 CAPEC 编号时，服务会将大小写和常见分隔符规范化，例如
+`cwe:89` 会转换为 `CWE-89`。OpenSearch 优先匹配结构化的 `entity_id`、
+`entity_ids` 和 `aliases` 字段；融合与 rerank 完成后，主实体精确命中仍会稳定排在
+关联实体和普通语义结果之前。检索结果会返回：
+
+- `entity_id` / `entity_type`：文档主实体及类型；
+- `entity_ids` / `entity_types`：当前分块包含的主实体和关联实体；
+- `title` / `aliases`：用于检索展示和别名匹配；
+- `exact_entity_match`：`primary`、`related` 或空值；
+- `query_entities`：本次查询识别出的规范化安全编号。
+
+启动时的 OpenSearch 与 Qdrant 回填会为已有文档补齐这些字段，新文档则在入库时直接写入。
+
+融合和精确命中置顶完成后，服务会先限制每篇文档进入 rerank 的候选池，再按 rerank
+结果执行最终文档级去重。这样不会因融合阶段的初始排序过早丢弃同一文档中更相关的
+chunk。请求参数 `max_chunks_per_document` 控制最终每篇文档最多保留多少个分块，默认值为
+`1`，允许范围为 `1` 到 `10`。响应中的 `deduplicated_chunks` 表示本次去除的重复分块
+数量。若业务需要同一文档的多个上下文片段，可以显式调高该参数。
+
+默认启用检索拒答：
+
+- 查询含 CVE/CWE/CAPEC 时，如果当前知识库没有任何精确实体命中，返回空结果并设置
+  `abstention_reason=no_exact_entity_match`；
+- 普通语义查询按知识库所绑定 embedding profile 的校准阈值过滤，全部候选低于阈值时
+  返回空结果并设置 `abstention_reason=low_vector_score`；
+- 启用了向量检索但向量组件故障时，默认返回空结果并设置
+  `abstention_reason=vector_unavailable`；只有显式设置
+  `allow_keyword_fallback=true` 才会返回纯关键词降级结果；
+- `min_vector_score` 可覆盖模型默认阈值，`enable_abstention=false` 可用于诊断时关闭拒答。
+
+向量和关键词组件临时失败时默认各额外重试 2 次，响应通过 `component_attempts` 返回实际
+调用次数，通过 `recovered_components` 标识重试后恢复的组件。只有重试耗尽后才进入
+`degraded`；可用 `component_max_retries` 按请求覆盖，或通过
+`RAG_SEARCH_COMPONENT_MAX_RETRIES` 设置服务默认值。
 
 ## RabbitMQ Worker 与 Outbox
 
@@ -174,8 +235,16 @@ uv sync --extra local-embedding
 ```
 
 `pseudo` provider 与本地 `Qwen/Qwen3-Embedding-0.6B` 均按 `1024` 维配置；
-`.env.example` 默认选择该本地模型。生产环境也可按下文配置 OpenAI-compatible API。
-Qdrant collection 会按该维度创建；更换模型或维度后需要重建 collection 并重新入库。
+`.env.example` 默认选择该本地模型。生产环境也可配置远程 API。
+用户侧 provider 只区分 `local` 与 `api`；API 协议由 `RAG_EMBEDDING_API_DRIVER`
+区分 `openai_compatible` 与 `bailian`。Web 页面只在创建知识库时选择模型，随后上传和
+检索都由知识库自动确定相同的向量空间。
+
+百炼高精度配置为 `qwen3.7-text-embedding-2560` 和 `text-embedding-v4-2048`。
+它们使用 `api + bailian` 原生驱动，分别生成 2560/2048 维稠密向量，并显式传递
+`text_type=query|document` 和查询 `instruct`。不同 profile 使用独立 Qdrant collection；
+同一 profile 下的不同知识库再通过 `knowledge_base_id` 强制隔离。OpenSearch 关键词检索
+同样强制按知识库过滤，避免混合检索越界。
 远程 Embedding 默认每批 10 条，并会根据兼容 API 返回的 batch-size 上限自动缩小批次。
 
 本地 Hugging Face 下载：
@@ -205,6 +274,7 @@ OpenAI-compatible API：
 
 ```env
 RAG_EMBEDDING_PROVIDER=api
+RAG_EMBEDDING_API_DRIVER=openai_compatible
 RAG_EMBEDDING_BASE_URL=http://localhost:8080/v1
 RAG_EMBEDDING_API_KEY=
 RAG_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
@@ -236,7 +306,9 @@ RAG_RERANK_API_KEY=YOUR_BAILIAN_API_KEY
 
 `POST /v1/answer` 复用混合检索链路，将排序后的分块按 Token 预算组装为上下文，
 再调用 OpenAI-compatible Chat Completions API。回答必须包含可映射到真实 Chunk 的
-`[1]`、`[2]` 引用；空检索结果会直接返回 `insufficient_evidence`，不会调用 LLM。
+`[1]`、`[2]` 引用；请求必须显式提供 `knowledge_base_id`，并沿用与 `/v1/search`
+相同的知识库隔离和拒答规则。空检索结果会直接返回 `insufficient_evidence`，不会调用
+LLM。
 
 ```env
 RAG_LLM_PROVIDER=openai_compatible
@@ -254,7 +326,7 @@ RAG_ANSWER_MAX_CONTEXT_CHUNKS=8
 
 ```
 app/
-  api/          health, ingest, documents, sources, search, answer, ocr_review
+  api/          health, knowledge_bases, ingest, documents, sources, search, answer, ocr_review
   core/ingest/  extractors, pipeline, chunker, compensator
   core/ocr/     Paddle / API / custom OCR providers
   core/indexing/ qdrant_indexer
@@ -263,7 +335,7 @@ app/
   stores/       db, blob, document, chunk, job, qdrant, ocr_region
   workers/      outbox publisher, RabbitMQ consumer, command handlers
 docker/
-  mysql-init.d/ 001_ingest.sql, 002_outbox.sql, 003_ocr_regions.sql
+  mysql-init.d/ 001_ingest.sql ... 004_knowledge_bases.sql
 frontend/       知识库 Web 控制台
 tests/
 ```
@@ -272,4 +344,6 @@ tests/
 
 - `GET /health/live` — 存活
 - `GET /health` — 依赖详情
-- `GET /health/ready` — 检查 MySQL、真实启用的 qdrant/opensearch，以及对象或本地存储；RabbitMQ 会报告但不阻止 API 接收 Outbox 任务
+- `GET /health/ready` — 检查 MySQL、真实启用的 qdrant/opensearch、Qdrant
+  `knowledge_base_id` 回填状态，以及对象或本地存储；RabbitMQ 会报告但不阻止 API
+  接收 Outbox 任务

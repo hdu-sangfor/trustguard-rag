@@ -9,6 +9,7 @@ from app.core.retrieval.keyword_retriever import (
     PseudoKeywordRetriever,
     get_keyword_retriever,
 )
+from app.core.retrieval.security_entities import build_security_entity_fields
 
 logger = logging.getLogger(__name__)
 
@@ -31,30 +32,46 @@ class OpenSearchIndexer:
     ) -> None:
         if isinstance(self._retriever, (MockKeywordRetriever, PseudoKeywordRetriever)):
             for chunk in chunks:
+                security_fields = build_security_entity_fields(
+                    text=chunk["text"],
+                    original_filename=original_filename,
+                    metadata=chunk.get("metadata"),
+                )
                 await self._retriever.index_chunk(
                     chunk_id=chunk["id"],
                     text=chunk["text"],
                     document_id=chunk["document_id"],
+                    knowledge_base_id=chunk.get("knowledge_base_id")
+                    or (chunk.get("metadata") or {}).get("knowledge_base_id"),
                     chunk_index=chunk["chunk_index"],
                     source_uri=source_uri,
                     original_filename=original_filename,
                     page_no=chunk.get("page_no"),
                     metadata=chunk.get("metadata"),
+                    security_fields=security_fields,
                 )
             return
 
         bulk: list[dict[str, Any]] = []
         for chunk in chunks:
+            security_fields = build_security_entity_fields(
+                text=chunk["text"],
+                original_filename=original_filename,
+                metadata=chunk.get("metadata"),
+            )
             bulk.append(
                 {
                     "chunk_id": chunk["id"],
                     "body": {
                         "chunk_id": chunk["id"],
                         "document_id": chunk["document_id"],
+                        "knowledge_base_id": chunk.get("knowledge_base_id")
+                        or (chunk.get("metadata") or {}).get("knowledge_base_id"),
                         "chunk_index": chunk["chunk_index"],
                         "text": chunk["text"],
                         "source_uri": source_uri,
                         "original_filename": original_filename,
+                        **security_fields,
                         "page_no": chunk.get("page_no"),
                         "metadata": chunk.get("metadata"),
                     },

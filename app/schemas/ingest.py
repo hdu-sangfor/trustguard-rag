@@ -12,6 +12,10 @@ from app.domain import IngestJobStatus, IngestStep
 class IngestJobCreateResponse(BaseModel):
     job_id: str
     status: IngestJobStatus
+    knowledge_base_id: str
+    embedding_profile: str = "configured"
+    embedding_model: str | None = None
+    embedding_dim: int | None = None
 
 
 class IngestJobResponse(BaseModel):
@@ -30,6 +34,10 @@ class IngestJobResponse(BaseModel):
     created_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    knowledge_base_id: str | None = None
+    embedding_profile: str = "configured"
+    embedding_model: str | None = None
+    embedding_dim: int | None = None
 
 
 class ConflictResolveRequest(BaseModel):

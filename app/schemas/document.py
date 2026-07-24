@@ -12,6 +12,7 @@ from app.domain import DocumentStatus
 
 class DocumentResponse(BaseModel):
     id: str
+    knowledge_base_id: str | None = None
     source_type: str
     source_uri: str
     content_hash: str

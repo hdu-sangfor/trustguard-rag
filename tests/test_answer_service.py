@@ -66,7 +66,7 @@ async def test_answer_service_returns_grounded_answer() -> None:
     )
     service, search, llm = _service(_search_result([_result()]), completion)
 
-    result = await service.answer("如何防御 SQL 注入？")
+    result = await service.answer("如何防御 SQL 注入？", knowledge_base_id="kb-test")
 
     assert result["status"] == AnswerStatus.ANSWERED
     assert result["citations"][0]["page_no"] == 3
@@ -92,7 +92,7 @@ async def test_answer_service_renders_valid_declared_citations() -> None:
     )
     service, _, _ = _service(_search_result([_result()]), completion)
 
-    result = await service.answer("如何防御 SQL 注入？")
+    result = await service.answer("如何防御 SQL 注入？", knowledge_base_id="kb-test")
 
     assert result["status"] == AnswerStatus.ANSWERED
     assert result["answer"] == "应使用参数化查询。 [1]"
@@ -103,7 +103,7 @@ async def test_answer_service_renders_valid_declared_citations() -> None:
 async def test_answer_service_skips_llm_when_retrieval_is_empty() -> None:
     service, _, llm = _service(_search_result([]), None)
 
-    result = await service.answer("知识库里没有的问题")
+    result = await service.answer("知识库里没有的问题", knowledge_base_id="kb-test")
 
     assert result["status"] == AnswerStatus.INSUFFICIENT_EVIDENCE
     assert result["citations"] == []
@@ -122,7 +122,7 @@ async def test_answer_service_preserves_model_refusal() -> None:
     )
     service, _, _ = _service(_search_result([_result()]), completion)
 
-    result = await service.answer("无法回答的问题")
+    result = await service.answer("无法回答的问题", knowledge_base_id="kb-test")
 
     assert result["status"] == AnswerStatus.INSUFFICIENT_EVIDENCE
     assert result["answer"] == "提供的资料无法确定答案。"
@@ -137,7 +137,7 @@ async def test_answer_service_uses_default_refusal_when_model_answer_is_empty() 
     )
     service, _, _ = _service(_search_result([_result()]), completion)
 
-    result = await service.answer("无法回答的问题")
+    result = await service.answer("无法回答的问题", knowledge_base_id="kb-test")
 
     assert result["status"] == AnswerStatus.INSUFFICIENT_EVIDENCE
     assert result["answer"] == "当前知识库中没有足够证据回答该问题。"
@@ -152,4 +152,4 @@ async def test_answer_service_rejects_unknown_citation() -> None:
     service, _, _ = _service(_search_result([_result()]), completion)
 
     with pytest.raises(LLMResponseError, match="was not provided"):
-        await service.answer("问题")
+        await service.answer("问题", knowledge_base_id="kb-test")

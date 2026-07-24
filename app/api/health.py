@@ -16,6 +16,7 @@ from app.stores import (
     rabbitmq,
     redis_cache,
 )
+from app.stores.migration_state_store import check_knowledge_base_index_backfill
 
 router = APIRouter(tags=["health"])
 
@@ -28,6 +29,7 @@ _CHECKS = {
     "minio": minio_store.check,
     "local_storage": local_storage.check,
     "mineru": mineru_store.check,
+    "knowledge_base_index": check_knowledge_base_index_backfill,
 }
 
 
@@ -41,6 +43,7 @@ def _ingest_required() -> tuple[str, ...]:
         required.append("local_storage")
     if not s.qdrant_mock:
         required.append("qdrant")
+        required.append("knowledge_base_index")
     if not s.search_opensearch_mock:
         required.append("opensearch")
     # DOCX is always routed to MinerU, so advertised ingest readiness requires it
