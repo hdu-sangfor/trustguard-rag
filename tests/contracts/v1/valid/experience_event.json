@@ -1,0 +1,25 @@
+{
+  "schema_version": "trustguard-experience-event-v1",
+  "event_id": "outbox-event-001",
+  "event_type": "experience.candidate.upserted",
+  "aggregate_id": "agent-exp-001",
+  "occurred_at": "2026-07-24T08:00:00Z",
+  "producer": "trustguard-agent",
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+  "payload": {
+    "schema_version": "trustguard-experience-upsert-v1",
+    "external_id": "agent-exp-001",
+    "source_system": "trustguard-agent",
+    "source_revision": 3,
+    "knowledge_scope": "penetration",
+    "workflow_type": "penetration",
+    "experience_type": "skill_outcome",
+    "workspace_id": "workspace-redacted",
+    "visibility": "workspace",
+    "conditions": {
+      "technology": "Apache Shiro"
+    },
+    "action_summary": "先确认适用条件，再执行无害验证。",
+    "outcome_summary": "验证成功并减少误报。"
+  }
+}

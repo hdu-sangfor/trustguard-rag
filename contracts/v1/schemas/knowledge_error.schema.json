@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trustguard.local/contracts/v1/knowledge_error.schema.json",
+  "title": "TrustGuard Knowledge Error v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_id", "code", "message", "retryable"],
+  "properties": {
+    "schema_version": {
+      "const": "trustguard-knowledge-error-v1"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "code": {
+      "enum": [
+        "AUTH_REQUIRED",
+        "AUTH_FORBIDDEN",
+        "INVALID_ARGUMENT",
+        "UNKNOWN_SCOPE",
+        "RAG_UNAVAILABLE",
+        "RAG_TIMEOUT",
+        "RAG_DEGRADED",
+        "RESOURCE_NOT_FOUND",
+        "RESOURCE_STALE",
+        "SCHEMA_MISMATCH",
+        "RATE_LIMITED",
+        "INTERNAL_ERROR"
+      ]
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "details": {
+      "type": "object"
+    }
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trustguard.local/contracts/v1/knowledge_resource.schema.json",
+  "title": "TrustGuard Knowledge Resource v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scope",
+    "content_revision",
+    "chunk_id",
+    "text",
+    "source_type",
+    "visibility",
+    "metadata"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "trustguard-knowledge-resource-v1"
+    },
+    "scope": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "content_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "chunk_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "document_id": {
+      "type": ["string", "null"],
+      "maxLength": 128
+    },
+    "experience_id": {
+      "type": ["string", "null"],
+      "maxLength": 128
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32000
+    },
+    "title": {
+      "type": ["string", "null"],
+      "maxLength": 512
+    },
+    "filename": {
+      "type": ["string", "null"],
+      "maxLength": 512
+    },
+    "page_no": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "source_uri": {
+      "type": ["string", "null"],
+      "maxLength": 2048
+    },
+    "source_type": {
+      "enum": ["document", "experience", "playbook"]
+    },
+    "workflow_type": {
+      "type": ["string", "null"],
+      "maxLength": 64
+    },
+    "effectiveness": {
+      "type": ["string", "null"],
+      "enum": [null, "unknown", "promising", "effective", "ineffective"]
+    },
+    "visibility": {
+      "enum": ["global", "workspace"]
+    },
+    "metadata": {
+      "type": "object"
+    }
+  }
+}

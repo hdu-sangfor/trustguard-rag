@@ -1,0 +1,11 @@
+{
+  "schema_version": "trustguard-experience-feedback-v1",
+  "event_id": "feedback-event-001",
+  "experience_id": "experience-001",
+  "task_id": "task-redacted",
+  "workflow_type": "penetration",
+  "outcome": "success",
+  "evidence_level": "verified",
+  "notes": "适用条件匹配，验证成功。",
+  "occurred_at": "2026-07-24T08:00:00Z"
+}

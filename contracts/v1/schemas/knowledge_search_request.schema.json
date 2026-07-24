@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trustguard.local/contracts/v1/knowledge_search_request.schema.json",
+  "title": "TrustGuard Knowledge Search Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "query", "scope"],
+  "properties": {
+    "schema_version": {
+      "const": "trustguard-knowledge-search-request-v1"
+    },
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "scope": {
+      "enum": [
+        "penetration",
+        "alert-triage",
+        "compliance",
+        "product-docs",
+        "threat-intelligence",
+        "response-playbooks"
+      ]
+    },
+    "mode": {
+      "enum": ["auto", "focused", "comprehensive", "enumeration"],
+      "default": "auto"
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20,
+      "default": 5
+    },
+    "rewrite": {
+      "type": "boolean",
+      "default": false
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "content_types": {
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "source_types": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["document", "experience", "playbook"]
+          }
+        }
+      }
+    }
+  }
+}

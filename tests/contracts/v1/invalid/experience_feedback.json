@@ -1,0 +1,9 @@
+{
+  "schema_version": "trustguard-experience-feedback-v1",
+  "event_id": "feedback-event-002",
+  "experience_id": "experience-001",
+  "task_id": "task-redacted",
+  "workflow_type": "penetration",
+  "outcome": "promote-to-proven",
+  "evidence_level": "verified"
+}

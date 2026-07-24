@@ -1,0 +1,10 @@
+{
+  "schema_version": "trustguard-knowledge-resource-v1",
+  "scope": "penetration",
+  "content_revision": "17",
+  "chunk_id": "chunk-id",
+  "text": "",
+  "source_type": "document",
+  "visibility": "global",
+  "metadata": {}
+}

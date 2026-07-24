@@ -1,0 +1,6 @@
+{
+  "schema_version": "trustguard-knowledge-search-request-v1",
+  "query": "绕过服务端范围",
+  "scope": "penetration",
+  "knowledge_base_id": "model-supplied-kb-id"
+}

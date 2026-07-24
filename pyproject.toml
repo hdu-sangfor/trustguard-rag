@@ -45,6 +45,7 @@ ocr-local = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "jsonschema>=4.23",
     "ruff>=0.4",
     "aiosqlite>=0.20",
 ]

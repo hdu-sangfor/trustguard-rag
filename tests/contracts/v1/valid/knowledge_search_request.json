@@ -1,0 +1,12 @@
+{
+  "schema_version": "trustguard-knowledge-search-request-v1",
+  "query": "Apache Shiro RememberMe 识别后应验证哪些风险？",
+  "scope": "penetration",
+  "mode": "comprehensive",
+  "limit": 5,
+  "rewrite": false,
+  "filters": {
+    "content_types": ["security_guide", "vulnerability"],
+    "source_types": ["document", "experience"]
+  }
+}

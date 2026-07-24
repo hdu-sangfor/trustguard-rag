@@ -1,0 +1,13 @@
+{
+  "schema_version": "trustguard-experience-upsert-v1",
+  "external_id": "agent-exp-002",
+  "source_system": "trustguard-agent",
+  "source_revision": 1,
+  "knowledge_scope": "alert-triage",
+  "workflow_type": "penetration",
+  "experience_type": "skill_outcome",
+  "visibility": "workspace",
+  "conditions": {},
+  "action_summary": "错误地跨 Workflow 写入",
+  "outcome_summary": "该请求必须被拒绝"
+}
