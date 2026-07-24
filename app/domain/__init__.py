@@ -1,5 +1,6 @@
 """领域模型。"""
 
+from app.domain.answer import AnswerStatus
 from app.domain.document import DELETABLE_DOCUMENT_STATUSES, DocumentStatus
 from app.domain.ingest import (
     CANCELLABLE_JOB_STATUSES,
@@ -20,6 +21,7 @@ from app.domain.retrieval import (
 from app.domain.worker import ClaimOutcome, CleanupAction, OutboxStatus
 
 __all__ = [
+    "AnswerStatus",
     "CANCELLABLE_JOB_STATUSES",
     "INGEST_CLAIMABLE_STATUSES",
     "RESOLVE_CLAIMABLE_STATUSES",

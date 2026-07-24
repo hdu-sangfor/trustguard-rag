@@ -47,10 +47,12 @@ desktop.ini
 # ---- 可重新生成的临时文件 ----
 /tmp/
 
-# ---- 评测生成物（由 evaluation/cybersecurity/build_dataset.py 重建）----
+# ---- 评测生成物（由 evaluation/cybersecurity 下脚本重建）----
 /output/
+/evaluation/cybersecurity/dataset/
 /evaluation/cybersecurity/datasets/
 /evaluation/cybersecurity/datasets-v02-hard/
+/evaluation/cybersecurity/results/
 /evaluation/cybersecurity/results/*.json
 
 # ---- Crawler 评测仅提交最终报告，其余语料、脚本和原始结果保留在本地 ----

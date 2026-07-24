@@ -81,5 +81,5 @@ async def test_source_capabilities_include_docx(
     parsers = response.json()["sources"][0]["parsers"]
     assert parsers[DOCX_MIME] == "mineru"
     assert parsers["application/pdf"] == "mineru"
-    assert parsers["text/plain"] == "local"
+    assert parsers["text/plain"] == "markitdown"
     get_settings.cache_clear()

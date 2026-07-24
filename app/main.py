@@ -14,7 +14,16 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import documents, health, ingest, knowledge_bases, ocr_review, search, sources
+from app.api import (
+    answer,
+    documents,
+    health,
+    ingest,
+    knowledge_bases,
+    ocr_review,
+    search,
+    sources,
+)
 from app.core.indexing.opensearch_backfill import backfill_ready_documents
 from app.settings import get_settings
 from app.stores import db, opensearch_store, qdrant_store, redis_cache
@@ -99,7 +108,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=s.app_name,
         version=s.app_version,
-        description="TrustGuard 独立 RAG 知识库：入库（ingest）与检索。",
+        description="TrustGuard 独立 RAG 知识库：入库、检索与基于证据的回答。",
         lifespan=lifespan,
     )
     
@@ -109,6 +118,7 @@ def create_app() -> FastAPI:
     app.include_router(documents.router)
     app.include_router(sources.router)
     app.include_router(search.router)
+    app.include_router(answer.router)
     app.include_router(ocr_review.router)
 
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
