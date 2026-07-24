@@ -1,6 +1,6 @@
 # TrustGuard RAG MCP 化与多 Workflow 接入计划
 
-> 文档状态：Phase 0～2 已完成，Phase 3 尚未实施<br>
+> 文档状态：Phase 0～2 已完成；Phase 2.1 安全与边界加固待实施；Phase 3 尚未实施<br>
 > 文档日期：2026-07-24<br>
 > RAG 基线分支：`origin/main`<br>
 > RAG 基线提交：`93d08d0`<br>
@@ -10,42 +10,52 @@
 
 ## 1. 结论
 
-随着 `trustguard-agent` 后续增加告警研判 Agent 等多个 Workflow，把知识能力抽象为 MCP 服务是合理的。
+随着 `trustguard-agent` 后续增加告警研判 Agent 等多个 Workflow，把知识能力抽象为 MCP 服务是合理的。但“存在多个 Workflow”本身并不是必须使用 MCP 的充分条件；MCP 的主要价值是跨 Agent Runtime、跨框架的工具发现、结构化契约、资源回读和后续受控的模型自主调用。
 
 但不建议把 `trustguard-rag` 改成 **MCP-only**。推荐采用：
 
 ```text
-REST API = RAG 平台稳定内核、管理面、前端和评测接口
-MCP      = 面向 Agent / Workflow 的标准化知识能力层
+RAG Core = Scope/ABAC、联邦检索、融合、版本和资源解析的权威业务内核
+REST API = 管理面、前端、评测和普通系统接口
+MCP      = 面向 Agent / Workflow 的只读北向协议适配层
 ```
 
 目标架构：
 
 ```text
 渗透测试 Workflow ─┐
-                  ├─ TrustGuard Knowledge MCP Client
+                  ├─ 协议无关的 Agent KnowledgeGateway
 告警研判 Workflow ─┤
-                  ├─ Streamable HTTP /mcp
 未来其他 Workflow ─┘
                           │
-                          ▼
-                    rag-mcp 服务
-                    ├─ 鉴权与 Scope 映射
-                    ├─ MCP Tools
-                    ├─ MCP Resources
-                    ├─ 结构化输出
-                    └─ 调用 trustguard-rag REST
-                          │
-                          ▼
-                    trustguard-rag
-                    ├─ 知识库管理
-                    ├─ 文档入库 / OCR
-                    ├─ 查询规划
-                    ├─ 向量 + BM25
-                    ├─ 融合 + Rerank
-                    ├─ Workflow 独立经验知识库
-                    ├─ 经验生命周期与效果反馈
-                    └─ 来源与覆盖声明
+                          ├─ 默认：TrustGuard MCP Client
+                          └─ 可替换：受控内部 REST Client
+                                  │
+                                  ▼
+                            rag-mcp 服务
+                            ├─ MCP 协议协商
+                            ├─ Transport 鉴权
+                            ├─ MCP Tools / Resources
+                            └─ 结构化协议适配
+                                  │
+                                  ▼
+                    受服务身份保护的 Knowledge Application Service
+                    ├─ Service Identity、Scope 和 Workspace ABAC
+                    ├─ Scope → 知识库映射
+                    ├─ 多知识库联邦检索、配额、RRF 和去重
+                    ├─ Resource Ref 解析、版本和来源校验
+                    └─ 调用 trustguard-rag 检索内核
+                                  │
+                                  ▼
+                            trustguard-rag
+                            ├─ 知识库管理
+                            ├─ 文档入库 / OCR
+                            ├─ 查询规划
+                            ├─ 向量 + BM25
+                            ├─ 融合 + Rerank
+                            ├─ Workflow 独立经验知识库
+                            ├─ 经验生命周期与效果反馈
+                            └─ 来源与覆盖声明
 
 各 Workflow 执行完成
         │
@@ -65,7 +75,8 @@ RabbitMQ → RAG Experience Consumer
 
 最终职责边界：
 
-- MCP 只提供只读检索和来源读取；
+- MCP 只提供只读检索和来源读取，是北向协议适配层，不承担唯一业务权威；
+- Scope、Workspace 隔离、联邦检索、资源解析和版本校验由 RAG Knowledge Application Service 统一实施，REST 和 MCP 不得各自形成不同语义；
 - RAG REST 和可靠事件链路承担经验写入、反馈、审核及管理；
 - Agent 保留任务运行态、原始证据、Checkpoint 和本地 `chk-*`；
 - `trustguard-rag` 统一管理静态知识及各 Workflow 的长期经验知识；
@@ -82,7 +93,9 @@ MCP 为 LLM 应用统一提供 Tools、Resources 和 Prompts。对于本项目�
 - 不同 Workflow 可以发现并复用同一套能力。
 - MCP Tool 可以被 LLM 自主调用，也可以由 Orchestrator 确定性调用。
 - Tool 输入和结构化输出可以使用 JSON Schema 校验。
-- 后续新增恶意样本分析、威胁狩猎、漏洞运营等 Workflow 时，不需要重复开发 RAG HTTP 适配逻辑。
+- 后续新增恶意样本分析、威胁狩猎、漏洞运营等 Agent Runtime 时，不需要重复开发 RAG 协议适配逻辑。
+
+如果所有 Workflow 长期都运行在同一个 Orchestrator 中，并且始终由代码确定性调用，协议无关的共享 REST Client 也能满足复用要求。因此 Agent 必须依赖 `KnowledgeGateway` 抽象，而不能让业务代码直接依赖 MCP。这样既保留 MCP 的互操作价值，也允许在性能、兼容性或部署条件需要时切换到受控内部 REST。
 
 MCP 官方把 Tools 定义为可执行或检索能力，把 Resources 定义为由应用管理的上下文数据；Tool 也可以返回结构化输出和 Resource Link：
 
@@ -104,7 +117,7 @@ MCP 官方把 Tools 定义为可执行或检索能力，把 Resources 定义为�
 - 运维、健康检查和批量管理；
 - 不具备 MCP Client 的普通系统。
 
-MCP 应当是 RAG 的能力适配层，而不是取代所有平台接口。
+MCP 应当是 RAG 的北向能力适配层，而不是取代所有平台接口，也不能成为绕过 RAG Core 授权、联邦和版本规则的第二套业务内核。
 
 ### 2.3 为什么不让每个 Workflow 直接访问 Qdrant
 
@@ -220,11 +233,13 @@ rag-service  18200  REST / 前端 / 管理 / 检索
 rag-mcp      18201  Streamable HTTP /mcp
 ```
 
-`rag-mcp` 调用内部 REST：
+`rag-mcp` 调用受服务身份保护的内部知识接口：
 
 ```text
-http://rag-service:18200/v1/search
+http://rag-service:18200/v1/internal/knowledge/search
 ```
+
+现有 Phase 2 实现暂时调用普通 `POST /v1/search`，只适用于不包含 Workspace 私有数据的开发和验证环境。Phase 3 前必须迁移到内部受控接口；不能仅依靠网络位置或 MCP 外层 Token 保护 RAG 数据。
 
 优点：
 
@@ -236,6 +251,14 @@ http://rag-service:18200/v1/search
 - 后续如确认挂载方式稳定，可再合并进程。
 
 额外 HTTP 跳转只发生在同一容器网络内，预计远小于 Embedding、检索和 Rerank 耗时，应通过性能测试确认。
+
+部署约束：
+
+- `rag-mcp` 只负责 MCP 协议转换、Transport 认证和协议级错误映射；
+- Scope 映射、Workspace ABAC、联邦检索、配额、融合、去重和 Resource Ref 解析必须由共享 Knowledge Application Service 实施；
+- MCP、普通 REST 和评测调用同一应用服务，避免结果语义漂移；
+- 生产环境的 `rag-service` 内部检索端口不得直接暴露给非受信调用方；
+- `APP_ENV=prod` 且 MCP 开启时，若 OAuth、内部服务身份或 Host/Origin 安全配置缺失，服务必须启动失败。
 
 ### 4.2 Transport
 
@@ -341,7 +364,10 @@ openWorldHint   = false
   "hits": [
     {
       "external_chunk_id": "uuid",
-      "resource_uri": "trustguard-rag://penetration/chunks/uuid?revision=17",
+      "resource_uri": "trustguard-rag://penetration/resources/krf-opaque",
+      "resource_ref": "krf-opaque",
+      "source_revision": 17,
+      "content_hash": "sha256:...",
       "snippet": "Apache Shiro 的 RememberMe...",
       "score": 0.91,
       "title": "Shiro 安全检测指南",
@@ -373,18 +399,32 @@ openWorldHint   = false
 
 - `status=degraded` 且仍有可信结果时，可以作为成功结果返回；
 - 完全不可用时返回 MCP Tool Error；
-- 鉴权失败必须在 HTTP 边界返回 401/403，不能伪装成 Tool Error；
+- 缺失、无效、过期 Token 和 Transport 权限不足在 HTTP 边界返回 401/403；
+- Tool/Resource 的知识 Scope 或 Workspace 业务授权失败返回稳定的 MCP 授权错误；
 - 不向模型返回 API Key、内部地址、堆栈或数据库错误；
 - 为兼容部分 Client，结构化结果同时提供简短 TextContent；
 - TextContent 不能重复塞入所有完整正文，避免上下文翻倍。
 
 ### 5.3 MCP Resource
 
-提供 Resource Template：
+目标 Resource Template：
 
 ```text
-trustguard-rag://{scope}/chunks/{chunk_id}?revision={revision}
+trustguard-rag://{scope}/resources/{resource_ref}
 ```
+
+其中 `resource_ref` 是服务端签发的不透明标识，内部至少绑定：
+
+```text
+knowledge_base_id
+chunk_id
+source_revision 或 content_hash
+scope
+```
+
+调用方和模型不能解析、修改或自行构造其中的物理知识库标识。Phase 2 已实现的
+`trustguard-rag://{scope}/chunks/{chunk_id}?revision={scope_revision}` 在迁移期保留兼容，
+但不作为长期 Resource 身份模型。
 
 用途：
 
@@ -400,7 +440,10 @@ Resource 返回：
 {
   "schema_version": "trustguard-knowledge-resource-v1",
   "scope": "penetration",
-  "content_revision": 17,
+  "content_revision": "scope-revision-hash",
+  "resource_ref": "krf-opaque",
+  "source_revision": 17,
+  "content_hash": "sha256:...",
   "chunk_id": "uuid",
   "document_id": "doc-uuid",
   "text": "完整 Chunk 文本",
@@ -420,9 +463,21 @@ Resource 返回：
 - 只能读取调用方有权限的 Scope；
 - Chunk 必须属于 Scope 当前映射的知识库；
 - 文档必须处于 `ready`，Chunk 必须处于 `active`；
-- URI 中的 revision 与当前内容版本不一致时返回明确的 stale 状态；
+- `resource_ref` 必须同时校验 Scope、来源知识库、Chunk 和来源版本；
+- 单个来源的 `source_revision/content_hash` 变化时返回明确的 stale 状态；
+- Scope 中其他无关知识库更新不能让该 Resource 无条件失效；
 - 不允许通过 URI 绕过知识库过滤；
+- 联邦结果不能只按裸 `chunk_id` 去重，内部身份至少使用 `(knowledge_base_id, chunk_id)`，内容去重另用 `content_hash/document_id`；
+- Resource 读取应直接定位单个来源，不得遍历 Scope 内所有知识库并返回第一个匹配项；
 - `resources/list` 只列出调用方被授权的高层 Scope 或能力，不枚举全部 Chunk。
+
+契约迁移规则：
+
+- v1 保留现有必填字段；
+- `resource_ref`、`source_revision` 和 `content_hash` 作为向后兼容的可选字段加入 v1；
+- Agent 优先使用 `resource_ref`，缺失时才走旧 URI；
+- 旧 URI 停止产生前必须经过 Agent 灰度和回滚验证；
+- 如果需要删除或改变现有字段语义，则发布 v2，不修改已冻结的 v1 语义。
 
 ### 5.4 暂不提供的 MCP 能力
 
@@ -459,6 +514,15 @@ product-docs
 threat-intelligence
 ```
 
+逻辑名分为两类：
+
+- Workflow View：如 `penetration`、`alert-triage`，表示由服务端组合出的知识视图；
+- Knowledge Domain：如 `compliance`、`product-docs`、`threat-intelligence`，表示可独立授权和检索的知识领域。
+
+v1 为了冻结契约和限制攻击面，继续使用显式 Scope 枚举。新增 Scope 时允许向 v1 增加枚举值，
+但必须验证旧 Agent 的兼容行为；如果需要动态租户 Scope 或改变 Scope 语义，则发布 v2。
+无论采用枚举还是后续注册表，调用方都只能使用服务端已配置且 Token 已授权的逻辑名。
+
 服务端维护：
 
 ```text
@@ -489,19 +553,18 @@ LLM 不能自由构造或猜测知识库 ID。
 - 漏洞知识；
 - 合规处置要求。
 
-当前 RAG 单次请求只允许一个 `knowledge_base_id`。需要增加服务端联邦能力，二选一：
+当前 RAG 单次请求只允许一个 `knowledge_base_id`。Phase 2 已在 MCP Gateway 中实现
+Scope → 多 KB 并发调用和跨库 RRF，用于验证契约及效果；该实现属于过渡形态。
 
-1. MCP Gateway 并发调用多个知识库再融合；
-2. RAG Core 新增受控的多知识库检索接口。
-
-推荐先在 MCP Gateway 实现 Scope → 多 KB 并发调用，验证需求后再下沉到 RAG Core。
+Phase 3 前应把联邦能力下沉到 RAG Knowledge Application Service，并提供受服务身份保护的受控接口。MCP、普通 REST 和评测脚本必须复用同一套 Scope 映射、过滤、配额、RRF、去重、Coverage 和 degraded 语义。MCP Gateway 不长期保留独立的联邦业务实现。
 
 融合要求：
 
 - 每个知识库独立检索；
 - 不能直接比较不同检索空间的原始 Vector Score；
 - 优先使用各库内部排名做跨库 RRF；
-- 按 `external_chunk_id/document_id/content_hash` 去重；
+- 物理身份使用 `(knowledge_base_id, chunk_id)`，不能假定裸 `chunk_id` 跨库全局唯一；
+- 内容重复使用 `content_hash/document_id` 去重，不与物理身份混为一谈；
 - 每个 Scope 设置单库和总体配额；
 - 输出保留每条命中的来源 Scope；
 - 任一知识库故障时标记 degraded，而不是丢弃全部结果。
@@ -523,7 +586,7 @@ knowledge_bases.content_revision
 - Embedding Profile 迁移。
 - 经验发布、更新、降级、归档或重新索引。
 
-多 KB Scope 的版本可表示为：
+多 KB Scope 的搜索版本可表示为：
 
 ```text
 sha256(sorted(kb_id + ":" + content_revision))
@@ -531,10 +594,22 @@ sha256(sorted(kb_id + ":" + content_revision))
 
 用途：
 
-- MCP Resource 过期检测；
+- Search Result 缓存失效；
+- 联邦搜索结果回放和问题定位；
+- 判断一次搜索所对应的 Scope 快照。
+
+单个 Resource 另外携带来源级版本：
+
+```text
+source_revision 或 content_hash
+```
+
+用途：
+
+- MCP Resource 精确过期检测；
 - Agent 本地 Chunk 幂等键；
 - Redis 检索缓存失效；
-- 回放和问题定位。
+- 避免 Scope 内无关知识库更新导致所有 Resource 失效。
 
 ## 7. 鉴权与租户隔离
 
@@ -573,10 +648,13 @@ io.modelcontextprotocol/oauth-client-credentials
 规则：
 
 - 每个 HTTP 请求都验证 Bearer Token；
-- 验证签名、issuer、audience、expiry 和 scope；
+- 验证签名、issuer、audience 和 expiry；
+- Transport 层只要求访问 MCP 服务所需的基础权限；
+- `knowledge_search` 单独要求 `rag.search`，Resource Read 单独要求 `rag.resource.read`，不能要求所有调用方同时拥有两者；
 - Scope 参数必须同时存在于 Token 的 `knowledge_scopes`；
-- 401 用于无效或过期 Token；
-- 403 用于有效身份但无对应知识权限；
+- 缺失、无效或过期 Token 在 HTTP 边界返回 401；
+- Transport 级 OAuth 权限不足在 HTTP 边界返回 403；
+- Tool/Resource 的 `knowledge_scopes` 或 Workspace 业务授权失败返回稳定的 MCP 授权错误，不伪装成检索错误；
 - Access Token 使用短有效期并自动刷新；
 - 使用 JWKS 验证，不在 MCP 服务分发私钥。
 
@@ -584,12 +662,14 @@ io.modelcontextprotocol/oauth-client-credentials
 
 Workspace/Project 可能来自 Agent Runtime，但不能只相信自定义 Header。
 
-第一版原则：
+原则：
 
 - 知识库授权由 Service Identity + knowledge scope 决定；
-- `X-Workspace-ID`、`X-Project-ID` 用于审计、限流和未来 ABAC；
+- `X-Workspace-ID`、`X-Project-ID` 只能用于审计、Trace 和路由提示；
 - 如果知识内容也按 Workspace 隔离，则 Token 必须包含可验证的 Workspace Claim；
-- MCP Server 不能仅凭 LLM 参数扩大 Workspace 范围。
+- Knowledge Application Service 必须根据已验证 Claim 强制附加 `workspace_id`、`visibility` 和 Workflow 过滤；
+- MCP Server、普通 REST、模型参数和普通 Header 都不能关闭或扩大这些过滤；
+- 在内部检索接口和普通 REST 尚未实施同等 ABAC 前，不得接入 Workspace 私有知识或经验。
 
 ### 7.4 网络安全
 
@@ -603,6 +683,9 @@ Streamable HTTP 服务必须：
 - 设置连接、读取和总超时；
 - 不把 `/mcp` 直接暴露到公网；
 - 管理 REST 和 MCP 使用不同凭证与权限。
+- `rag-service` 的内部 Search/Resource 接口只允许 `rag-mcp`、评测服务等受信服务身份访问；
+- 对外 REST 若允许检索私有内容，必须执行与 MCP 相同的 Token Claim 和 ABAC，不能通过直接传递 `knowledge_base_id` 绕过 Scope；
+- 开发环境允许关闭鉴权，生产环境必须 fail-fast，不能静默以无鉴权模式启动。
 
 经验写入链路使用独立服务身份和最小权限：
 
@@ -612,7 +695,7 @@ rag.experience.feedback
 rag.experience.admin
 ```
 
-MCP Access Token 只包含 `rag.search` 和 `rag.resource.read`，不能复用为经验写入凭证。`rag.experience.admin` 仅授予审核或策略服务，不授予 Workflow LLM。
+MCP Access Token 按客户端实际用途最小化授予 `rag.search` 和/或 `rag.resource.read`，不能复用为经验写入凭证。`rag.experience.admin` 仅授予审核或策略服务，不授予 Workflow LLM。
 
 MCP Transport 规范明确要求 Streamable HTTP 校验 Origin，并建议所有连接使用正确鉴权：
 
@@ -651,13 +734,28 @@ class KnowledgeGateway:
         ...
 ```
 
+`KnowledgeGateway` 是 Agent 的稳定业务边界，MCP 只是其中一个 Transport Adapter。Workflow
+不得直接创建 MCP Session、拼装 Tool 参数或解析 MCP 协议错误。这样可以在不改变 Workflow
+的前提下进行 MCP 灰度、回滚，或在受控环境切换到内部 REST Adapter。
+
 具体 Workflow 只负责：
 
 - 什么时候检索；
 - 如何构造脱敏 Query；
 - 使用哪些 Scope；
 - 默认 Mode 和预算；
+- 知识依赖等级和失败时的决策；
 - 如何把知识加入自己的 State。
+
+`KnowledgePolicy` 至少定义：
+
+```text
+dependency = optional | required | safety-critical
+```
+
+- `optional`：知识是增强信息，超时或不可用时允许 fail-open；
+- `required`：缺少知识时不得假装已完成研判，应拒答、延后或转人工；
+- `safety-critical`：缺少或覆盖不足时禁止执行依赖该知识的高风险动作。
 
 ### 8.2 确定性调用与模型自主调用分离
 
@@ -695,7 +793,7 @@ MVP 只实现 A。原因：
 - 传递 Authorization 和 Trace Header；
 - 严格校验 Structured Content；
 - 超时、取消、有限重试和熔断；
-- MCP 不可用时 fail-open。
+- 根据 `KnowledgePolicy.dependency` 执行 fail-open、拒答、延后或转人工，不能全局固定 fail-open。
 
 如后续使用 `langchain-mcp-adapters`：
 
@@ -736,11 +834,14 @@ InstructionCompiler 读取和校验
   "scope": "penetration",
   "external_chunk_id": "uuid",
   "resource_uri": "trustguard-rag://...",
+  "resource_ref": "krf-opaque",
+  "source_revision": 17,
+  "content_hash": "sha256:...",
   "document_id": "doc-uuid",
   "filename": "guide.pdf",
   "page_no": 12,
   "source_uri": "upload://guide.pdf",
-  "content_revision": 17,
+  "content_revision": "scope-revision-hash",
   "retrieved_at": "..."
 }
 ```
@@ -750,7 +851,8 @@ InstructionCompiler 读取和校验
 任务内幂等键：
 
 ```text
-sha256(scope + external_chunk_id + content_revision)
+优先：sha256(scope + resource_ref + source_revision/content_hash)
+兼容：sha256(scope + external_chunk_id + content_revision)
 ```
 
 规则：
@@ -779,11 +881,14 @@ KnowledgeSourceRef = 最终报告中的外部知识来源
   "scope": "penetration",
   "local_chunk_id": "chk-...",
   "external_chunk_id": "uuid",
+  "resource_ref": "krf-opaque",
+  "source_revision": 17,
+  "content_hash": "sha256:...",
   "document_id": "doc-uuid",
   "filename": "guide.pdf",
   "page_no": 12,
   "source_uri": "upload://guide.pdf",
-  "content_revision": 17
+  "content_revision": "scope-revision-hash"
 }
 ```
 
@@ -1120,6 +1225,7 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 - [ ] 增加精确按 Chunk ID 读取接口，强制知识库隔离；
 - [ ] 增加 Scope 配置模型；
 - [ ] 为多知识库 Scope 准备 revision 聚合；
+- [ ] 为 Hit 和 Resource 增加可选 `resource_ref/source_revision/content_hash`；
 - [ ] 输出稳定的来源字段；
 - [ ] 明确文本长度和元数据上限。
 - [ ] 增加原生 `experience_items`、反馈事件和状态历史模型；
@@ -1130,10 +1236,14 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 ### 13.2 鉴权
 
 - [ ] 增加内部 REST Service Token；
+- [ ] 新增受服务身份保护的内部 Knowledge Search 接口；
 - [ ] 新增 OAuth/JWT TokenVerifier；
 - [ ] 实现 MCP Client Credentials 扩展；
 - [ ] 校验 issuer/audience/expiry/scope；
+- [ ] Search 与 Resource Read 独立授权，遵循最小权限；
 - [ ] 实现 knowledge scope 授权；
+- [ ] 在 Knowledge Application Service 强制实施 Workspace、visibility 和 Workflow ABAC；
+- [ ] 普通 REST 不得通过任意 `knowledge_base_id` 绕过 Scope 和 Workspace 授权；
 - [ ] 增加 Origin 和 Host Allowlist；
 - [ ] 管理接口与检索接口分权；
 - [ ] 增加 `rag.experience.write/feedback/admin` 并使用独立服务身份；
@@ -1144,17 +1254,26 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 - [ ] 新增 `app/mcp_server/`；
 - [ ] 定义 Pydantic Input/Output；
 - [ ] 实现 `knowledge_search`；
-- [ ] 实现 Chunk Resource Template；
+- [ ] 实现不透明 Resource Ref Template，并兼容旧 Chunk Resource URI；
 - [ ] 只启用 Tools、Resources 和必要 Logging；
 - [ ] 禁用 Sampling、Roots 和 Elicitation；
-- [ ] 实现 REST Backend Client；
-- [ ] 实现跨知识库 RRF；
+- [ ] 实现受服务身份保护的 Knowledge Application Service Client；
+- [ ] MCP 层不长期保留独立的跨知识库 RRF 业务逻辑；
 - [ ] 实现结构化错误映射；
 - [ ] 增加 `/health/live` 和 `/health/ready`；
 - [ ] 增加独立启动入口；
 - [ ] 更新 Docker Compose。
 
-### 13.4 经验写入与索引
+### 13.4 Knowledge Application Service
+
+- [ ] 统一 Scope → KB 映射；
+- [ ] 统一 Service Identity、knowledge scope 和 Workspace ABAC；
+- [ ] 统一联邦检索、单库/总配额、RRF、去重、Coverage 和 degraded 合并；
+- [ ] 统一 Resource Ref 签发、解析、来源版本和 active/ready 校验；
+- [ ] 为 MCP、普通 REST 和评测提供相同业务语义；
+- [ ] 生产内部接口只允许受信服务身份访问。
+
+### 13.5 经验写入与索引
 
 - [ ] 实现经验 Upsert、Feedback、Status 和审计查询接口；
 - [ ] 实现 `Idempotency-Key`、唯一事件和 `source_revision` 防旧写覆盖；
@@ -1165,7 +1284,7 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 - [ ] 实现候选去重、过期、降级和归档；
 - [ ] 实现 Workspace 强制过滤和跨 Workflow 隔离。
 
-### 13.5 安全
+### 13.6 安全
 
 - [ ] 对 Query 二次脱敏；
 - [ ] 限制 Tool 参数长度；
@@ -1180,9 +1299,10 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 
 ### 14.1 KB 职责拆分
 
-- [ ] `StaticKnowledgeRetriever`；
-- [ ] `FederatedKnowledgeRetriever`；
-- [ ] 新增 `McpKnowledgeRetriever`；
+- [ ] 协议无关的 `KnowledgeGateway`；
+- [ ] 新增 `McpKnowledgeTransport`；
+- [ ] 可选的 `InternalRestKnowledgeTransport`，只用于受控部署和回滚；
+- [ ] 联邦检索不在 Agent 重复实现，由 RAG Knowledge Application Service 负责；
 - [ ] 保留任务态 `ChunkStore`、Checkpoint 和原始证据存储；
 - [ ] 新增 `ExperienceCandidatePublisher`；
 - [ ] 新增 `ExperienceFeedbackPublisher`；
@@ -1190,15 +1310,16 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 - [ ] `QdrantExperienceStore` 改为迁移期 `LegacyQdrantExperienceRetriever`；
 - [ ] 原有 Agent 静态 KB 作为灰度兼容实现。
 
-### 14.2 共享 MCP 接入层
+### 14.2 共享知识接入层
 
+- [ ] Transport Adapter 生命周期；
 - [ ] MCP Client 生命周期；
 - [ ] Token 获取和刷新；
 - [ ] Structured Content 校验；
 - [ ] Tool/Schema 版本校验；
 - [ ] Header 和 Trace 注入；
 - [ ] Retry、Timeout 和 Circuit Breaker；
-- [ ] fail-open；
+- [ ] optional/required/safety-critical 失败策略；
 - [ ] Resource 读取；
 - [ ] Chunk 本地化；
 - [ ] 任务级幂等；
@@ -1283,7 +1404,7 @@ total tool timeout    2.5～3.0 s
 network/429/503 retry 1 次，带 jitter
 4xx retry             0 次
 circuit breaker       连续失败后短时打开
-fail open             true
+failure policy        由 KnowledgePolicy.dependency 决定
 ```
 
 具体值通过部署环境评测确定。
@@ -1319,7 +1440,9 @@ INDEX_PENDING
 行为：
 
 - Auth 错误中止知识调用并告警；
-- Backend 超时/不可用时 Agent 继续运行；
+- Backend 超时/不可用时，`optional` 知识允许 Agent 继续运行；
+- `required` 知识不可用时拒答、延后或转人工，不把“未知”表述成“安全”或“已完成”；
+- `safety-critical` 知识不可用或 Coverage 不足时禁止执行依赖该知识的高风险动作；
 - Schema Mismatch 触发熔断，避免错误数据进入 Plan；
 - Degraded 且有可信结果时允许使用并记录；
 - Resource Stale 重新搜索，不使用旧来源冒充当前证据。
@@ -1423,6 +1546,11 @@ EXPERIENCE_STATUS_CHANGED
 - Scope → KB 映射；
 - Token Claim 和 Scope 授权；
 - Chunk Resource 隔离；
+- 直接调用普通 REST 不能绕过 MCP Scope/Workspace 授权；
+- Search 和 Resource Read 使用独立最小权限；
+- 裸 `chunk_id` 跨知识库碰撞；
+- `resource_ref` 防篡改和单来源定位；
+- Scope 中无关知识库更新不会误判单个 Resource stale；
 - content revision 递增；
 - 跨库 RRF；
 - degraded 合并；
@@ -1450,6 +1578,7 @@ EXPERIENCE_STATUS_CHANGED
 - stateless 多次调用；
 - Origin/Host 校验；
 - 401/403；
+- Transport 授权错误与 Tool/Resource 业务授权错误语义；
 - Cancellation；
 - 并发调用；
 - MCP Inspector 冒烟测试。
@@ -1467,7 +1596,7 @@ EXPERIENCE_STATUS_CHANGED
 - 本地 Chunk 幂等；
 - tenant mismatch；
 - Source Ref；
-- fail-open；
+- optional 知识 fail-open，required/safety-critical 知识拒答或转人工；
 - 每任务调用预算；
 - 经验候选 Schema、脱敏和 Outbox 原子性；
 - Experience 事件重放和发布重试；
@@ -1661,7 +1790,8 @@ EXPERIENCE_LEGACY_QDRANT_READ_ENABLED=true
 完成条件：
 
 - 双方仓库能够针对同一 Fixture 通过 Contract Test；
-- 无未决的 Chunk ID、经验归属和租户隔离问题。
+- v1 的 Chunk 本地化、经验归属和基础 Scope 隔离决策已记录；
+- 后续发现的内部 Search 绕过、Resource 身份和联邦业务归属问题进入 Phase 2.1，不回写为 Phase 0 已完成能力。
 
 Phase 0 的权威交付物为 ADR、`contracts/v1/manifest.json`、JSON Schema 和
 `tests/contracts/v1/` Fixture。本仓库已通过 Contract Test；Agent 仓库接入同一
@@ -1713,9 +1843,12 @@ Phase 1 实现说明：
 完成条件：
 
 - 官方 Client 和 Inspector 均可调用；
-- 鉴权和 Scope 隔离测试 100% 通过；
+- MCP Transport 鉴权和已实现的 Scope 隔离测试 100% 通过；
 - MCP 额外开销达到目标；
 - 关闭 MCP 不影响 REST。
+
+该完成条件只描述 Phase 2 协议实现，不表示普通 REST 绕过、Workspace ABAC、
+Resource 跨库身份和业务逻辑下沉已经完成；这些内容由 Phase 2.1 负责。
 
 Phase 2 实现说明：
 
@@ -1739,9 +1872,38 @@ Phase 2 实现说明：
 - 已使用官方 Inspector CLI 对真实 Streamable HTTP 进程执行 `tools/list` 冒烟，
   Tool annotations 与 Input/Output Schema 均成功返回。
 
+### Phase 2.1：安全与业务边界加固
+
+- [ ] 新增受服务身份保护的内部 Knowledge Search 接口；
+- [ ] MCP 不再通过无服务鉴权的普通 `/v1/search` 检索；
+- [ ] 将 Scope 映射、Workspace ABAC、联邦检索、配额、RRF、去重和 degraded 合并下沉到 Knowledge Application Service；
+- [ ] 普通 REST、MCP 和评测复用相同业务服务；
+- [ ] Search 和 Resource Read 实施独立最小权限；
+- [ ] 明确 HTTP 401/403 与 MCP Tool/Resource 授权错误边界；
+- [ ] 增加不透明 `resource_ref`、来源级 `source_revision/content_hash`；
+- [ ] Resource 直接定位单个知识库和 Chunk，不遍历 Scope 后取第一个匹配；
+- [ ] 联邦物理身份改为 `(knowledge_base_id, chunk_id)`；
+- [ ] 保留旧 Resource URI 兼容读取并制定灰度退出计划；
+- [ ] 生产模式下鉴权或内部服务身份缺失时启动失败；
+- [ ] 生产部署不直接暴露 RAG 内部检索端口；
+- [ ] 增加 REST 绕过、Workspace 越权、Chunk ID 碰撞和无关 revision 更新测试。
+
+完成条件：
+
+- 任何调用方都不能绕过 MCP 直接访问未授权知识库或 Workspace 私有内容；
+- MCP、REST 和评测对相同请求使用同一检索语义；
+- Search-only Token 不需要 `rag.resource.read`；
+- Resource Read 能唯一定位来源，且不会因无关知识库更新失效；
+- Phase 2 已有 Client 和旧 URI 在迁移窗口内保持兼容；
+- 安全和边界加固测试全部通过。
+
+Phase 2.1 是 Phase 3 的前置门槛。公共静态知识可继续使用 Phase 2 实现做开发验证，但
+Workspace 私有知识、经验知识和生产 Agent 接入不得绕过本阶段。
+
 ### Phase 3：Agent 共享 Knowledge Gateway
 
 - [ ] 拆分任务态、静态知识检索和长期经验职责；
+- [ ] 建立协议无关的 `KnowledgeGateway` 和可替换 Transport Adapter；
 - [ ] 实现 MCP Client；
 - [ ] 实现 KnowledgePolicy；
 - [ ] 实现 Trigger 和 Query Builder；
@@ -1753,6 +1915,7 @@ Phase 2 实现说明：
 完成条件：
 
 - MCP 不可用时 Agent 继续运行；
+- optional/required/safety-critical 三类失败策略测试通过；
 - RAG UUID 不会直接进入 Plan；
 - Materialized Chunk 可被 Compiler 读取；
 - 跨 Workspace 测试通过。
@@ -1866,14 +2029,20 @@ Phase 2 实现说明：
 | 风险 | 控制 |
 |---|---|
 | 把 MCP 当作唯一接口导致平台能力退化 | 保留 REST Core |
+| 只因“多个 Workflow”引入 MCP，收益不足以覆盖复杂度 | Agent 依赖协议无关 KnowledgeGateway；以跨 Runtime 互操作和模型 Tool 需求作为 MCP 价值判据 |
+| MCP Gateway 演变为第二套 RAG 业务内核 | Scope、ABAC、联邦、RRF、去重和 Resource 解析下沉到共享 Knowledge Application Service |
+| 直接 REST 绕过 MCP 鉴权和 Scope | 内部 Search 使用服务身份；外部 REST 执行同等 ABAC；生产不暴露内部检索端口 |
 | MCP SDK 生命周期影响现有 FastAPI | 独立 `rag-mcp` 服务 |
 | LLM 自由选择任意知识库 | Scope Alias + Token Claim |
 | 外部 UUID 导致 Plan 编译失败 | Agent Chunk 本地化 |
 | 多库 Score 不可直接比较 | 跨库 RRF |
-| RAG 内容更新后使用旧证据 | content_revision |
+| 裸 Chunk ID 在多库中碰撞或错误合并 | 物理身份使用 `(knowledge_base_id, chunk_id)`；内容去重使用 content_hash |
+| Scope 任一库更新导致所有 Resource stale | Scope revision 只管理搜索快照；Resource 使用来源级 revision/content_hash |
+| Resource URI 暴露或可篡改物理知识库身份 | 服务端签发不透明 `resource_ref` 并在读取时重新授权 |
+| RAG 内容更新后使用旧证据 | scope content_revision + source_revision/content_hash |
 | 原始告警泄露敏感数据 | 实体抽取、脱敏、长度限制 |
 | 文档 Prompt Injection | 不可信内容标记、Policy 不可覆盖 |
-| RAG 故障阻断 Workflow | Timeout、Circuit Breaker、fail-open |
+| RAG 故障阻断 Workflow 或导致错误放行 | KnowledgePolicy 按 optional/required/safety-critical 选择 fail-open、拒答或转人工 |
 | 每轮都检索导致成本和延迟增加 | Trigger Gate、指纹、任务级缓存 |
 | MCP Tool 被递归调用 | MVP 确定性调用、调用预算 |
 | 权限依赖普通 Header | OAuth Token Claim 为权威 |
@@ -1894,6 +2063,12 @@ REST 契约和 content_revision
         ↓
 只读、无状态、带鉴权的 rag-mcp
         ↓
+内部 Knowledge Search 服务身份与统一 ABAC
+        ↓
+联邦检索下沉到 Knowledge Application Service
+        ↓
+不透明 Resource Ref 与来源级版本
+        ↓
 Agent 共享 KnowledgeGateway
         ↓
 RAG Chunk 本地化为 chk-*
@@ -1913,7 +2088,11 @@ Redis 缓存与限流
 可选的模型自主 MCP Tool
 ```
 
-第一阶段的核心目标不是让模型“能看到一个新 Tool”，而是建立一个可被多个 Workflow 安全复用、可追踪、可降级、可验证引用的知识能力边界。经验闭环则在只读检索稳定后实施，确保“任务执行产生经验”和“经验参与未来决策”之间存在脱敏、验证、反馈及审计边界。
+第一阶段的核心目标不是让模型“能看到一个新 Tool”，而是建立一个可被多个 Agent Runtime
+安全复用、可追踪、可按风险降级、可验证引用的知识能力边界。MCP 是该边界的北向协议，
+不是唯一业务内核或唯一安全边界。经验闭环则在只读检索、内部服务鉴权、Workspace ABAC
+和 Resource 身份模型稳定后实施，确保“任务执行产生经验”和“经验参与未来决策”之间存在
+脱敏、验证、反馈及审计边界。
 
 ## 23. 参考资料
 
