@@ -49,6 +49,6 @@ ENV RAG_API_HOST=0.0.0.0 \
 
 RUN mkdir -p /data/storage /models/huggingface
 
-EXPOSE 18200
+EXPOSE 18200 18201
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "18200"]

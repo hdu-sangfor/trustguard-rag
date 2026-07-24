@@ -53,6 +53,8 @@ docker compose up -d --build
 uv sync
 docker compose up -d mysql qdrant opensearch redis rabbitmq minio
 uv run uvicorn app.main:app --reload --port 18200
+# 配好 RAG_MCP_SCOPE_MAPPING_JSON 后，可独立启动只读 MCP Gateway
+RAG_MCP_ENABLED=true uv run uvicorn app.mcp_server.main:app --port 18201
 # 另开终端启动可靠任务 Worker
 uv run python -m app.workers.main
 uv run python -m pytest
@@ -66,6 +68,7 @@ uv run python -m pytest
 | 服务 | 端口 |
 |------|------|
 | rag-service | 18200 |
+| rag-mcp（Streamable HTTP `/mcp`） | 18201 |
 | mineru-api | 18220 |
 | mysql | 18210 |
 | redis | 18211 |
@@ -208,6 +211,34 @@ curl -X POST http://localhost:18200/v1/search \
 调用次数，通过 `recovered_components` 标识重试后恢复的组件。只有重试耗尽后才进入
 `degraded`；可用 `component_max_retries` 按请求覆盖，或通过
 `RAG_SEARCH_COMPONENT_MAX_RETRIES` 设置服务默认值。
+
+## 只读 MCP Gateway
+
+MCP Gateway 与 REST Core 使用同一镜像、独立进程和端口。它只提供
+`knowledge_search` Tool 与 Chunk Resource Template，不开放上传、删除、回答生成或
+经验写入。先把逻辑 Scope 映射到一个或多个知识库：
+
+```dotenv
+RAG_MCP_ENABLED=true
+RAG_MCP_SCOPE_MAPPING_JSON={"compliance":{"knowledge_base_ids":["<kb-id-1>","<kb-id-2>"],"default_mode":"comprehensive","per_knowledge_base_limit":20,"allowed_content_types":["legal_article","security_guide"]}}
+```
+
+Compose 会在 `http://localhost:18201/mcp` 启动无状态 Streamable HTTP Server：
+
+```bash
+docker compose up -d --build rag-service rag-mcp
+npx -y @modelcontextprotocol/inspector@latest --cli \
+  http://localhost:18201/mcp --transport http --method tools/list
+```
+
+多知识库 Scope 会逐库调用 REST Search，再按库内排名执行跨库 RRF；不同向量空间的原始
+分数不会直接比较。响应中的 `content_revision` 是所有知识库 ID 与 revision 排序后的
+SHA-256，Resource URI 必须携带同一 revision，内容变化后旧 URI 会返回
+`RESOURCE_STALE`。`/health/live`、`/health/ready` 和 `/metrics` 用于独立探活和监控。
+
+生产环境设置 `RAG_MCP_AUTH_ENABLED=true`，并配置 issuer、audience 和 JWKS URL。
+Gateway 验证 Client Credentials 获取的短期 JWT，包括签名、`iss`、`aud`、`exp`、
+OAuth scope 以及 `knowledge_scopes`；MCP 凭证不能用于管理接口和后续经验写入。
 
 ## RabbitMQ Worker 与 Outbox
 

@@ -1,6 +1,6 @@
 # TrustGuard RAG MCP 化与多 Workflow 接入计划
 
-> 文档状态：Phase 0～1 已完成，Phase 2 尚未实施<br>
+> 文档状态：Phase 0～2 已完成，Phase 3 尚未实施<br>
 > 文档日期：2026-07-24<br>
 > RAG 基线分支：`origin/main`<br>
 > RAG 基线提交：`93d08d0`<br>
@@ -1700,15 +1700,15 @@ Phase 1 实现说明：
 
 ### Phase 2：只读 MCP Gateway
 
-- [ ] 引入并锁定 MCP Python SDK；
-- [ ] 实现 Streamable HTTP Stateless Server；
-- [ ] 实现 `knowledge_search`；
-- [ ] 实现 Resource Template；
-- [ ] 实现 OAuth Client Credentials；
-- [ ] 实现 Scope Mapping；
-- [ ] 实现跨库 RRF；
-- [ ] 实现健康检查和 Metrics；
-- [ ] 完成 MCP 协议测试。
+- [x] 引入并锁定 MCP Python SDK；
+- [x] 实现 Streamable HTTP Stateless Server；
+- [x] 实现 `knowledge_search`；
+- [x] 实现 Resource Template；
+- [x] 实现 OAuth Client Credentials Access Token 验证；
+- [x] 实现 Scope Mapping；
+- [x] 实现跨库 RRF；
+- [x] 实现健康检查和 Metrics；
+- [x] 完成 MCP 协议测试。
 
 完成条件：
 
@@ -1716,6 +1716,28 @@ Phase 1 实现说明：
 - 鉴权和 Scope 隔离测试 100% 通过；
 - MCP 额外开销达到目标；
 - 关闭 MCP 不影响 REST。
+
+Phase 2 实现说明：
+
+- 官方 `mcp==1.27.2` 被精确锁定在 `pyproject.toml` 和 `uv.lock`，避免 v2 稳定版发布
+  后发生无意升级；
+- `app/mcp_server/` 提供独立 Uvicorn 入口，采用
+  `stateless_http=true`、`json_response=true` 和 `/mcp` 单端点；
+- `RAG_MCP_SCOPE_MAPPING_JSON` 只接受冻结契约中的逻辑 Scope，可将一个 Scope 映射到
+  多个知识库并限制内容类型；
+- `knowledge_search` 并发调用各知识库，对库内排名执行跨库 RRF，任一知识库失败时保留
+  可信结果并标记 `federation` 降级；
+- 多库版本使用排序后的 `knowledge_base_id:content_revision` 计算 SHA-256；Chunk
+  Resource 强制校验 Scope、知识库归属、当前 revision 以及内部 REST Service Token；
+- Gateway 对查询中的常见凭证赋值和 Bearer Token 二次脱敏，Tool 标记为只读、幂等、
+  非破坏且非开放世界；
+- 生产鉴权通过 JWKS 验证短期 JWT 的签名、issuer、audience、expiry、OAuth scope 和
+  `knowledge_scopes`，Origin 与 Host 由 MCP Transport Security 校验；
+- `/health/live`、`/health/ready` 和 `/metrics` 与 REST 生命周期独立；
+- 自动化测试使用官方 Python `ClientSession` 完成初始化、Tool 发现、Structured
+  Content 调用和 Resource 回读，并使用冻结 JSON Schema 校验输出；
+- 已使用官方 Inspector CLI 对真实 Streamable HTTP 进程执行 `tools/list` 冒烟，
+  Tool annotations 与 Input/Output Schema 均成功返回。
 
 ### Phase 3：Agent 共享 Knowledge Gateway
 
