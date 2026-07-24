@@ -341,9 +341,16 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
 
     def t_search_smoke():
         # 混合检索冒烟（依赖向量/关键词服务是否就绪）
+        knowledge_bases = client.get("/v1/knowledge-bases")
+        knowledge_bases.raise_for_status()
+        knowledge_base_id = knowledge_bases.json()["items"][0]["id"]
         r = client.post(
             "/v1/search",
-            json={"query": f"Dynamic test page {run_id}", "top_k": 5},
+            json={
+                "query": f"Dynamic test page {run_id}",
+                "knowledge_base_id": knowledge_base_id,
+                "top_k": 5,
+            },
         )
         if r.status_code == 404:
             return "search endpoint absent (skip)"

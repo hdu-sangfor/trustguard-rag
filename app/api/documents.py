@@ -36,6 +36,7 @@ def _document_response(doc) -> DocumentResponse:
     """将文档行映射为公开的文档响应结构。"""
     return DocumentResponse(
         id=doc.id,
+        knowledge_base_id=doc.knowledge_base_id,
         source_type=doc.source_type,
         source_uri=doc.source_uri,
         content_hash=doc.content_hash,
@@ -85,6 +86,7 @@ async def list_documents(
     limit: int = Query(default=20, ge=1, le=100),
     status_filter: DocumentStatus | None = Query(default=None, alias="status"),
     query: str | None = Query(default=None, alias="q", max_length=512),
+    knowledge_base_id: str | None = Query(default=None, max_length=36),
 ) -> DocumentListResponse:
     """分页列出知识库文档，支持状态和关键词筛选。"""
     rows, total = await get_document_store().list(
@@ -92,6 +94,7 @@ async def list_documents(
         limit=limit,
         status=status_filter,
         query=query.strip() if query and query.strip() else None,
+        knowledge_base_id=knowledge_base_id,
     )
     return DocumentListResponse(
         items=[_document_response(row) for row in rows],

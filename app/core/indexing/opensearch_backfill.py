@@ -10,6 +10,7 @@ from app.core.retrieval.keyword_retriever import KeywordRetriever
 from app.domain import DocumentStatus
 from app.stores.chunk_store import ChunkStore, get_chunk_store
 from app.stores.document_store import DocumentStore, get_document_store
+from app.stores.knowledge_base_store import DEFAULT_KNOWLEDGE_BASE_ID
 
 
 @dataclass(frozen=True)
@@ -39,15 +40,22 @@ async def backfill_ready_documents(
     document_count = 0
     chunk_count = 0
     for document in documents:
+        knowledge_base_id = getattr(
+            document, "knowledge_base_id", None
+        ) or DEFAULT_KNOWLEDGE_BASE_ID
         rows = await chunks_source.list_for_document(document.id)
         chunks: list[dict[str, Any]] = [
             {
                 "id": row.id,
                 "document_id": row.document_id,
+                "knowledge_base_id": knowledge_base_id,
                 "chunk_index": row.chunk_index,
                 "text": row.text,
                 "page_no": row.page_no,
-                "metadata": row.metadata_json,
+                "metadata": {
+                    **(row.metadata_json or {}),
+                    "knowledge_base_id": knowledge_base_id,
+                },
             }
             for row in rows
             if row.status == "active"

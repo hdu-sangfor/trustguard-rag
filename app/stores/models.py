@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import DateTime, Enum as SqlEnum, Float, Index, Integer, JSON, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, Float, Index, Integer, JSON, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.domain import DocumentStatus, IngestJobStatus, IngestStep, OutboxStatus, OcrRegionStatus
@@ -21,10 +21,37 @@ class Base(DeclarativeBase):
     pass
 
 
-class DocumentRow(Base):
-    __tablename__ = "documents"
+class KnowledgeBaseRow(Base):
+    """知识库配置；模型在知识库级冻结，避免请求级向量空间混用。"""
+
+    __tablename__ = "knowledge_bases"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True)
+    description: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    embedding_profile: Mapped[str] = mapped_column(String(64))
+    embedding_provider: Mapped[str] = mapped_column(String(32))
+    embedding_api_driver: Mapped[str] = mapped_column(
+        String(32), default="openai_compatible"
+    )
+    embedding_model: Mapped[str] = mapped_column(String(128))
+    embedding_dim: Mapped[int] = mapped_column(Integer)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DocumentRow(Base):
+    __tablename__ = "documents"
+    __table_args__ = (Index("idx_documents_knowledge_base", "knowledge_base_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    knowledge_base_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     source_type: Mapped[str] = mapped_column(String(32))
     source_uri: Mapped[str] = mapped_column(String(2048))
     content_hash: Mapped[str] = mapped_column(String(64))

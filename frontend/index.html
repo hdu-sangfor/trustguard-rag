@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="TrustGuard RAG 知识库控制台">
   <title>TrustGuard · 知识库</title>
-  <link rel="stylesheet" href="/assets/app.css">
+  <link rel="stylesheet" href="/assets/app.css?v=20260723-kb1">
 </head>
 <body>
   <div class="shell">
@@ -18,7 +18,7 @@
       <nav class="nav" aria-label="主导航">
         <button class="nav-item active" data-view="workspace"><span>⌂</span>工作台</button>
         <button class="nav-item" data-view="search"><span>⌕</span>知识检索</button>
-        <button class="nav-item" data-view="documents"><span>▤</span>文档检查器</button>
+        <button class="nav-item" data-view="documents"><span>▤</span>知识库管理</button>
         <button class="nav-item" data-view="system"><span>◉</span>系统状态</button>
       </nav>
 
@@ -54,6 +54,13 @@
               <p>或点击选择文件 · 最大 50 MB · PDF 默认本地解析，DOCX 由 MinerU 解析</p>
               <div class="selected-file" id="selected-file" hidden></div>
             </div>
+            <label class="embedding-profile-field">
+              <span>目标知识库</span>
+              <select id="upload-knowledge-base" aria-label="目标知识库">
+                <option value="">正在加载知识库…</option>
+              </select>
+              <small id="upload-embedding-hint">向量化模型由知识库固定，上传时不能单独修改</small>
+            </label>
             <button class="primary-button" id="upload-button" disabled>
               <span>开始解析入库</span><b>→</b>
             </button>
@@ -98,6 +105,7 @@
             </label>
 
             <div class="search-primary-options">
+              <label><span>检索范围（必选）</span><select id="search-knowledge-base" required><option value="">正在加载知识库…</option></select></label>
               <label><span>返回数量</span><input id="search-top-k" type="number" min="1" max="100" value="10"></label>
               <label><span>融合策略</span><select id="search-fusion"><option value="rrf">RRF 排名融合</option><option value="weighted_score">加权分数融合</option></select></label>
               <div class="search-switches" role="group" aria-label="检索引擎">
@@ -106,14 +114,20 @@
                 <label><input id="search-rerank" type="checkbox" checked><span>结果重排</span></label>
               </div>
             </div>
+            <p id="search-scope-hint" class="search-scope-hint">请选择一个知识库；本次检索不会访问其他知识库。</p>
 
             <details class="search-advanced">
               <summary>高级参数</summary>
               <div class="search-advanced-grid">
                 <label><span>向量召回上限</span><input id="search-vector-top-k" type="number" min="1" max="200" placeholder="使用服务默认值"></label>
                 <label><span>关键词召回上限</span><input id="search-keyword-top-k" type="number" min="1" max="200" placeholder="使用服务默认值"></label>
+                <label><span>每篇文档最多分块</span><input id="search-max-chunks-per-document" type="number" min="1" max="10" value="1"></label>
+                <label><span>最低向量分数</span><input id="search-min-vector-score" type="number" min="-1" max="1" step="0.01" placeholder="使用当前模型校准值"></label>
+                <label><span>组件额外重试</span><input id="search-component-retries" type="number" min="0" max="5" value="2"></label>
                 <label><span>向量权重</span><input id="search-vector-weight" type="number" min="0" max="1" step="0.05" value="0.7" disabled></label>
                 <label><span>关键词权重</span><input id="search-keyword-weight" type="number" min="0" max="1" step="0.05" value="0.3" disabled></label>
+                <label><span>低置信度拒答</span><input id="search-abstention" type="checkbox" checked></label>
+                <label><span>安全编号精确命中</span><input id="search-exact-entity" type="checkbox" checked></label>
                 <label class="search-source-filter"><span>限定来源 URI</span><input id="search-source-uri" autocomplete="off" placeholder="可选，例如 upload://security-guide.pdf"></label>
               </div>
             </details>
@@ -131,6 +145,18 @@
       </section>
 
       <section class="view" id="view-documents">
+        <article class="panel knowledge-base-panel">
+          <div class="panel-header">
+            <div><p class="kicker">KNOWLEDGE BASES</p><h2>知识库管理</h2></div>
+            <span class="format-tag">模型创建后固定</span>
+          </div>
+          <form class="library-toolbar" id="knowledge-base-create">
+            <input id="knowledge-base-name" required maxlength="128" placeholder="知识库名称，例如：安全运营规范">
+            <select id="knowledge-base-profile" aria-label="知识库向量化模型"><option value="configured">正在加载模型…</option></select>
+            <button class="primary-button" type="submit">创建</button>
+          </form>
+          <div id="knowledge-base-summary" class="knowledge-base-summary"></div>
+        </article>
         <article class="panel library-panel">
           <div class="panel-header">
             <div><p class="kicker">KNOWLEDGE BASE</p><h2>知识库文档</h2></div>
@@ -138,6 +164,7 @@
           </div>
           <form class="library-toolbar" id="documents-filter">
             <input id="documents-query" placeholder="搜索标题、文件名或来源" autocomplete="off">
+            <select id="documents-knowledge-base" aria-label="按知识库筛选"><option value="">全部知识库</option></select>
             <select id="documents-status" aria-label="按状态筛选">
               <option value="">全部状态</option>
               <option value="ready">已发布</option>
@@ -182,6 +209,6 @@
     </main>
   </div>
   <div class="toast-stack" id="toasts" aria-live="polite"></div>
-  <script src="/assets/app.js" defer></script>
+  <script src="/assets/app.js?v=20260723-kb1" defer></script>
 </body>
 </html>

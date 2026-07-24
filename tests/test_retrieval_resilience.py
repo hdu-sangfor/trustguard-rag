@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
+from app.core.embedding.client import EmbeddingError
 from app.core.indexing.opensearch_backfill import backfill_ready_documents
 from app.core.retrieval.keyword_retriever import KeywordRetriever
 from app.core.retrieval.reranker import RerankError
@@ -22,6 +23,7 @@ def search_settings(monkeypatch):
     monkeypatch.setenv("RAG_QDRANT_MOCK", "true")
     monkeypatch.setenv("RAG_SEARCH_OPENSEARCH_MOCK", "true")
     monkeypatch.setenv("RAG_RERANK_PROVIDER", "none")
+    monkeypatch.setenv("RAG_SEARCH_COMPONENT_RETRY_BACKOFF_SECONDS", "0")
     get_settings.cache_clear()
     yield get_settings()
     get_settings.cache_clear()
@@ -175,7 +177,7 @@ async def test_hybrid_search_fails_when_all_enabled_backends_fail(search_setting
     engine._keyword = SimpleNamespace(retrieve=AsyncMock(side_effect=RuntimeError("keyword")))
 
     with pytest.raises(SearchUnavailableError):
-        await engine.search("查询", enable_rerank=False)
+        await engine.search("查询", knowledge_base_id="kb-test", enable_rerank=False)
 
 
 @pytest.mark.asyncio
@@ -196,12 +198,271 @@ async def test_hybrid_search_reports_partial_degradation(search_settings) -> Non
         )
     )
 
-    result = await engine.search("查询", enable_rerank=False)
+    result = await engine.search(
+        "查询", knowledge_base_id="kb-test", enable_rerank=False
+    )
 
     assert result["total"] == 1
     assert result["degraded_components"] == ["vector"]
     assert result["search_status"] is SearchStatus.DEGRADED
     assert result["effective_mode"] is EffectiveSearchMode.KEYWORD_ONLY
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_recovers_vector_component_with_retry(
+    search_settings,
+) -> None:
+    vector = SimpleNamespace(
+        retrieve=AsyncMock(
+            side_effect=[
+                RuntimeError("temporary vector failure"),
+                [
+                    {
+                        "chunk_id": "vector-1",
+                        "text": "向量结果",
+                        "score": 0.9,
+                        "document_id": "doc-1",
+                    }
+                ],
+            ]
+        )
+    )
+    engine = HybridSearch()
+    engine._vector = vector
+    engine._keyword = SimpleNamespace(retrieve=AsyncMock(return_value=[]))
+    engine._documents = SimpleNamespace(
+        ready_ids=AsyncMock(return_value={"doc-1"})
+    )
+
+    result = await engine.search(
+        "查询",
+        knowledge_base_id="kb-test",
+        enable_rerank=False,
+        component_max_retries=2,
+    )
+
+    assert result["search_status"] is SearchStatus.OK
+    assert result["degraded_components"] == []
+    assert result["component_attempts"]["vector"] == 2
+    assert result["recovered_components"] == ["vector"]
+    assert vector.retrieve.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_does_not_retry_permanent_embedding_error(
+    search_settings,
+) -> None:
+    vector = SimpleNamespace(
+        retrieve=AsyncMock(
+            side_effect=EmbeddingError("quota exhausted", retryable=False)
+        )
+    )
+    engine = HybridSearch()
+    engine._vector = vector
+    engine._keyword = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                {
+                    "chunk_id": "keyword-1",
+                    "text": "关键词结果",
+                    "score": 1.0,
+                    "document_id": "doc-1",
+                }
+            ]
+        )
+    )
+    engine._documents = SimpleNamespace(
+        ready_ids=AsyncMock(return_value={"doc-1"})
+    )
+
+    result = await engine.search(
+        "查询",
+        knowledge_base_id="kb-test",
+        enable_rerank=False,
+        enable_abstention=False,
+        component_max_retries=2,
+    )
+
+    assert result["search_status"] is SearchStatus.DEGRADED
+    assert result["component_attempts"]["vector"] == 1
+    assert vector.retrieve.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_exact_identifier_without_exact_match_abstains(
+    search_settings,
+) -> None:
+    engine = HybridSearch()
+    engine._vector = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                {
+                    "chunk_id": "noise",
+                    "text": "其他漏洞",
+                    "score": 0.99,
+                    "document_id": "doc-noise",
+                    "entity_id": "CVE-2026-99999",
+                    "entity_ids": ["CVE-2026-99999"],
+                }
+            ]
+        )
+    )
+    engine._documents = SimpleNamespace(
+        ready_ids=AsyncMock(return_value={"doc-noise"})
+    )
+
+    result = await engine.search(
+        "CVE-2099-9001 是什么？",
+        knowledge_base_id="kb-test",
+        enable_keyword=False,
+        enable_rerank=False,
+        min_vector_score=0.5,
+    )
+
+    assert result["results"] == []
+    assert result["abstained"] is True
+    assert result["abstention_reason"] == "no_exact_entity_match"
+
+
+@pytest.mark.asyncio
+async def test_low_vector_score_abstains_for_semantic_query(
+    search_settings,
+) -> None:
+    engine = HybridSearch()
+    engine._vector = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                {
+                    "chunk_id": "weak",
+                    "text": "低相关内容",
+                    "score": 0.49,
+                    "document_id": "doc-weak",
+                }
+            ]
+        )
+    )
+    engine._documents = SimpleNamespace(
+        ready_ids=AsyncMock(return_value={"doc-weak"})
+    )
+
+    result = await engine.search(
+        "虚构产品的量子隧道漏洞",
+        knowledge_base_id="kb-test",
+        enable_keyword=False,
+        enable_rerank=False,
+        min_vector_score=0.52,
+    )
+
+    assert result["results"] == []
+    assert result["abstained"] is True
+    assert result["abstention_reason"] == "low_vector_score"
+    assert result["min_vector_score"] == 0.52
+
+
+@pytest.mark.asyncio
+async def test_hybrid_confidence_gate_keeps_keyword_only_candidates_with_vector_anchor(
+    search_settings,
+) -> None:
+    engine = HybridSearch()
+    engine._vector = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                {
+                    "chunk_id": "vector-anchor",
+                    "text": "可信向量结果",
+                    "score": 0.80,
+                    "document_id": "doc-vector",
+                },
+                {
+                    "chunk_id": "weak-vector",
+                    "text": "低分向量结果",
+                    "score": 0.40,
+                    "document_id": "doc-weak",
+                },
+            ]
+        )
+    )
+    engine._keyword = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                {
+                    "chunk_id": "keyword-only",
+                    "text": "仅关键词召回",
+                    "score": 12.0,
+                    "document_id": "doc-keyword",
+                },
+                {
+                    "chunk_id": "weak-vector",
+                    "text": "低分向量但有关键词证据",
+                    "score": 8.0,
+                    "document_id": "doc-weak",
+                },
+            ]
+        )
+    )
+    engine._documents = SimpleNamespace(
+        ready_ids=AsyncMock(
+            return_value={"doc-vector", "doc-keyword", "doc-weak"}
+        )
+    )
+
+    result = await engine.search(
+        "混合检索",
+        knowledge_base_id="kb-test",
+        enable_rerank=False,
+        min_vector_score=0.52,
+    )
+
+    by_id = {item["chunk_id"]: item for item in result["results"]}
+    assert set(by_id) == {"vector-anchor", "keyword-only", "weak-vector"}
+    assert by_id["keyword-only"]["vector_score"] is None
+    assert by_id["keyword-only"]["keyword_score"] == 12.0
+    assert result["abstained"] is False
+
+
+@pytest.mark.asyncio
+async def test_hybrid_confidence_gate_abstains_without_vector_anchor(
+    search_settings,
+) -> None:
+    engine = HybridSearch()
+    engine._vector = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                {
+                    "chunk_id": "weak-vector",
+                    "text": "低分向量结果",
+                    "score": 0.40,
+                    "document_id": "doc-weak",
+                }
+            ]
+        )
+    )
+    engine._keyword = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                {
+                    "chunk_id": "keyword-only",
+                    "text": "关键词噪声",
+                    "score": 20.0,
+                    "document_id": "doc-keyword",
+                }
+            ]
+        )
+    )
+    engine._documents = SimpleNamespace(
+        ready_ids=AsyncMock(return_value={"doc-weak", "doc-keyword"})
+    )
+
+    result = await engine.search(
+        "超出知识库范围的问题",
+        knowledge_base_id="kb-test",
+        enable_rerank=False,
+        min_vector_score=0.52,
+    )
+
+    assert result["results"] == []
+    assert result["abstained"] is True
+    assert result["abstention_reason"] == "low_vector_score"
 
 
 @pytest.mark.asyncio
@@ -215,7 +476,7 @@ async def test_hybrid_search_fails_when_partial_degradation_has_no_result(
     engine._keyword = SimpleNamespace(retrieve=AsyncMock(return_value=[]))
 
     with pytest.raises(SearchUnavailableError, match="no reliable result"):
-        await engine.search("查询", enable_rerank=False)
+        await engine.search("查询", knowledge_base_id="kb-test", enable_rerank=False)
 
 
 @pytest.mark.asyncio
@@ -227,7 +488,9 @@ async def test_hybrid_search_returns_true_empty_when_backends_are_healthy(
     engine._keyword = SimpleNamespace(retrieve=AsyncMock(return_value=[]))
     engine._documents = SimpleNamespace(ready_ids=AsyncMock(return_value=set()))
 
-    result = await engine.search("查询", enable_rerank=False)
+    result = await engine.search(
+        "查询", knowledge_base_id="kb-test", enable_rerank=False
+    )
 
     assert result["total"] == 0
     assert result["search_status"] is SearchStatus.OK
@@ -255,7 +518,12 @@ async def test_hybrid_search_reports_rerank_degradation(search_settings) -> None
         rerank=AsyncMock(side_effect=RerankError("reranker unavailable"))
     )
 
-    result = await engine.search("查询", enable_keyword=False, enable_rerank=True)
+    result = await engine.search(
+        "查询",
+        knowledge_base_id="kb-test",
+        enable_keyword=False,
+        enable_rerank=True,
+    )
 
     assert result["total"] == 1
     assert result["results"][0]["chunk_id"] == "chunk-1"
@@ -289,6 +557,7 @@ async def test_hybrid_search_filters_non_ready_documents(search_settings) -> Non
 
     result = await engine.search(
         "查询",
+        knowledge_base_id="kb-test",
         enable_keyword=False,
         enable_rerank=False,
     )
@@ -304,7 +573,6 @@ def test_production_rejects_mock_retrieval_backends() -> None:
             qdrant_mock=True,
             search_opensearch_mock=False,
         )
-
     with pytest.raises(ValidationError, match="Production cannot enable mock"):
         Settings(
             _env_file=None,
@@ -313,6 +581,15 @@ def test_production_rejects_mock_retrieval_backends() -> None:
             search_opensearch_mock=True,
         )
 
+
+def test_search_component_retry_settings_are_bounded() -> None:
+    with pytest.raises(ValidationError, match="MAX_RETRIES"):
+        Settings(_env_file=None, search_component_max_retries=6)
+    with pytest.raises(ValidationError, match="BACKOFF_SECONDS"):
+        Settings(
+            _env_file=None,
+            search_component_retry_backoff_seconds=-0.1,
+        )
 
 @pytest.mark.asyncio
 async def test_search_api_returns_503_when_no_reliable_result(
@@ -324,10 +601,16 @@ async def test_search_api_returns_503_when_no_reliable_result(
     )
     engine._keyword = SimpleNamespace(retrieve=AsyncMock(return_value=[]))
     monkeypatch.setattr("app.api.search.get_hybrid_search", lambda: engine)
+    knowledge_bases = await client.get("/v1/knowledge-bases")
+    knowledge_base_id = knowledge_bases.json()["items"][0]["id"]
 
     response = await client.post(
         "/v1/search",
-        json={"query": "查询", "enable_rerank": False},
+        json={
+            "query": "查询",
+            "knowledge_base_id": knowledge_base_id,
+            "enable_rerank": False,
+        },
     )
 
     assert response.status_code == 503

@@ -7,6 +7,11 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from app.core.embedding.client import EmbeddingClient, EmbeddingError, normalize_embedding_provider
+from app.core.embedding.profiles import (
+    EmbeddingProfile,
+    get_embedding_profile,
+    profile_settings,
+)
 from app.core.indexing.opensearch_indexer import OpenSearchIndexer, get_opensearch_indexer
 from app.core.indexing.qdrant_indexer import get_qdrant_indexer
 from app.core.ingest.chunker import ChunkingError, chunk_extracted_text
@@ -15,6 +20,7 @@ from app.core.ingest.errors import (
     ARTIFACT_WRITE_FAILED,
     CHUNKING_FAILED,
     EMBEDDING_FAILED,
+    EMBEDDING_PROFILE_CONFLICT,
     EMPTY_CONTENT,
     FILE_TOO_LARGE,
     FILENAME_CONFLICT,
@@ -40,6 +46,7 @@ from app.stores.blob_store import BlobStore, get_blob_store
 from app.stores.chunk_store import ChunkStore
 from app.stores.document_store import DocumentStore
 from app.stores.job_store import JobStore, LeaseLostError
+from app.stores.knowledge_base_store import DEFAULT_KNOWLEDGE_BASE_ID
 from app.stores.outbox_store import OutboxStore
 from app.workers.messages import CLEANUP_DOCUMENT
 
@@ -58,10 +65,18 @@ def _chunk_id(document_id: str, chunk_index: int) -> str:
     return str(uuid5(NAMESPACE_URL, f"trustguard:document:{document_id}:chunk:{chunk_index}"))
 
 
-def _embedding_metadata(settings: Settings) -> dict[str, str]:
+def _embedding_metadata(
+    settings: Settings,
+    profile: EmbeddingProfile | None = None,
+    knowledge_base_id: str | None = None,
+) -> dict[str, str]:
     """仅为本地嵌入记录模型下载源，避免远程/伪向量元数据产生歧义。"""
     provider = normalize_embedding_provider(settings.embedding_provider)
     metadata = {"embedding_provider": provider}
+    if profile is not None:
+        metadata["embedding_profile"] = profile.id
+    if knowledge_base_id:
+        metadata["knowledge_base_id"] = knowledge_base_id
     if provider == "local":
         metadata["embedding_download_source"] = settings.embedding_download_source
     return metadata
@@ -129,7 +144,12 @@ class IngestPipeline:
         self._chunks = chunk_store or ChunkStore()
         self._blobs = blob_store or get_blob_store()
         self._extractor = extractor or FileExtractor()
-        self._embedder = embedder or EmbeddingClient()
+        self._embedder_injected = embedder is not None
+        self._indexer_injected = indexer is not None
+        self._embedding_profile = get_embedding_profile("configured")
+        self._knowledge_base_id = DEFAULT_KNOWLEDGE_BASE_ID
+        self._embedding_settings = profile_settings(self._embedding_profile)
+        self._embedder = embedder or EmbeddingClient(self._embedding_settings)
         self._indexer = indexer or get_qdrant_indexer()
         self._opensearch_indexer = opensearch_indexer or get_opensearch_indexer()
         self._ocr_regions = ocr_region_store or get_ocr_region_store()
@@ -149,6 +169,7 @@ class IngestPipeline:
         job = await self._jobs.get(job_id)
         if not job:
             return PipelineResult.MISSING
+        self._configure_embedding(job.options_json or {})
         document_id: str | None = job.document_id
         try:
             await self._jobs.mark_running(
@@ -205,9 +226,26 @@ class IngestPipeline:
                 job_id, IngestStep.DEDUP, lease_token=lease_token
             )
             existing = await self._documents.find_by_source(
-                job.source_type, extracted.source_uri, extracted.content_hash
+                job.source_type,
+                extracted.source_uri,
+                extracted.content_hash,
+                knowledge_base_id=self._knowledge_base_id,
             )
             if existing and existing.status == DocumentStatus.READY:
+                existing_chunks = await self._chunks.list_for_document(existing.id)
+                existing_profile = (
+                    (existing_chunks[0].metadata_json or {}).get(
+                        "embedding_profile", "configured"
+                    )
+                    if existing_chunks
+                    else "configured"
+                )
+                if existing_profile != self._embedding_profile.id:
+                    raise IngestError(
+                        EMBEDDING_PROFILE_CONFLICT,
+                        "Content already exists with another embedding profile; "
+                        "delete it before re-ingesting",
+                    )
                 await self._jobs.finish(
                     job_id,
                     IngestJobStatus.DEDUPLICATED,
@@ -232,6 +270,7 @@ class IngestPipeline:
                     original_filename=original_filename,
                     metadata=extracted.metadata,
                     document_id=document_id,
+                    knowledge_base_id=self._knowledge_base_id,
                 )
                 await self._jobs.finish(
                     job_id,
@@ -257,6 +296,7 @@ class IngestPipeline:
                 original_filename=original_filename,
                 metadata=extracted.metadata,
                 document_id=document_id,
+                knowledge_base_id=self._knowledge_base_id,
             )
             await self._jobs.set_document_id(
                 job_id, doc.id, lease_token=lease_token
@@ -303,8 +343,10 @@ class IngestPipeline:
                 job_id, IngestStep.EMBED, lease_token=lease_token
             )
             vectors = await self._embedder.embed_texts([d.text for d in drafts])
-            settings = get_settings()
-            embedding_metadata = _embedding_metadata(settings)
+            settings = self._embedding_settings
+            embedding_metadata = _embedding_metadata(
+                settings, self._embedding_profile, self._knowledge_base_id
+            )
 
             chunk_rows: list[dict[str, Any]] = []
             for i, draft in enumerate(drafts):
@@ -431,6 +473,7 @@ class IngestPipeline:
             IngestJobStatus.RUNNING,
         }:
             raise ValueError("Job is not resolving a conflict")
+        self._configure_embedding(job.options_json or {})
         pending_id = job.pending_document_id
         candidates = list(job.conflict_candidates_json or [])
         if not pending_id:
@@ -593,8 +636,10 @@ class IngestPipeline:
             except ChunkingError as e:
                 raise IngestError(CHUNKING_FAILED, str(e)) from e
             vectors = await self._embedder.embed_texts([d.text for d in drafts])
-            settings = get_settings()
-            embedding_metadata = _embedding_metadata(settings)
+            settings = self._embedding_settings
+            embedding_metadata = _embedding_metadata(
+                settings, self._embedding_profile, self._knowledge_base_id
+            )
             chunk_rows: list[dict[str, Any]] = []
             for i, draft in enumerate(drafts):
                 cid = _chunk_id(document_id, i)
@@ -663,11 +708,15 @@ class IngestPipeline:
         conflicts: list[str] = []
         if job.source_type == "file" and extracted.metadata.get("original_filename"):
             fname = extracted.metadata["original_filename"]
-            for doc in await self._documents.find_ready_by_filename(fname):
+            for doc in await self._documents.find_ready_by_filename(
+                fname, knowledge_base_id=self._knowledge_base_id
+            ):
                 if doc.content_hash != extracted.content_hash:
                     conflicts.append(doc.id)
         for doc in await self._documents.find_ready_by_source_uri(
-            extracted.source_uri, exclude_hash=extracted.content_hash
+            extracted.source_uri,
+            exclude_hash=extracted.content_hash,
+            knowledge_base_id=self._knowledge_base_id,
         ):
             if doc.id not in conflicts:
                 conflicts.append(doc.id)
@@ -699,6 +748,18 @@ class IngestPipeline:
         doc = await self._documents.get(document_id)
         if not doc:
             raise ValueError("document not found")
+        old_rows = await self._chunks.list_for_document(document_id)
+        profile_id = (
+            (old_rows[0].metadata_json or {}).get("embedding_profile", "configured")
+            if old_rows
+            else "configured"
+        )
+        self._configure_embedding(
+            {
+                "embedding_profile": profile_id,
+                "knowledge_base_id": doc.knowledge_base_id or DEFAULT_KNOWLEDGE_BASE_ID,
+            }
+        )
         regions = await self._ocr_regions.effective_texts_for_document(document_id)
         blob_path = doc.blob_path or f"artifacts/{document_id}/v{doc.doc_version}"
         try:
@@ -714,9 +775,11 @@ class IngestPipeline:
         chunk_drafts = chunk_extracted_text(merged)
         if not chunk_drafts:
             raise IngestError(EMPTY_CONTENT, "OCR corrections produced no chunks")
-        settings = get_settings()
+        settings = self._embedding_settings
         vectors = await self._embedder.embed_texts([d.text for d in chunk_drafts])
-        embedding_metadata = _embedding_metadata(settings)
+        embedding_metadata = _embedding_metadata(
+            settings, self._embedding_profile, self._knowledge_base_id
+        )
         chunk_rows: list[dict[str, Any]] = []
         for i, draft in enumerate(chunk_drafts):
             cid = _chunk_id(document_id, i)
@@ -735,7 +798,6 @@ class IngestPipeline:
                 }
             )
 
-        old_rows = await self._chunks.list_for_document(document_id)
         old_chunks = [
             {
                 "id": row.id,
@@ -757,6 +819,7 @@ class IngestPipeline:
             if old_chunks
             else []
         )
+
         try:
             await self._documents.update_status(document_id, DocumentStatus.INDEXING)
             await self._indexer.delete_document(document_id)
@@ -813,6 +876,41 @@ class IngestPipeline:
                 logger.exception("OCR correction rollback failed for %s", document_id)
                 await self._documents.update_status(document_id, DocumentStatus.FAILED)
             raise
+
+    def _configure_embedding(self, options: dict[str, Any]) -> None:
+        """从任务快照恢复模型配置，避免 Worker 重启后使用了不同的全局模型。"""
+        profile = get_embedding_profile(options.get("embedding_profile", "configured"))
+        settings = profile_settings(profile)
+        if options.get("embedding_model"):
+            settings = settings.model_copy(
+                update={
+                    "embedding_provider": options.get(
+                        "embedding_provider", settings.embedding_provider
+                    ),
+                    "embedding_api_driver": options.get(
+                        "embedding_api_driver", settings.embedding_api_driver
+                    ),
+                    "embedding_model": options["embedding_model"],
+                    "embedding_dim": options.get("embedding_dim", settings.embedding_dim),
+                    "embedding_query_instruction": options.get(
+                        "embedding_query_instruction",
+                        settings.embedding_query_instruction,
+                    ),
+                }
+            )
+        self._embedding_profile = profile
+        self._knowledge_base_id = options.get(
+            "knowledge_base_id", DEFAULT_KNOWLEDGE_BASE_ID
+        )
+        self._embedding_settings = settings
+        if not self._embedder_injected:
+            self._embedder = EmbeddingClient(settings)
+        if not self._indexer_injected:
+            self._indexer = (
+                get_qdrant_indexer()
+                if profile.id == "configured"
+                else get_qdrant_indexer(settings, profile=profile)
+            )
 
 
 def get_ingest_pipeline() -> IngestPipeline:

@@ -135,6 +135,68 @@ async def test_api_embedding_batches_document_inputs(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_bailian_embedding_uses_native_retrieval_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict, dict]] = []
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "output": {
+                    "embeddings": [
+                        {"text_index": 0, "embedding": [1.0, 0.0]}
+                    ]
+                },
+                "usage": {"total_tokens": 3},
+            }
+
+    class _AsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, json, headers):
+            calls.append((url, json, headers))
+            return _Response()
+
+    monkeypatch.setattr("app.core.embedding.client.httpx.AsyncClient", _AsyncClient)
+    settings = Settings(
+        _env_file=None,
+        embedding_provider="bailian",
+        embedding_base_url="https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        embedding_api_key="secret",
+        embedding_model="qwen3.7-text-embedding",
+        embedding_dim=2,
+        embedding_query_instruction="Retrieve cybersecurity evidence",
+    )
+
+    vector = await EmbeddingClient(settings).embed_query("查询")
+
+    assert vector == [1.0, 0.0]
+    url, payload, headers = calls[0]
+    assert url.endswith("/api/v1/services/embeddings/text-embedding/text-embedding")
+    assert payload["input"] == {"texts": ["查询"]}
+    assert payload["parameters"] == {
+        "dimension": 2,
+        "output_type": "dense",
+        "text_type": "query",
+        "instruct": "Retrieve cybersecurity evidence",
+    }
+    assert headers["Authorization"] == "Bearer secret"
+
+
+@pytest.mark.asyncio
 async def test_api_embedding_aggregates_provider_usage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -145,7 +145,8 @@ class Settings(BaseSettings):
     local_storage_dir: str = "./data/storage"  # `minio_enabled` 为 False 时使用
 
     # --- 嵌入（启动前需冻结单一模型，维度必须与模型匹配；见 §5.1“嵌入模型冻结”） ---
-    embedding_provider: str = "pseudo"  # 提供方取值：pseudo | local | api | openai_compatible
+    embedding_provider: str = "pseudo"  # 执行位置：pseudo | local | api
+    embedding_api_driver: str = "openai_compatible"  # API 协议：openai_compatible | bailian
     embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
     embedding_dim: int = 1024
     embedding_device: str = "auto"
@@ -187,6 +188,8 @@ class Settings(BaseSettings):
     search_vector_weight: float = 0.6  # 加权分数模式下的向量检索权重
     search_keyword_weight: float = 0.4  # 加权分数模式下的关键词检索权重
     search_opensearch_mock: bool = True  # 设为 True 时使用内存模拟 BM25，无需真实 OpenSearch
+    search_component_max_retries: int = 2
+    search_component_retry_backoff_seconds: float = 0.25
 
     # --- 健康检查 ---
     health_check_timeout_seconds: float = 3.0
@@ -201,6 +204,14 @@ class Settings(BaseSettings):
         if not 0 <= self.chunk_overlap_tokens < self.chunk_target_tokens:
             raise ValueError(
                 "RAG_CHUNK_OVERLAP_TOKENS 必须大于等于 0，并且小于 RAG_CHUNK_TARGET_TOKENS"
+            )
+        if not 0 <= self.search_component_max_retries <= 5:
+            raise ValueError(
+                "RAG_SEARCH_COMPONENT_MAX_RETRIES 必须在 0 到 5 之间"
+            )
+        if self.search_component_retry_backoff_seconds < 0:
+            raise ValueError(
+                "RAG_SEARCH_COMPONENT_RETRY_BACKOFF_SECONDS 不能小于 0"
             )
         if self.app_env.strip().lower() != "prod":
             return self

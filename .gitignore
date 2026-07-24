@@ -52,3 +52,9 @@ desktop.ini
 /evaluation/cybersecurity/datasets/
 /evaluation/cybersecurity/datasets-v02-hard/
 /evaluation/cybersecurity/results/*.json
+
+# ---- Crawler 评测仅提交最终报告，其余语料、脚本和原始结果保留在本地 ----
+/evaluation/crawler/*
+!/evaluation/crawler/results/
+/evaluation/crawler/results/*
+!/evaluation/crawler/results/report.md

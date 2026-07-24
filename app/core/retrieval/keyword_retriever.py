@@ -7,10 +7,23 @@ import hashlib
 from typing import Any
 
 from app.core.retrieval.filters import build_opensearch_filters, matches_filters
+from app.core.retrieval.security_entities import (
+    build_security_entity_fields,
+    exact_entity_match_priority,
+    extract_security_entity_ids,
+)
 from app.settings import get_settings
 from app.stores import opensearch_store
 
 _INDEX_INIT_LOCK = asyncio.Lock()
+_SECURITY_ENTITY_PROPERTIES = {
+    "entity_id": {"type": "keyword"},
+    "entity_type": {"type": "keyword"},
+    "entity_ids": {"type": "keyword"},
+    "entity_types": {"type": "keyword"},
+    "title": {"type": "text", "analyzer": "standard"},
+    "aliases": {"type": "keyword"},
+}
 
 
 class KeywordRetriever:
@@ -29,6 +42,15 @@ class KeywordRetriever:
         client = opensearch_store.get_client()
         exists = await client.indices.exists(index=self._index)
         if exists:
+            await client.indices.put_mapping(
+                index=self._index,
+                body={
+                    "properties": {
+                        "knowledge_base_id": {"type": "keyword"},
+                        **_SECURITY_ENTITY_PROPERTIES,
+                    }
+                },
+            )
             return False
         await client.indices.create(
             index=self._index,
@@ -53,6 +75,8 @@ class KeywordRetriever:
                     ],
                     "properties": {
                         "chunk_id": {"type": "keyword"},
+                        "knowledge_base_id": {"type": "keyword"},
+                        **_SECURITY_ENTITY_PROPERTIES,
                         "document_id": {"type": "keyword"},
                         "chunk_index": {"type": "integer"},
                         "text": {"type": "text", "analyzer": "standard"},
@@ -75,19 +99,28 @@ class KeywordRetriever:
         source_uri: str,
         original_filename: str | None,
         page_no: int | None,
+        knowledge_base_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        security_fields: dict[str, Any] | None = None,
     ) -> None:
         client = opensearch_store.get_client()
+        security_fields = security_fields or build_security_entity_fields(
+            text=text,
+            original_filename=original_filename,
+            metadata=metadata,
+        )
         await client.index(
             index=self._index,
             id=chunk_id,
             body={
                 "chunk_id": chunk_id,
                 "document_id": document_id,
+                "knowledge_base_id": knowledge_base_id,
                 "chunk_index": chunk_index,
                 "text": text,
                 "source_uri": source_uri,
                 "original_filename": original_filename,
+                **security_fields,
                 "page_no": page_no,
                 "metadata": metadata or {},
             },
@@ -119,6 +152,49 @@ class KeywordRetriever:
         top_k = top_k or self._settings.search_keyword_top_k
 
         filter_clauses = build_opensearch_filters(filters)
+        query_entity_ids = extract_security_entity_ids(query)
+        if query_entity_ids:
+            retrieval_query: dict[str, Any] = {
+                "bool": {
+                    "should": [
+                        {
+                            "terms": {
+                                "entity_id": query_entity_ids,
+                                "boost": 100.0,
+                            }
+                        },
+                        {
+                            "terms": {
+                                "entity_ids": query_entity_ids,
+                                "boost": 40.0,
+                            }
+                        },
+                        {
+                            "terms": {
+                                "aliases": query_entity_ids,
+                                "boost": 20.0,
+                            }
+                        },
+                        {
+                            "match": {
+                                "title": {
+                                    "query": query,
+                                    "boost": 5.0,
+                                }
+                            }
+                        },
+                        {"match": {"text": {"query": query}}},
+                    ],
+                    "minimum_should_match": 1,
+                }
+            }
+        else:
+            retrieval_query = {
+                "multi_match": {
+                    "query": query,
+                    "fields": ["title^3", "text"],
+                }
+            }
 
         # 仅确保索引存在；全量回填留给 startup / 运维入口，避免读路径阻塞。
         async with _INDEX_INIT_LOCK:
@@ -130,7 +206,7 @@ class KeywordRetriever:
             body={
                 "query": {
                     "bool": {
-                        "must": [{"match": {"text": query}}],
+                        "must": [retrieval_query],
                         "filter": filter_clauses,
                     }
                 },
@@ -147,10 +223,17 @@ class KeywordRetriever:
                     "text": src.get("text", ""),
                     "score": float(hit["_score"]),
                     "document_id": src.get("document_id"),
+                    "knowledge_base_id": src.get("knowledge_base_id"),
                     "chunk_index": src.get("chunk_index"),
                     "page_no": src.get("page_no"),
                     "source_uri": src.get("source_uri"),
                     "original_filename": src.get("original_filename"),
+                    "entity_id": src.get("entity_id"),
+                    "entity_type": src.get("entity_type"),
+                    "entity_ids": src.get("entity_ids") or [],
+                    "entity_types": src.get("entity_types") or [],
+                    "title": src.get("title"),
+                    "aliases": src.get("aliases") or [],
                     "metadata": src.get("metadata"),
                 }
             )
@@ -182,7 +265,9 @@ class MockKeywordRetriever:
         source_uri: str,
         original_filename: str | None,
         page_no: int | None,
+        knowledge_base_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        security_fields: dict[str, Any] | None = None,
     ) -> None:
         pass
 
@@ -234,15 +319,24 @@ class PseudoKeywordRetriever:
         source_uri: str,
         original_filename: str | None,
         page_no: int | None,
+        knowledge_base_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        security_fields: dict[str, Any] | None = None,
     ) -> None:
+        security_fields = security_fields or build_security_entity_fields(
+            text=text,
+            original_filename=original_filename,
+            metadata=metadata,
+        )
         self._chunks[chunk_id] = {
             "chunk_id": chunk_id,
             "text": text,
             "document_id": document_id,
+            "knowledge_base_id": knowledge_base_id,
             "chunk_index": chunk_index,
             "source_uri": source_uri,
             "original_filename": original_filename,
+            **security_fields,
             "page_no": page_no,
             "metadata": metadata or {},
         }
@@ -258,11 +352,13 @@ class PseudoKeywordRetriever:
         filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         top_k = top_k or self._settings.search_keyword_top_k
+        query_entity_ids = extract_security_entity_ids(query)
         scored = []
         for cid, info in self._chunks.items():
             if not matches_filters(info, filters):
                 continue
-            score = _fake_score_from_text(info["text"], query)
+            exact_priority = exact_entity_match_priority(info, query_entity_ids)
+            score = _fake_score_from_text(info["text"], query) + exact_priority * 100.0
             if score > 0:
                 scored.append((score, {**info, "chunk_id": cid, "score": score}))
         scored.sort(key=lambda x: x[0], reverse=True)

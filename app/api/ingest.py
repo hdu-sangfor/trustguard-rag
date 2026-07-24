@@ -5,9 +5,11 @@ from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
+from app.core.embedding.profiles import get_embedding_profile
 from app.schemas.ingest import ConflictResolveRequest, IngestJobCreateResponse, IngestJobResponse
 from app.stores.blob_store import get_blob_store
 from app.stores.job_store import get_job_store
+from app.stores.knowledge_base_store import get_knowledge_base_store
 from app.workers.eager import dispatch_eager
 
 router = APIRouter(prefix="/v1/ingest", tags=["ingest"])
@@ -15,6 +17,7 @@ router = APIRouter(prefix="/v1/ingest", tags=["ingest"])
 
 def _job_response(job) -> IngestJobResponse:
     """将数据库任务行映射为公开的入库任务响应结构。"""
+    options = job.options_json or {}
     return IngestJobResponse(
         id=job.id,
         source_type=job.source_type,
@@ -31,6 +34,10 @@ def _job_response(job) -> IngestJobResponse:
         created_at=job.created_at,
         started_at=job.started_at,
         finished_at=job.finished_at,
+        knowledge_base_id=options.get("knowledge_base_id"),
+        embedding_profile=options.get("embedding_profile", "configured"),
+        embedding_model=options.get("embedding_model"),
+        embedding_dim=options.get("embedding_dim"),
     )
 
 
@@ -42,10 +49,27 @@ def _job_response(job) -> IngestJobResponse:
 async def create_ingest_job(
     source_type: str = Form(...),
     file: UploadFile = File(...),
+    knowledge_base_id: str | None = Form(default=None),
+    embedding_profile: str | None = Form(default=None),
 ) -> IngestJobCreateResponse:
     """创建文件入库任务，保存上传文件，并加入后台执行队列。"""
     if source_type != "file":
         raise HTTPException(status_code=400, detail="Only source_type=file is supported")
+    kb_store = get_knowledge_base_store()
+    try:
+        if knowledge_base_id:
+            knowledge_base = await kb_store.resolve(knowledge_base_id)
+        elif embedding_profile:
+            knowledge_base = await kb_store.ensure_profile_knowledge_base(embedding_profile)
+        else:
+            knowledge_base = await kb_store.get_default()
+        profile = get_embedding_profile(knowledge_base.embedding_profile)
+        if embedding_profile and embedding_profile != profile.id:
+            raise ValueError("Embedding profile is fixed by the selected knowledge base")
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     js = get_job_store()
     bs = get_blob_store()
     data = await file.read()
@@ -58,13 +82,30 @@ async def create_ingest_job(
             job_id=job_id,
             source_type=source_type,
             source=original_filename,
-            options={"original_filename": original_filename, "mime": mime},
+            options={
+                "original_filename": original_filename,
+                "mime": mime,
+                "knowledge_base_id": knowledge_base.id,
+                "embedding_profile": profile.id,
+                "embedding_provider": profile.provider,
+                "embedding_api_driver": profile.api_driver,
+                "embedding_model": profile.model,
+                "embedding_dim": profile.dimension,
+                "embedding_query_instruction": profile.query_instruction,
+            },
         )
     except Exception:
         bs.delete_job_staging(job_id)
         raise
     await dispatch_eager(event)
-    return IngestJobCreateResponse(job_id=job.id, status=job.status)
+    return IngestJobCreateResponse(
+        job_id=job.id,
+        status=job.status,
+        knowledge_base_id=knowledge_base.id,
+        embedding_profile=profile.id,
+        embedding_model=profile.model,
+        embedding_dim=profile.dimension,
+    )
 
 
 @router.get("/jobs/{job_id}", response_model=IngestJobResponse)

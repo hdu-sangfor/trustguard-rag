@@ -46,10 +46,12 @@ class DocumentStore:
         blob_path: str | None = None,
         metadata: dict[str, Any] | None = None,
         document_id: str | None = None,
+        knowledge_base_id: str | None = None,
     ) -> DocumentRow:
         """创建文档元数据行，可使用调用方提供的 ID。"""
         row = DocumentRow(
             id=document_id or str(uuid4()),
+            knowledge_base_id=knowledge_base_id,
             source_type=source_type,
             source_uri=source_uri,
             content_hash=content_hash,
@@ -79,11 +81,14 @@ class DocumentStore:
         limit: int = 20,
         status: DocumentStatus | None = None,
         query: str | None = None,
+        knowledge_base_id: str | None = None,
     ) -> tuple[list[DocumentRow], int]:
         """分页列出文档，并可按状态和常用文本字段筛选。"""
         filters = []
         if status:
             filters.append(DocumentRow.status == status)
+        if knowledge_base_id:
+            filters.append(DocumentRow.knowledge_base_id == knowledge_base_id)
         if query:
             pattern = f"%{query.strip()}%"
             filters.append(
@@ -133,32 +138,43 @@ class DocumentStore:
             return bool(result.rowcount)
 
     async def find_by_source(
-        self, source_type: str, source_uri: str, content_hash: str
+        self,
+        source_type: str,
+        source_uri: str,
+        content_hash: str,
+        knowledge_base_id: str | None = None,
     ) -> DocumentRow | None:
         """按来源标识和内容哈希查找完全匹配的文档。"""
         async with AsyncSession(get_engine()) as session:
-            result = await session.execute(
-                select(DocumentRow).where(
+            query = select(DocumentRow).where(
                     DocumentRow.source_type == source_type,
                     DocumentRow.source_uri == source_uri,
                     DocumentRow.content_hash == content_hash,
                 )
-            )
+            if knowledge_base_id:
+                query = query.where(DocumentRow.knowledge_base_id == knowledge_base_id)
+            result = await session.execute(query)
             return result.scalar_one_or_none()
 
-    async def find_ready_by_filename(self, original_filename: str) -> list[DocumentRow]:
+    async def find_ready_by_filename(
+        self, original_filename: str, knowledge_base_id: str | None = None
+    ) -> list[DocumentRow]:
         """查找原始文件名相同的已发布文档。"""
         async with AsyncSession(get_engine()) as session:
-            result = await session.execute(
-                select(DocumentRow).where(
+            query = select(DocumentRow).where(
                     DocumentRow.original_filename == original_filename,
                     DocumentRow.status == DocumentStatus.READY,
                 )
-            )
+            if knowledge_base_id:
+                query = query.where(DocumentRow.knowledge_base_id == knowledge_base_id)
+            result = await session.execute(query)
             return list(result.scalars().all())
 
     async def find_ready_by_source_uri(
-        self, source_uri: str, exclude_hash: str | None = None
+        self,
+        source_uri: str,
+        exclude_hash: str | None = None,
+        knowledge_base_id: str | None = None,
     ) -> list[DocumentRow]:
         """查找来源 URI 相同的已发布文档，可排除指定哈希。"""
         async with AsyncSession(get_engine()) as session:
@@ -168,6 +184,8 @@ class DocumentStore:
             )
             if exclude_hash:
                 q = q.where(DocumentRow.content_hash != exclude_hash)
+            if knowledge_base_id:
+                q = q.where(DocumentRow.knowledge_base_id == knowledge_base_id)
             result = await session.execute(q)
             return list(result.scalars().all())
 
@@ -197,14 +215,17 @@ class DocumentStore:
             result = await session.execute(select(DocumentRow).where(DocumentRow.status == status))
             return list(result.scalars().all())
 
-    async def ready_ids(self, document_ids: list[str]) -> set[str]:
-        """返回候选中仍处于就绪状态的文档 ID，作为检索结果的权威过滤。"""
+    async def ready_ids(
+        self, document_ids: list[str], knowledge_base_id: str
+    ) -> set[str]:
+        """返回指定知识库中仍处于就绪状态的候选文档 ID。"""
         if not document_ids:
             return set()
         async with AsyncSession(get_engine()) as session:
             result = await session.execute(
                 select(DocumentRow.id).where(
                     DocumentRow.id.in_(document_ids),
+                    DocumentRow.knowledge_base_id == knowledge_base_id,
                     DocumentRow.status == DocumentStatus.READY,
                 )
             )
