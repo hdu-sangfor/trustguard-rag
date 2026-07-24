@@ -19,6 +19,7 @@ from app.domain.retrieval import (
     QueryIntent,
     QueryPlanSource,
     RetrievalComponent,
+    RetrievalMode,
     SearchStatus,
 )
 from app.domain.worker import ClaimOutcome, CleanupAction, OutboxStatus
@@ -44,5 +45,6 @@ __all__ = [
     "QueryIntent",
     "QueryPlanSource",
     "RetrievalComponent",
+    "RetrievalMode",
     "SearchStatus",
 ]

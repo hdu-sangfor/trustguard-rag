@@ -10,12 +10,15 @@ from app.domain import (
     EffectiveSearchMode,
     QueryIntent,
     QueryPlanSource,
+    RetrievalMode,
     SearchStatus,
 )
 
 
 class SearchQueryPlan(BaseModel):
-    """稳定的检索意图说明，替代自由 dict。"""
+    """稳定核心字段；规划器预算等扩展字段原样透传。"""
+
+    model_config = ConfigDict(extra="allow")
 
     intent: QueryIntent = QueryIntent.FOCUSED
     source: QueryPlanSource = QueryPlanSource.EXPLICIT
@@ -57,6 +60,7 @@ class SearchResult(BaseModel):
     )
     source: SourceInfo
     metadata: dict[str, Any] | None = None
+    expanded: bool = False
 
 
 FilterScalar = str | int | float | bool
@@ -102,11 +106,19 @@ class SearchRequest(BaseModel):
     top_k: int | None = Field(default=None, ge=1, le=100, description="返回结果数量，为空则使用默认配置")
     vector_top_k: int | None = Field(default=None, ge=1, le=200, description="向量检索召回上限")
     keyword_top_k: int | None = Field(default=None, ge=1, le=200, description="关键词检索召回上限")
-    max_chunks_per_document: int = Field(
-        default=1,
+    max_chunks_per_document: int | None = Field(
+        default=None,
         ge=1,
         le=10,
-        description="最终候选中每篇文档最多保留的分块数，默认为 1",
+        description="最终每篇文档最多保留的分块数；为空时由查询规划器决定",
+    )
+    retrieval_mode: RetrievalMode = Field(
+        default=RetrievalMode.AUTO,
+        description="检索策略：auto、focused、comprehensive 或 enumeration",
+    )
+    enable_query_rewrite: bool = Field(
+        default=True,
+        description="允许查询规划器生成受控的语义和关键词改写",
     )
     fusion_method: str | None = Field(default=None, pattern="^(rrf|weighted_score)$", description="融合策略")
     vector_weight: float | None = Field(default=None, ge=0.0, le=1.0, description="向量检索权重")
@@ -195,3 +207,8 @@ class SearchResponse(BaseModel):
     )
     query_plan: SearchQueryPlan = Field(default_factory=SearchQueryPlan)
     coverage: SearchCoverage = Field(default_factory=SearchCoverage)
+    coverage_status: CoverageStatus = Field(
+        default=CoverageStatus.NOT_APPLICABLE,
+        description="枚举型结果的覆盖状态；partial 表示不能保证完整",
+    )
+    coverage_warning: str | None = None

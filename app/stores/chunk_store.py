@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.stores.db import get_engine
 from app.domain import DocumentStatus
+from app.stores.db import get_engine
 from app.stores.models import ChunkRow, DocumentRow, KnowledgeBaseRow
 
 
@@ -97,6 +97,40 @@ class ChunkStore:
                 )
             )
             return result.one_or_none()
+
+    async def neighbors_for_anchors(
+        self,
+        anchors: list[tuple[str, int]],
+        *,
+        knowledge_base_id: str,
+        radius: int,
+    ) -> list[tuple[ChunkRow, DocumentRow]]:
+        """返回同知识库中命中分块附近的活动分块及其文档信息。"""
+        if not anchors or radius <= 0:
+            return []
+        ranges = [
+            and_(
+                ChunkRow.document_id == document_id,
+                ChunkRow.chunk_index.between(
+                    max(0, chunk_index - radius),
+                    chunk_index + radius,
+                ),
+            )
+            for document_id, chunk_index in dict.fromkeys(anchors)
+        ]
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(
+                select(ChunkRow, DocumentRow)
+                .join(DocumentRow, DocumentRow.id == ChunkRow.document_id)
+                .where(
+                    DocumentRow.knowledge_base_id == knowledge_base_id,
+                    DocumentRow.status == DocumentStatus.READY,
+                    ChunkRow.status == "active",
+                    or_(*ranges),
+                )
+                .order_by(ChunkRow.document_id, ChunkRow.chunk_index)
+            )
+            return list(result.all())
 
     async def delete_for_document(self, document_id: str) -> list[str]:
         """删除文档分块，并返回需要清理的向量点 ID。"""

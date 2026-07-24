@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from app.domain import AnswerStatus, EffectiveSearchMode, SearchStatus
@@ -57,3 +59,6 @@ class AnswerResponse(BaseModel):
     total_time_ms: float = Field(ge=0)
     model: str | None = None
     usage: GenerationUsage | None = None
+    query_plan: dict[str, Any] | None = None
+    coverage_status: str = "not_applicable"
+    coverage_warning: str | None = None

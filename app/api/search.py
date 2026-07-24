@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.core.retrieval.request_context import resolve_search_execution
 from app.core.retrieval.search import SearchUnavailableError, get_hybrid_search
-from app.schemas.search import SearchRequest, SearchResponse
+from app.schemas.search import SearchCoverage, SearchRequest, SearchResponse
 
 router = APIRouter(prefix="/v1/search", tags=["search"])
 
@@ -25,6 +25,8 @@ async def search(request: SearchRequest, http_request: Request) -> SearchRespons
     except SearchUnavailableError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
+    coverage_status = result.get("coverage_status", "not_applicable")
+    coverage_warning = result.get("coverage_warning")
     return SearchResponse(
         request_id=getattr(http_request.state, "request_id", ""),
         query=request.query,
@@ -46,4 +48,11 @@ async def search(request: SearchRequest, http_request: Request) -> SearchRespons
         min_vector_score=result.get("min_vector_score"),
         component_attempts=result.get("component_attempts", {}),
         recovered_components=result.get("recovered_components", []),
+        query_plan=result.get("query_plan") or {},
+        coverage=SearchCoverage(
+            status=coverage_status,
+            warning=coverage_warning,
+        ),
+        coverage_status=coverage_status,
+        coverage_warning=coverage_warning,
     )

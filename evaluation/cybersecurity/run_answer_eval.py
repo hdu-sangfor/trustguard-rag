@@ -39,6 +39,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-vector", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--enable-keyword", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--enable-rerank", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--retrieval-mode",
+        choices=("auto", "focused", "comprehensive", "enumeration"),
+        default="auto",
+    )
+    parser.add_argument(
+        "--adaptive-budgets",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--timeout", type=float, default=120.0)
     return parser.parse_args()
 
@@ -284,14 +294,20 @@ def main() -> int:
     dataset = load_jsonl(args.dataset)
     config = {
         "knowledge_base_id": args.knowledge_base_id,
-        "top_k": args.top_k,
-        "vector_top_k": args.vector_top_k,
-        "keyword_top_k": args.keyword_top_k,
         "fusion_method": args.fusion_method,
         "enable_vector": args.enable_vector,
         "enable_keyword": args.enable_keyword,
         "enable_rerank": args.enable_rerank,
+        "retrieval_mode": getattr(args, "retrieval_mode", "auto"),
     }
+    if not getattr(args, "adaptive_budgets", False):
+        config.update(
+            {
+                "top_k": args.top_k,
+                "vector_top_k": args.vector_top_k,
+                "keyword_top_k": args.keyword_top_k,
+            }
+        )
     reports: list[dict[str, Any]] = []
     with httpx.Client(base_url=args.api_url, timeout=args.timeout) as client:
         for question in dataset:

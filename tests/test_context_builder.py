@@ -83,3 +83,19 @@ def test_context_builder_skips_empty_results_and_honors_chunk_limit() -> None:
     )
 
     assert [item.chunk_id for item in bundle.evidence] == ["chunk-2"]
+
+
+def test_context_builder_accepts_larger_per_request_chunk_limit() -> None:
+    settings = Settings(
+        _env_file=None,
+        answer_context_max_tokens=4000,
+        answer_max_context_chunks=1,
+    )
+    builder = ContextBuilder(settings, token_counter=_CharacterCounter())
+
+    bundle = builder.build(
+        [_result(f"chunk-{index}", f"第 {index} 条", index) for index in range(4)],
+        max_chunks=4,
+    )
+
+    assert len(bundle.evidence) == 4
