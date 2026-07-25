@@ -309,6 +309,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Production cannot enable mock retrieval backends: " + ", ".join(enabled_mocks)
             )
+        if self.mcp_enabled and not (self.internal_service_token or "").strip():
+            raise ValueError(
+                "Production MCP requires RAG_INTERNAL_SERVICE_TOKEN"
+            )
+        if self.mcp_enabled and not self.mcp_auth_enabled:
+            raise ValueError(
+                "Production MCP requires RAG_MCP_AUTH_ENABLED=true"
+            )
         return self
 
     @property

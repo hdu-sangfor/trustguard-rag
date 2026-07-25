@@ -1,8 +1,8 @@
 # TrustGuard RAG 当前流程
 
-> 文档快照：2026-07-24  
-> 对应分支：`agent/adaptive-enumeration-retrieval`  
-> 对应提交：`b6ef6b9`
+> 文档快照：2026-07-25<br>
+> 对应分支：`feature/rag-experience-knowledge`<br>
+> 当前阶段：Phase 2.1 第一批内部检索边界已完成
 
 本文总结当前系统从文档入库到检索、回答和引用校验的完整 RAG 流程。若本文与旧设计文档冲突，以当前源码为准。
 
@@ -34,9 +34,10 @@
     → 带来源回答或拒答
 ```
 
-系统提供两个相互独立的接口：
+系统提供公开检索、内部检索和回答接口：
 
 - `POST /v1/search`：只执行检索，返回知识片段、来源、得分和查询规划信息。
+- `POST /v1/internal/knowledge/search`：要求内部 Bearer 服务身份，供 MCP Gateway 等受信服务调用；与公开 Search 复用相同应用服务。
 - `POST /v1/answer`：复用相同检索流程，再执行上下文构建、LLM 回答和引用校验。
 
 ## 2. 文档入库流程
@@ -283,12 +284,14 @@ Search 和 Answer 响应会返回：
 ## 10. 一次请求的简化时序
 
 ```text
-前端 / 调用方
-  │
-  ├─ query + knowledge_base_id
-  ▼
-API Schema 校验
-  ▼
+前端 / 普通调用方 ── POST /v1/search ───────────────┐
+                                                     │
+rag-mcp ── 服务身份 ── POST /v1/internal/knowledge/search ─┤
+                                                     ▼
+                                              API Schema 校验
+                                                     ▼
+                                      KnowledgeApplicationService
+                                                     ▼
 知识库与 Embedding Profile 解析
   ▼
 QueryPlanner
@@ -304,7 +307,7 @@ BM25 多查询 ─┘
 相邻 Chunk 扩展
   ▼
 Rerank → 每文档 Chunk 限制 → top_k
-  ├─ /v1/search：直接返回结果
+  ├─ 公开 /v1/search 或内部 /v1/internal/knowledge/search：返回相同检索结果
   └─ /v1/answer
        → Token 上下文预算
        → LLM JSON 回答

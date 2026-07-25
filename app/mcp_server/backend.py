@@ -71,8 +71,8 @@ class RestRagBackend:
     ) -> dict[str, Any]:
         response = await self._request(
             "POST",
-            "/v1/search",
-            headers={"X-Request-ID": request_id},
+            "/v1/internal/knowledge/search",
+            headers=self._internal_headers(request_id),
             json={**payload, "knowledge_base_id": knowledge_base_id},
         )
         return _json_object(response)
@@ -84,19 +84,10 @@ class RestRagBackend:
         chunk_id: str,
         request_id: str,
     ) -> dict[str, Any] | None:
-        if not self._internal_service_token:
-            raise BackendError(
-                "RAG_UNAVAILABLE",
-                "RAG internal service authentication is not configured",
-                retryable=False,
-            )
         response = await self._request(
             "GET",
             f"/v1/internal/knowledge-bases/{knowledge_base_id}/chunks/{chunk_id}",
-            headers={
-                "Authorization": f"Bearer {self._internal_service_token}",
-                "X-Request-ID": request_id,
-            },
+            headers=self._internal_headers(request_id),
             allow_not_found=True,
         )
         return None if response is None else _json_object(response)
@@ -125,6 +116,18 @@ class RestRagBackend:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    def _internal_headers(self, request_id: str) -> dict[str, str]:
+        if not self._internal_service_token:
+            raise BackendError(
+                "RAG_UNAVAILABLE",
+                "RAG internal service authentication is not configured",
+                retryable=False,
+            )
+        return {
+            "Authorization": f"Bearer {self._internal_service_token}",
+            "X-Request-ID": request_id,
+        }
 
     async def _request(
         self,
@@ -162,6 +165,13 @@ class RestRagBackend:
                 "RAG_UNAVAILABLE",
                 "RAG service is unavailable",
                 retryable=True,
+                status_code=response.status_code,
+            )
+        if response.status_code in {401, 403} and path.startswith("/v1/internal/"):
+            raise BackendError(
+                "RAG_UNAVAILABLE",
+                "RAG internal service authentication failed",
+                retryable=False,
                 status_code=response.status_code,
             )
         if response.status_code >= 400:

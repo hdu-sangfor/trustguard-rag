@@ -118,7 +118,10 @@ async def test_search_response_exposes_stable_schema_revision_and_request_id(
                 "degraded_components": [],
             }
 
-    monkeypatch.setattr("app.api.search.get_hybrid_search", lambda: _Search())
+    monkeypatch.setattr(
+        "app.application.knowledge.get_hybrid_search",
+        lambda: _Search(),
+    )
     response = await client.post(
         "/v1/search",
         headers={"X-Request-ID": "req-phase1-search"},

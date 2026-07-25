@@ -162,6 +162,12 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     """构建 FastAPI 应用并注册所有 HTTP 路由。"""
     s = get_settings()
+    if s.app_env.strip().lower() == "prod" and not (
+        s.internal_service_token or ""
+    ).strip():
+        raise ValueError(
+            "Production RAG API requires RAG_INTERNAL_SERVICE_TOKEN"
+        )
     app = FastAPI(
         title=s.app_name,
         version=s.app_version,

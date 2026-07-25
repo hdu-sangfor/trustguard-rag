@@ -1,6 +1,6 @@
 # TrustGuard RAG MCP 化与多 Workflow 接入计划
 
-> 文档状态：Phase 0～2 已完成；Phase 2.1 安全与边界加固待实施；Phase 3 尚未实施<br>
+> 文档状态：Phase 0～2 已完成；Phase 2.1 安全与边界加固实施中；Phase 3 尚未实施<br>
 > 文档日期：2026-07-24<br>
 > RAG 基线分支：`origin/main`<br>
 > RAG 基线提交：`93d08d0`<br>
@@ -1874,19 +1874,28 @@ Phase 2 实现说明：
 
 ### Phase 2.1：安全与业务边界加固
 
-- [ ] 新增受服务身份保护的内部 Knowledge Search 接口；
-- [ ] MCP 不再通过无服务鉴权的普通 `/v1/search` 检索；
+- [x] 新增受服务身份保护的内部 Knowledge Search 接口；
+- [x] MCP 不再通过无服务鉴权的普通 `/v1/search` 检索；
 - [ ] 将 Scope 映射、Workspace ABAC、联邦检索、配额、RRF、去重和 degraded 合并下沉到 Knowledge Application Service；
-- [ ] 普通 REST、MCP 和评测复用相同业务服务；
+- [ ] 普通 REST、MCP 和评测完整复用相同业务服务（单知识库 Search 已复用，联邦语义待下沉）；
 - [ ] Search 和 Resource Read 实施独立最小权限；
 - [ ] 明确 HTTP 401/403 与 MCP Tool/Resource 授权错误边界；
 - [ ] 增加不透明 `resource_ref`、来源级 `source_revision/content_hash`；
 - [ ] Resource 直接定位单个知识库和 Chunk，不遍历 Scope 后取第一个匹配；
 - [ ] 联邦物理身份改为 `(knowledge_base_id, chunk_id)`；
 - [ ] 保留旧 Resource URI 兼容读取并制定灰度退出计划；
-- [ ] 生产模式下鉴权或内部服务身份缺失时启动失败；
+- [x] 生产模式下鉴权或内部服务身份缺失时启动失败；
 - [ ] 生产部署不直接暴露 RAG 内部检索端口；
 - [ ] 增加 REST 绕过、Workspace 越权、Chunk ID 碰撞和无关 revision 更新测试。
+
+第一批改造（2026-07-25）已完成：
+
+- 新增 `KnowledgeApplicationService`，集中执行知识库解析、混合检索和稳定响应组装；
+- 公开 `POST /v1/search` 与内部 `POST /v1/internal/knowledge/search` 复用同一应用服务；
+- 内部 Search 使用 `RAG_INTERNAL_SERVICE_TOKEN` Bearer 服务身份保护；
+- `rag-mcp` 已改为携带服务身份调用内部 Search，缺少或错误身份时 fail closed；
+- 生产环境要求配置内部服务身份；启用 MCP 时强制开启 MCP OAuth 鉴权；
+- 当前 Scope 映射、跨库 RRF、联邦降级合并仍位于 MCP Gateway，后续批次继续下沉。
 
 完成条件：
 

@@ -7,7 +7,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
+from app.application.knowledge import (
+    KnowledgeSearchError,
+    get_knowledge_application_service,
+)
 from app.schemas.internal import InternalChunkResponse
+from app.schemas.search import SearchRequest, SearchResponse
 from app.settings import get_settings
 from app.stores.chunk_store import get_chunk_store
 
@@ -35,6 +40,25 @@ async def require_internal_service(
             detail="Invalid internal service credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+@router.post(
+    "/knowledge/search",
+    response_model=SearchResponse,
+    dependencies=[Depends(require_internal_service)],
+)
+async def search_knowledge(
+    payload: SearchRequest,
+    request: Request,
+) -> SearchResponse:
+    """使用服务身份执行与公开 Search 相同语义的知识库检索。"""
+    try:
+        return await get_knowledge_application_service().search(
+            payload,
+            request_id=request.state.request_id,
+        )
+    except KnowledgeSearchError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
 
 
 @router.get(

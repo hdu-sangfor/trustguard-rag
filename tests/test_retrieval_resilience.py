@@ -640,7 +640,10 @@ async def test_search_api_returns_503_when_no_reliable_result(
         retrieve=AsyncMock(side_effect=RuntimeError("vector"))
     )
     engine._keyword = SimpleNamespace(retrieve=AsyncMock(return_value=[]))
-    monkeypatch.setattr("app.api.search.get_hybrid_search", lambda: engine)
+    monkeypatch.setattr(
+        "app.application.knowledge.get_hybrid_search",
+        lambda: engine,
+    )
     knowledge_bases = await client.get("/v1/knowledge-bases")
     knowledge_base_id = knowledge_bases.json()["items"][0]["id"]
 

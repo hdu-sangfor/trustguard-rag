@@ -220,6 +220,7 @@ MCP Gateway 与 REST Core 使用同一镜像、独立进程和端口。它只提
 
 ```dotenv
 RAG_MCP_ENABLED=true
+RAG_INTERNAL_SERVICE_TOKEN=replace-with-a-long-random-service-token
 RAG_MCP_SCOPE_MAPPING_JSON={"compliance":{"knowledge_base_ids":["<kb-id-1>","<kb-id-2>"],"default_mode":"comprehensive","per_knowledge_base_limit":20,"allowed_content_types":["legal_article","security_guide"]}}
 ```
 
@@ -231,12 +232,15 @@ npx -y @modelcontextprotocol/inspector@latest --cli \
   http://localhost:18201/mcp --transport http --method tools/list
 ```
 
-多知识库 Scope 会逐库调用 REST Search，再按库内排名执行跨库 RRF；不同向量空间的原始
-分数不会直接比较。响应中的 `content_revision` 是所有知识库 ID 与 revision 排序后的
+多知识库 Scope 会携带内部服务身份，逐库调用
+`POST /v1/internal/knowledge/search`，该接口与公开 `/v1/search` 复用同一个
+`KnowledgeApplicationService`。随后 MCP Gateway 按库内排名执行跨库 RRF；不同向量空间的
+原始分数不会直接比较。响应中的 `content_revision` 是所有知识库 ID 与 revision 排序后的
 SHA-256，Resource URI 必须携带同一 revision，内容变化后旧 URI 会返回
 `RESOURCE_STALE`。`/health/live`、`/health/ready` 和 `/metrics` 用于独立探活和监控。
 
-生产环境设置 `RAG_MCP_AUTH_ENABLED=true`，并配置 issuer、audience 和 JWKS URL。
+生产环境必须设置 `RAG_INTERNAL_SERVICE_TOKEN` 和 `RAG_MCP_AUTH_ENABLED=true`，并配置
+issuer、audience 和 JWKS URL；缺少内部服务身份或启用 MCP 后未开启 OAuth 时启动失败。
 Gateway 验证 Client Credentials 获取的短期 JWT，包括签名、`iss`、`aud`、`exp`、
 OAuth scope 以及 `knowledge_scopes`；MCP 凭证不能用于管理接口和后续经验写入。
 
