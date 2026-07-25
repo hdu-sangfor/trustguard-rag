@@ -77,7 +77,7 @@ async def test_public_search_cannot_bypass_gateway_identity(
     monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "mcp-service-secret")
     monkeypatch.setenv(
         "RAG_MCP_SCOPE_MAPPING_JSON",
-        json.dumps({"compliance": [knowledge_base.id]}),
+        json.dumps({"compliance": {"knowledge_base_ids": [knowledge_base.id]}}),
     )
     get_settings.cache_clear()
     payload = {
@@ -129,7 +129,7 @@ async def test_gateway_and_mcp_internal_tokens_are_not_interchangeable(
     monkeypatch.setenv("RAG_GATEWAY_SERVICE_TOKEN", "gateway-service-secret")
     monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "mcp-service-secret")
     get_settings.cache_clear()
-    internal_path = "/v1/internal/knowledge-bases/kb-a/chunks/chunk-a"
+    resource_path = "/v1/internal/knowledge/resources/krf1.invalid?scope=compliance"
     scope_search_path = "/v1/internal/knowledge/search-scope"
     scope_payload = {
         "schema_version": "trustguard-knowledge-search-request-v1",
@@ -137,12 +137,12 @@ async def test_gateway_and_mcp_internal_tokens_are_not_interchangeable(
         "scope": "compliance",
     }
 
-    gateway_on_internal = await client.get(
-        internal_path,
+    gateway_on_resource = await client.get(
+        resource_path,
         headers={"Authorization": "Bearer gateway-service-secret"},
     )
-    mcp_on_internal = await client.get(
-        internal_path,
+    mcp_on_resource = await client.get(
+        resource_path,
         headers={"Authorization": "Bearer mcp-service-secret"},
     )
     gateway_on_scope_search = await client.post(
@@ -164,8 +164,8 @@ async def test_gateway_and_mcp_internal_tokens_are_not_interchangeable(
         json=scope_payload,
     )
 
-    assert gateway_on_internal.status_code == 401
-    assert mcp_on_internal.status_code == 404
+    assert gateway_on_resource.status_code == 401
+    assert mcp_on_resource.status_code == 404
     assert gateway_on_scope_search.status_code == 401
     assert mcp_on_scope_search.status_code == 404
     assert cross_workspace_scope_search.status_code == 403

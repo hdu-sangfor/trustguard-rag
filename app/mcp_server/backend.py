@@ -33,7 +33,7 @@ class RagBackend(Protocol):
         allowed_workflow_types: frozenset[str] | None = None,
     ) -> dict[str, Any]: ...
 
-    async def get_resource(
+    async def read_resource(
         self,
         *,
         scope: str,
@@ -42,33 +42,6 @@ class RagBackend(Protocol):
         workspace_id: str | None = None,
         allowed_workflow_types: frozenset[str] | None = None,
     ) -> dict[str, Any]: ...
-
-    async def search(
-        self,
-        *,
-        knowledge_base_id: str,
-        request_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]: ...
-
-    async def get_chunk(
-        self,
-        *,
-        knowledge_base_id: str,
-        chunk_id: str,
-        request_id: str,
-        workspace_id: str | None = None,
-        allowed_workflow_types: frozenset[str] | None = None,
-    ) -> dict[str, Any] | None: ...
-
-    async def get_content_revision(
-        self,
-        knowledge_base_id: str,
-        *,
-        request_id: str = "req-resource-revision",
-        workspace_id: str | None = None,
-        allowed_workflow_types: frozenset[str] | None = None,
-    ) -> int: ...
 
     async def ready(self) -> bool: ...
 
@@ -121,7 +94,7 @@ class RestRagBackend:
             raise
         return _json_object(response)
 
-    async def get_resource(
+    async def read_resource(
         self,
         *,
         scope: str,
@@ -143,72 +116,6 @@ class RestRagBackend:
             ),
         )
         return _json_object(response)
-
-    async def search(
-        self,
-        *,
-        knowledge_base_id: str,
-        request_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        response = await self._request(
-            "POST",
-            "/v1/internal/knowledge/search",
-            headers=self._internal_headers(request_id),
-            json={**payload, "knowledge_base_id": knowledge_base_id},
-        )
-        return _json_object(response)
-
-    async def get_chunk(
-        self,
-        *,
-        knowledge_base_id: str,
-        chunk_id: str,
-        request_id: str,
-        workspace_id: str | None = None,
-        allowed_workflow_types: frozenset[str] | None = None,
-    ) -> dict[str, Any] | None:
-        response = await self._request(
-            "GET",
-            f"/v1/internal/knowledge-bases/{knowledge_base_id}/chunks/{chunk_id}",
-            headers=self._internal_headers(
-                request_id,
-                workspace_id=workspace_id,
-                allowed_workflow_types=allowed_workflow_types,
-            ),
-            allow_not_found=True,
-        )
-        return None if response is None else _json_object(response)
-
-    async def get_content_revision(
-        self,
-        knowledge_base_id: str,
-        *,
-        request_id: str = "req-resource-revision",
-        workspace_id: str | None = None,
-        allowed_workflow_types: frozenset[str] | None = None,
-    ) -> int:
-        response = await self._request(
-            "GET",
-            (
-                f"/v1/internal/knowledge-bases/{knowledge_base_id}"
-                "/content-revision"
-            ),
-            headers=self._internal_headers(
-                request_id,
-                workspace_id=workspace_id,
-                allowed_workflow_types=allowed_workflow_types,
-            ),
-        )
-        payload = _json_object(response)
-        revision = payload.get("content_revision")
-        if not isinstance(revision, int) or revision < 0:
-            raise BackendError(
-                "SCHEMA_MISMATCH",
-                "RAG returned an invalid content revision",
-                retryable=False,
-            )
-        return revision
 
     async def ready(self) -> bool:
         try:
@@ -252,8 +159,7 @@ class RestRagBackend:
         *,
         headers: dict[str, str] | None = None,
         json: dict[str, Any] | None = None,
-        allow_not_found: bool = False,
-    ) -> httpx.Response | None:
+    ) -> httpx.Response:
         try:
             response = await self._client.request(
                 method,
@@ -274,8 +180,6 @@ class RestRagBackend:
                 retryable=True,
             ) from error
 
-        if allow_not_found and response.status_code == 404:
-            return None
         if response.status_code >= 500:
             raise BackendError(
                 "RAG_UNAVAILABLE",

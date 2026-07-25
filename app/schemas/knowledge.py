@@ -102,19 +102,14 @@ class KnowledgeSearchRequest(BaseModel):
 class KnowledgeHit(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    external_chunk_id: str = Field(min_length=1, max_length=128)
     resource_uri: str = Field(pattern=r"^trustguard-rag://")
-    resource_ref: str | None = Field(
-        default=None,
+    resource_ref: str = Field(
         min_length=1,
         max_length=2048,
         pattern=r"^krf1\.",
     )
-    source_revision: int | None = Field(default=None, ge=1)
-    content_hash: str | None = Field(
-        default=None,
-        pattern=r"^sha256:[a-f0-9]{64}$",
-    )
+    source_revision: int = Field(ge=1)
+    content_hash: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
     snippet: str = Field(max_length=4000)
     score: float
     title: str | None = Field(default=None, max_length=512)
@@ -166,18 +161,13 @@ class KnowledgeResource(BaseModel):
     schema_version: Literal["trustguard-knowledge-resource-v1"]
     scope: str = Field(min_length=1, max_length=64)
     content_revision: str = Field(min_length=1, max_length=128)
-    resource_ref: str | None = Field(
-        default=None,
+    resource_ref: str = Field(
         min_length=1,
         max_length=2048,
         pattern=r"^krf1\.",
     )
-    source_revision: int | None = Field(default=None, ge=1)
-    content_hash: str | None = Field(
-        default=None,
-        pattern=r"^sha256:[a-f0-9]{64}$",
-    )
-    chunk_id: str = Field(min_length=1, max_length=128)
+    source_revision: int = Field(ge=1)
+    content_hash: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
     document_id: str | None = Field(default=None, max_length=128)
     experience_id: str | None = Field(default=None, max_length=128)
     text: str = Field(min_length=1, max_length=32000)

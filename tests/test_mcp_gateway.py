@@ -27,10 +27,10 @@ from app.mcp_server.auth import (
 from app.mcp_server.gateway import (
     KnowledgeGateway,
     KnowledgeGatewayError,
-    aggregate_revision,
 )
-from app.mcp_server.models import KnowledgeSearchRequest
-from app.mcp_server.scopes import ScopeRegistry
+from app.application.knowledge import aggregate_revision
+from app.application.scopes import ScopeRegistry
+from app.schemas.knowledge import KnowledgeSearchRequest
 from app.mcp_server.server import create_mcp_app
 from app.settings import Settings
 
@@ -43,9 +43,6 @@ class _FakeBackend:
             "scope search is not configured"
         )
         self.resources: dict[str, dict[str, Any] | BaseException] = {}
-        self.searches: dict[str, dict[str, Any] | BaseException] = {}
-        self.revisions: dict[str, int | BaseException] = {}
-        self.chunks: dict[tuple[str, str], dict[str, Any] | None | BaseException] = {}
         self.seen_scope_payloads: list[dict[str, Any]] = []
         self.is_ready = True
         self.closed = False
@@ -63,7 +60,7 @@ class _FakeBackend:
             raise self.scope_search
         return self.scope_search
 
-    async def get_resource(
+    async def read_resource(
         self,
         *,
         scope: str,
@@ -73,45 +70,6 @@ class _FakeBackend:
         allowed_workflow_types: frozenset[str] | None = None,
     ) -> dict[str, Any]:
         value = self.resources[resource_ref]
-        if isinstance(value, BaseException):
-            raise value
-        return value
-
-    async def search(
-        self,
-        *,
-        knowledge_base_id: str,
-        request_id: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        value = self.searches[knowledge_base_id]
-        if isinstance(value, BaseException):
-            raise value
-        return value
-
-    async def get_chunk(
-        self,
-        *,
-        knowledge_base_id: str,
-        chunk_id: str,
-        request_id: str,
-        workspace_id: str | None = None,
-        allowed_workflow_types: frozenset[str] | None = None,
-    ) -> dict[str, Any] | None:
-        value = self.chunks.get((knowledge_base_id, chunk_id))
-        if isinstance(value, BaseException):
-            raise value
-        return value
-
-    async def get_content_revision(
-        self,
-        knowledge_base_id: str,
-        *,
-        request_id: str = "req-resource-revision",
-        workspace_id: str | None = None,
-        allowed_workflow_types: frozenset[str] | None = None,
-    ) -> int:
-        value = self.revisions[knowledge_base_id]
         if isinstance(value, BaseException):
             raise value
         return value
@@ -153,10 +111,7 @@ def _knowledge_hit(
 ) -> dict[str, Any]:
     resource_ref = f"krf1.{chunk_id}-opaque"
     return {
-        "external_chunk_id": chunk_id,
-        "resource_uri": (
-            f"trustguard-rag://compliance/resources/{resource_ref}"
-        ),
+        "resource_uri": (f"trustguard-rag://compliance/resources/{resource_ref}"),
         "resource_ref": resource_ref,
         "source_revision": 1,
         "content_hash": f"sha256:{'a' * 64}",
@@ -187,7 +142,6 @@ def _knowledge_resource_payload(
         "resource_ref": resource_ref,
         "source_revision": 1,
         "content_hash": f"sha256:{'a' * 64}",
-        "chunk_id": "chunk-1",
         "document_id": "doc-1",
         "experience_id": None,
         "text": text,
@@ -212,10 +166,7 @@ async def test_gateway_delegates_scope_search_and_validates_contract() -> None:
         revision=revision,
         hits=[_knowledge_hit("shared", revision=revision, text="shared")],
     )
-    gateway = KnowledgeGateway(
-        backend=backend,
-        scopes=ScopeRegistry.from_json('{"compliance":["kb-a","kb-b"]}'),
-    )
+    gateway = KnowledgeGateway(backend=backend)
 
     response = await gateway.search(
         KnowledgeSearchRequest(
@@ -231,7 +182,7 @@ async def test_gateway_delegates_scope_search_and_validates_contract() -> None:
 
     assert response.status == "ok"
     assert response.content_revision == revision
-    assert [item.external_chunk_id for item in response.hits] == ["shared"]
+    assert [item.resource_ref for item in response.hits] == ["krf1.shared-opaque"]
     assert backend.seen_scope_payloads == [
         {
             "schema_version": "trustguard-knowledge-search-request-v1",
@@ -256,10 +207,7 @@ async def test_gateway_delegates_scope_search_and_validates_contract() -> None:
 async def test_gateway_rejects_invalid_backend_scope_contract() -> None:
     backend = _FakeBackend()
     backend.scope_search = {"schema_version": "unexpected"}
-    gateway = KnowledgeGateway(
-        backend=backend,
-        scopes=ScopeRegistry.from_json('{"compliance":["kb-a"]}'),
-    )
+    gateway = KnowledgeGateway(backend=backend)
 
     with pytest.raises(KnowledgeGatewayError) as captured:
         await gateway.search(
@@ -275,55 +223,6 @@ async def test_gateway_rejects_invalid_backend_scope_contract() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resource_rejects_stale_revision_and_never_crosses_scope() -> None:
-    backend = _FakeBackend()
-    backend.revisions = {"kb-a": 3}
-    backend.chunks = {
-        ("kb-a", "chunk-1"): {
-            "chunk_id": "chunk-1",
-            "document_id": "doc-1",
-            "text": "完整证据",
-            "source_uri": "upload://evidence.pdf",
-            "source_type": "upload",
-            "metadata": {"article_no": "第十条"},
-        }
-    }
-    gateway = KnowledgeGateway(
-        backend=backend,
-        scopes=ScopeRegistry.from_json('{"compliance":["kb-a"]}'),
-    )
-
-    with pytest.raises(KnowledgeGatewayError) as stale:
-        await gateway.read_resource(
-            scope="compliance",
-            chunk_id="chunk-1",
-            revision="old",
-            request_id="req-stale",
-        )
-    assert stale.value.code == "RESOURCE_STALE"
-
-    revision = aggregate_revision({"kb-a": 3})
-    resource = await gateway.read_resource(
-        scope="compliance",
-        chunk_id="chunk-1",
-        revision=revision,
-        request_id="req-resource",
-    )
-    assert resource.text == "完整证据"
-    assert resource.source_type == "document"
-    assert resource.content_revision == revision
-    _validate_contract("knowledge_resource.schema.json", resource.model_dump(mode="json"))
-
-    with pytest.raises(KnowledgeGatewayError) as unknown:
-        await gateway.read_resource(
-            scope="penetration",
-            chunk_id="chunk-1",
-            revision=revision,
-        )
-    assert unknown.value.code == "UNKNOWN_SCOPE"
-
-
-@pytest.mark.asyncio
 async def test_official_mcp_client_lists_and_calls_read_only_contract() -> None:
     backend = _FakeBackend()
     revision = aggregate_revision({"kb-a": 4})
@@ -336,21 +235,10 @@ async def test_official_mcp_client_lists_and_calls_read_only_contract() -> None:
         resource_ref="krf1.chunk-1-opaque",
         text="完整检索片段",
     )
-    backend.revisions = {"kb-a": 4}
-    backend.chunks = {
-        ("kb-a", "chunk-1"): {
-            "chunk_id": "chunk-1",
-            "document_id": "doc-1",
-            "text": "完整检索片段",
-            "source_uri": "upload://doc-1.pdf",
-            "source_type": "document",
-            "metadata": {},
-        }
-    }
     settings = Settings(
         _env_file=None,
         mcp_enabled=True,
-        mcp_scope_mapping_json='{"compliance":["kb-a"]}',
+        mcp_scope_mapping_json=('{"compliance":{"knowledge_base_ids":["kb-a"]}}'),
         mcp_allowed_hosts="test",
     )
     app = create_mcp_app(settings, backend=backend)
@@ -373,7 +261,7 @@ async def test_official_mcp_client_lists_and_calls_read_only_contract() -> None:
                     assert annotations.readOnlyHint is True
                     assert annotations.destructiveHint is False
                     templates = await session.list_resource_templates()
-                    assert len(templates.resourceTemplates) == 2
+                    assert len(templates.resourceTemplates) == 1
 
                     called = await session.call_tool(
                         "knowledge_search",
@@ -394,9 +282,7 @@ async def test_official_mcp_client_lists_and_calls_read_only_contract() -> None:
 
                     resource = await session.read_resource(uri)
                     payload = json.loads(resource.contents[0].text)
-                    assert payload["schema_version"] == (
-                        "trustguard-knowledge-resource-v1"
-                    )
+                    assert payload["schema_version"] == ("trustguard-knowledge-resource-v1")
                     assert payload["text"] == "完整检索片段"
 
             live = await http_client.get("/health/live")
@@ -488,7 +374,7 @@ async def test_mcp_http_boundary_rejects_missing_or_under_scoped_tokens(
         mcp_auth_issuer="https://auth.test",
         mcp_auth_jwks_url="https://auth.test/.well-known/jwks.json",
         mcp_resource_server_url="http://test/mcp",
-        mcp_scope_mapping_json='{"compliance":["kb-a"]}',
+        mcp_scope_mapping_json=('{"compliance":{"knowledge_base_ids":["kb-a"]}}'),
         mcp_allowed_hosts="test",
     )
     app = create_mcp_app(settings, backend=_FakeBackend())
@@ -521,9 +407,11 @@ async def test_mcp_http_boundary_rejects_missing_or_under_scoped_tokens(
 
 def test_scope_mapping_rejects_unknown_alias_and_empty_mapping() -> None:
     with pytest.raises(ValueError, match="Unsupported MCP knowledge scope"):
-        ScopeRegistry.from_json('{"arbitrary":["kb-a"]}')
+        ScopeRegistry.from_json('{"arbitrary":{"knowledge_base_ids":["kb-a"]}}')
     with pytest.raises(ValueError, match="knowledge_base_ids"):
-        ScopeRegistry.from_json('{"compliance":[]}')
+        ScopeRegistry.from_json('{"compliance":{"knowledge_base_ids":[]}}')
+    with pytest.raises(ValueError, match="valid dictionary"):
+        ScopeRegistry.from_json('{"compliance":["kb-a"]}')
 
 
 def test_mcp_auth_configuration_requires_issuer_and_jwks() -> None:

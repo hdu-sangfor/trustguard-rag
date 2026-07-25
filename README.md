@@ -232,7 +232,7 @@ curl -X POST http://localhost:18200/v1/search \
 ## 只读 MCP Gateway
 
 MCP Gateway 与 REST Core 使用同一镜像、独立进程和端口。它只提供
-`knowledge_search` Tool 与 Resource Ref/旧 Chunk 两个 Resource Template，不开放上传、删除、回答生成或
+`knowledge_search` Tool 与一个不透明 Resource Ref Template，不开放上传、删除、回答生成或
 经验写入。先把逻辑 Scope 映射到一个或多个知识库：
 
 ```dotenv
@@ -258,8 +258,8 @@ MCP 携带内部服务身份调用 `POST /v1/internal/knowledge/search-scope`；
 
 新命中返回 `trustguard-rag://{scope}/resources/{resource_ref}`。`resource_ref` 不暴露物理
 知识库或 Chunk ID，回读时直接定位唯一来源并校验来源 revision/content hash；无关知识库
-更新不会使引用失效。旧的 `trustguard-rag://{scope}/chunks/{chunk_id}?revision=...` 在迁移期
-仍可读取。`/health/live`、`/health/ready` 和 `/metrics` 用于独立探活和监控。
+更新不会使引用失效。服务尚未上线，因此不保留旧 Chunk URI、裸 Chunk 读取和内部单知识库
+Search 兼容接口。`/health/live`、`/health/ready` 和 `/metrics` 用于独立探活和监控。
 
 生产环境必须设置 `RAG_INTERNAL_SERVICE_TOKEN` 和 `RAG_MCP_AUTH_ENABLED=true`，并配置
 issuer、audience 和 JWKS URL；缺少内部服务身份或启用 MCP 后未开启 OAuth 时启动失败。

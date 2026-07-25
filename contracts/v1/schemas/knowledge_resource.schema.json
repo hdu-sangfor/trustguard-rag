@@ -8,7 +8,9 @@
     "schema_version",
     "scope",
     "content_revision",
-    "chunk_id",
+    "resource_ref",
+    "source_revision",
+    "content_hash",
     "text",
     "source_type",
     "visibility",
@@ -29,23 +31,18 @@
       "maxLength": 128
     },
     "resource_ref": {
-      "type": ["string", "null"],
+      "type": "string",
       "minLength": 1,
       "maxLength": 2048,
       "pattern": "^krf1\\."
     },
     "source_revision": {
-      "type": ["integer", "null"],
+      "type": "integer",
       "minimum": 1
     },
     "content_hash": {
-      "type": ["string", "null"],
-      "pattern": "^sha256:[a-f0-9]{64}$"
-    },
-    "chunk_id": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 128
+      "pattern": "^sha256:[a-f0-9]{64}$"
     },
     "document_id": {
       "type": ["string", "null"],

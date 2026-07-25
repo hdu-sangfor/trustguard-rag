@@ -9,6 +9,7 @@
 - `tests/contracts/v1/valid/` 保存必须通过的正例；
 - `tests/contracts/v1/invalid/` 保存必须被拒绝的反例；
 - 实现代码不得修改 Schema 来迁就单个测试；
+- 当前服务尚未生产发布，v1 在首次发布前允许直接收敛契约；
 - 向后兼容字段只能作为非必填字段增加；
 - 破坏性修改必须新建 `contracts/v2/`。
 
@@ -26,6 +27,7 @@ v1 冻结以下边界：
 
 MCP 只暴露前四项只读契约。后三项供后续内部 REST 和 RabbitMQ 写入链路使用。
 
-Phase 2.1 为 `knowledge_search_response` 的 Hit 和 `knowledge_resource` 增加了向后兼容的可选
-字段 `resource_ref`、`source_revision`、`content_hash`。新客户端优先通过
-`trustguard-rag://{scope}/resources/{resource_ref}` 回读；旧 Chunk Resource URI 在迁移期保留。
+`knowledge_search_response` 的 Hit 和 `knowledge_resource` 必须包含 `resource_ref`、
+`source_revision`、`content_hash`，并只通过
+`trustguard-rag://{scope}/resources/{resource_ref}` 回读。北向契约不暴露物理知识库 ID 或裸
+Chunk ID。

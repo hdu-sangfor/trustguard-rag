@@ -45,8 +45,10 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "external_chunk_id",
           "resource_uri",
+          "resource_ref",
+          "source_revision",
+          "content_hash",
           "snippet",
           "score",
           "source_type",
@@ -54,27 +56,22 @@
           "expanded"
         ],
         "properties": {
-          "external_chunk_id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128
-          },
           "resource_uri": {
             "type": "string",
             "pattern": "^trustguard-rag://"
           },
           "resource_ref": {
-            "type": ["string", "null"],
+            "type": "string",
             "minLength": 1,
             "maxLength": 2048,
             "pattern": "^krf1\\."
           },
           "source_revision": {
-            "type": ["integer", "null"],
+            "type": "integer",
             "minimum": 1
           },
           "content_hash": {
-            "type": ["string", "null"],
+            "type": "string",
             "pattern": "^sha256:[a-f0-9]{64}$"
           },
           "snippet": {

@@ -34,66 +34,23 @@ class _SearchEngine:
 
 
 @pytest.mark.asyncio
-async def test_internal_search_requires_auth_and_matches_public_semantics(
+async def test_legacy_internal_routes_are_not_exposed(
     client: httpx.AsyncClient,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    knowledge_base = await KnowledgeBaseStore().create(
-        name="Phase 2.1 内部搜索",
-        profile=get_embedding_profile("configured"),
-    )
-    engine = _SearchEngine()
-    monkeypatch.setattr(
-        "app.application.knowledge.get_hybrid_search",
-        lambda: engine,
-    )
-    payload = {
-        "query": "验证共享检索语义",
-        "knowledge_base_id": knowledge_base.id,
-        "enable_vector": False,
-    }
-    request_headers = {"X-Request-ID": "req-phase21-search"}
-
-    public = await client.post(
-        "/v1/search",
-        headers=request_headers,
-        json=payload,
-    )
-    assert public.status_code == 200
-
-    get_settings.cache_clear()
-    unconfigured = await client.post(
+    single_search = await client.post(
         "/v1/internal/knowledge/search",
-        headers=request_headers,
-        json=payload,
+        json={"query": "legacy", "knowledge_base_id": "kb-a"},
     )
-    assert unconfigured.status_code == 503
-    assert unconfigured.json()["code"] == "RAG_UNAVAILABLE"
+    chunk_read = await client.get(
+        "/v1/internal/knowledge-bases/kb-a/chunks/chunk-a"
+    )
+    revision_read = await client.get(
+        "/v1/internal/knowledge-bases/kb-a/content-revision"
+    )
 
-    monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "phase21-service-secret")
-    get_settings.cache_clear()
-    unauthorized = await client.post(
-        "/v1/internal/knowledge/search",
-        headers={**request_headers, "Authorization": "Bearer wrong"},
-        json=payload,
-    )
-    assert unauthorized.status_code == 401
-    assert unauthorized.json()["code"] == "AUTH_REQUIRED"
-
-    internal = await client.post(
-        "/v1/internal/knowledge/search",
-        headers={
-            **request_headers,
-            "Authorization": "Bearer phase21-service-secret",
-        },
-        json=payload,
-    )
-    assert internal.status_code == 200
-    assert internal.json() == public.json()
-    assert len(engine.calls) == 2
-    assert all(
-        call["knowledge_base_id"] == knowledge_base.id for call in engine.calls
-    )
+    assert single_search.status_code == 404
+    assert chunk_read.status_code == 404
+    assert revision_read.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -117,7 +74,7 @@ async def test_internal_scope_search_runs_federation_in_application_service(
     monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "phase22-service-secret")
     monkeypatch.setenv(
         "RAG_MCP_SCOPE_MAPPING_JSON",
-        json.dumps({"compliance": [first.id, second.id]}),
+        json.dumps({"compliance": {"knowledge_base_ids": [first.id, second.id]}}),
     )
     get_settings.cache_clear()
 
@@ -161,45 +118,6 @@ async def test_internal_scope_search_runs_federation_in_application_service(
 
 
 @pytest.mark.asyncio
-async def test_mcp_rest_backend_uses_authenticated_internal_search() -> None:
-    seen: dict[str, Any] = {}
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        seen["path"] = request.url.path
-        seen["authorization"] = request.headers.get("Authorization")
-        seen["request_id"] = request.headers.get("X-Request-ID")
-        seen["json"] = json.loads(request.content)
-        return httpx.Response(200, json={"content_revision": 3, "results": []})
-
-    backend = RestRagBackend(
-        base_url="http://rag.test",
-        internal_service_token="phase21-service-secret",
-        timeout_seconds=1.0,
-    )
-    await backend._client.aclose()
-    backend._client = httpx.AsyncClient(
-        base_url="http://rag.test",
-        transport=httpx.MockTransport(handler),
-    )
-    try:
-        result = await backend.search(
-            knowledge_base_id="kb-a",
-            request_id="req-mcp-internal-search",
-            payload={"query": "安全要求"},
-        )
-    finally:
-        await backend.aclose()
-
-    assert result == {"content_revision": 3, "results": []}
-    assert seen == {
-        "path": "/v1/internal/knowledge/search",
-        "authorization": "Bearer phase21-service-secret",
-        "request_id": "req-mcp-internal-search",
-        "json": {"query": "安全要求", "knowledge_base_id": "kb-a"},
-    }
-
-
-@pytest.mark.asyncio
 async def test_mcp_rest_backend_delegates_one_authenticated_scope_search() -> None:
     seen: dict[str, Any] = {}
     response_payload = {
@@ -220,9 +138,7 @@ async def test_mcp_rest_backend_delegates_one_authenticated_scope_search() -> No
         seen["authorization"] = request.headers.get("Authorization")
         seen["request_id"] = request.headers.get("X-Request-ID")
         seen["workspace_id"] = request.headers.get("X-TrustGuard-Workspace-ID")
-        seen["workflow_types"] = request.headers.get(
-            "X-TrustGuard-Workflow-Types"
-        )
+        seen["workflow_types"] = request.headers.get("X-TrustGuard-Workflow-Types")
         seen["json"] = json.loads(request.content)
         return httpx.Response(200, json=response_payload)
 
@@ -318,7 +234,6 @@ async def test_mcp_rest_backend_reads_resource_ref_with_trusted_context() -> Non
         "resource_ref": "krf1.opaque",
         "source_revision": 1,
         "content_hash": f"sha256:{'a' * 64}",
-        "chunk_id": "chunk-a",
         "document_id": "doc-a",
         "experience_id": None,
         "text": "完整来源",
@@ -337,9 +252,7 @@ async def test_mcp_rest_backend_reads_resource_ref_with_trusted_context() -> Non
         seen["path"] = request.url.path
         seen["scope"] = request.url.params.get("scope")
         seen["workspace_id"] = request.headers.get("X-TrustGuard-Workspace-ID")
-        seen["workflow_types"] = request.headers.get(
-            "X-TrustGuard-Workflow-Types"
-        )
+        seen["workflow_types"] = request.headers.get("X-TrustGuard-Workflow-Types")
         return httpx.Response(200, json=response_payload)
 
     backend = RestRagBackend(
@@ -353,7 +266,7 @@ async def test_mcp_rest_backend_reads_resource_ref_with_trusted_context() -> Non
         transport=httpx.MockTransport(handler),
     )
     try:
-        result = await backend.get_resource(
+        result = await backend.read_resource(
             scope="compliance",
             resource_ref="krf1.opaque",
             request_id="req-resource-ref",
@@ -381,10 +294,13 @@ async def test_mcp_rest_backend_fails_closed_without_internal_identity() -> None
     )
     try:
         with pytest.raises(BackendError) as captured:
-            await backend.search(
-                knowledge_base_id="kb-a",
+            await backend.search_scope(
                 request_id="req-no-service-identity",
-                payload={"query": "安全要求"},
+                payload={
+                    "schema_version": "trustguard-knowledge-search-request-v1",
+                    "query": "安全要求",
+                    "scope": "compliance",
+                },
             )
     finally:
         await backend.aclose()

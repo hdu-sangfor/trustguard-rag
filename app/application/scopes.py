@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
 
 from app.schemas.knowledge import KnowledgeScope, ScopeDefinition
 
@@ -28,10 +27,7 @@ class ScopeRegistry:
                 scope = KnowledgeScope(str(raw_scope)).value
             except ValueError as error:
                 raise ValueError(f"Unsupported MCP knowledge scope: {raw_scope}") from error
-            definition: Any = raw_definition
-            if isinstance(raw_definition, list):
-                definition = {"knowledge_base_ids": raw_definition}
-            definitions[scope] = ScopeDefinition.model_validate(definition)
+            definitions[scope] = ScopeDefinition.model_validate(raw_definition)
         return cls(definitions)
 
     def get(self, scope: str | KnowledgeScope) -> ScopeDefinition | None:

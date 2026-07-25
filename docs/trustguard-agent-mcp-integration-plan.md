@@ -201,7 +201,7 @@ CHUNK_INVALID_CHUNK_ID
 因此 MCP 检索结果必须先在 Agent 内本地化：
 
 ```text
-RAG external_chunk_id
+RAG resource_ref
        ↓
 Agent task-local Chunk Store
        ↓
@@ -365,9 +365,8 @@ openWorldHint   = false
   "content_revision": "scope-revision",
   "hits": [
     {
-      "external_chunk_id": "uuid",
-      "resource_uri": "trustguard-rag://penetration/resources/krf-opaque",
-      "resource_ref": "krf-opaque",
+      "resource_uri": "trustguard-rag://penetration/resources/krf1.opaque",
+      "resource_ref": "krf1.opaque",
       "source_revision": 17,
       "content_hash": "sha256:...",
       "snippet": "Apache Shiro 的 RememberMe...",
@@ -404,8 +403,8 @@ openWorldHint   = false
 - 缺失、无效、过期 Token 和 Transport 权限不足在 HTTP 边界返回 401/403；
 - Tool/Resource 的知识 Scope 或 Workspace 业务授权失败返回稳定的 MCP 授权错误；
 - 不向模型返回 API Key、内部地址、堆栈或数据库错误；
-- 为兼容部分 Client，结构化结果同时提供简短 TextContent；
-- TextContent 不能重复塞入所有完整正文，避免上下文翻倍。
+- Structured Content 是唯一业务结果；MCP SDK 负责协议层序列化，不在业务代码中手工拼装兼容 TextContent；
+- Tool 输出只包含摘要和来源引用，不重复塞入完整正文，避免上下文翻倍。
 
 ### 5.3 MCP Resource
 
@@ -424,9 +423,8 @@ source_revision 或 content_hash
 scope
 ```
 
-调用方和模型不能解析、修改或自行构造其中的物理知识库标识。Phase 2 已实现的
-`trustguard-rag://{scope}/chunks/{chunk_id}?revision={scope_revision}` 在迁移期保留兼容，
-但不作为长期 Resource 身份模型。
+调用方和模型不能解析、修改或自行构造其中的物理知识库标识。服务尚未上线，北向协议只
+保留这一种 Resource 身份模型。
 
 用途：
 
@@ -443,10 +441,9 @@ Resource 返回：
   "schema_version": "trustguard-knowledge-resource-v1",
   "scope": "penetration",
   "content_revision": "scope-revision-hash",
-  "resource_ref": "krf-opaque",
+  "resource_ref": "krf1.opaque",
   "source_revision": 17,
   "content_hash": "sha256:...",
-  "chunk_id": "uuid",
   "document_id": "doc-uuid",
   "text": "完整 Chunk 文本",
   "title": "...",
@@ -473,13 +470,12 @@ Resource 返回：
 - Resource 读取应直接定位单个来源，不得遍历 Scope 内所有知识库并返回第一个匹配项；
 - `resources/list` 只列出调用方被授权的高层 Scope 或能力，不枚举全部 Chunk。
 
-契约迁移规则：
+契约发布规则：
 
-- v1 保留现有必填字段；
-- `resource_ref`、`source_revision` 和 `content_hash` 作为向后兼容的可选字段加入 v1；
-- Agent 优先使用 `resource_ref`，缺失时才走旧 URI；
-- 旧 URI 停止产生前必须经过 Agent 灰度和回滚验证；
-- 如果需要删除或改变现有字段语义，则发布 v2，不修改已冻结的 v1 语义。
+- 首次生产发布前直接收敛 v1，不为从未上线的中间实现保留兼容分支；
+- `resource_ref`、`source_revision` 和 `content_hash` 是 v1 必填字段；
+- 北向契约不返回裸 Chunk ID，Agent 以 Resource Ref 作为外部来源身份；
+- 首次生产发布后如果需要删除字段或改变语义，则发布 v2，不修改已冻结的 v1。
 
 ### 5.4 暂不提供的 MCP 能力
 
@@ -837,9 +833,8 @@ InstructionCompiler 读取和校验
   "tenant_id": "workspace-id",
   "provider": "trustguard-rag-mcp",
   "scope": "penetration",
-  "external_chunk_id": "uuid",
   "resource_uri": "trustguard-rag://...",
-  "resource_ref": "krf-opaque",
+  "resource_ref": "krf1.opaque",
   "source_revision": 17,
   "content_hash": "sha256:...",
   "document_id": "doc-uuid",
@@ -856,8 +851,7 @@ InstructionCompiler 读取和校验
 任务内幂等键：
 
 ```text
-优先：sha256(scope + resource_ref + source_revision/content_hash)
-兼容：sha256(scope + external_chunk_id + content_revision)
+sha256(scope + resource_ref + source_revision/content_hash)
 ```
 
 规则：
@@ -885,8 +879,7 @@ KnowledgeSourceRef = 最终报告中的外部知识来源
   "provider": "trustguard-rag",
   "scope": "penetration",
   "local_chunk_id": "chk-...",
-  "external_chunk_id": "uuid",
-  "resource_ref": "krf-opaque",
+  "resource_ref": "krf1.opaque",
   "source_revision": 17,
   "content_hash": "sha256:...",
   "document_id": "doc-uuid",
@@ -1222,21 +1215,21 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 
 ### 13.1 契约与数据模型
 
-- [ ] 新增 `content_revision`；
-- [ ] 为 Search Response 增加稳定 `schema_version`；
-- [ ] 将 `query_plan` 从自由 `dict` 改为 Pydantic Schema；
-- [ ] 将 coverage 状态改为枚举；
-- [ ] 增加稳定错误 Envelope；
-- [ ] 增加精确按 Chunk ID 读取接口，强制知识库隔离；
+- [x] 新增 `content_revision`；
+- [x] 为 Search Response 增加稳定 `schema_version`；
+- [x] 将 `query_plan` 从自由 `dict` 改为 Pydantic Schema；
+- [x] 将 coverage 状态改为枚举；
+- [x] 增加稳定错误 Envelope；
+- [x] 增加 Resource Ref 精确读取接口，强制 Scope、来源和知识库隔离；
 - [x] 增加 Scope 配置模型；
 - [x] 为多知识库 Scope 准备 revision 聚合；
-- [x] 为 Hit 和 Resource 增加可选 `resource_ref/source_revision/content_hash`；
-- [ ] 输出稳定的来源字段；
+- [x] 为 Hit 和 Resource 增加必填 `resource_ref/source_revision/content_hash`；
+- [x] 输出稳定的来源字段；
 - [ ] 明确文本长度和元数据上限。
 - [ ] 增加原生 `experience_items`、反馈事件和状态历史模型；
 - [ ] 增加经验状态、可见性、Workflow、Workspace 和有效性字段；
 - [ ] 为经验生成可版本化的检索文本投影；
-- [ ] Search Hit 输出 `source_type/workflow_type/effectiveness/visibility`；
+- [x] Search Hit 输出 `source_type/workflow_type/effectiveness/visibility`；
 
 ### 13.2 鉴权
 
@@ -1248,7 +1241,7 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 - [x] Search 与 Resource Read 独立授权，遵循最小权限；
 - [x] 实现 knowledge scope 授权；
 - [x] 在 Knowledge Application Service 强制实施单租户 Workspace、visibility 和 Workflow ABAC；
-- [ ] 普通 REST 不得通过任意 `knowledge_base_id` 绕过 Scope 和 Workspace 授权；
+- [x] 外部 REST 只接受 Gateway 服务身份；MCP 内部接口只接受逻辑 Scope，不接受任意物理知识库 ID；
 - [x] 增加 Origin 和 Host Allowlist；
 - [ ] 管理接口与检索接口分权；
 - [ ] 增加 `rag.experience.write/feedback/admin` 并使用独立服务身份；
@@ -1259,7 +1252,7 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 - [x] 新增 `app/mcp_server/`；
 - [x] 定义 Pydantic Input/Output；
 - [x] 实现 `knowledge_search`；
-- [x] 实现不透明 Resource Ref Template，并兼容旧 Chunk Resource URI；
+- [x] 实现不透明 Resource Ref Template，并在上线前移除旧 Chunk Resource URI；
 - [x] 只启用 Tools、Resources 和必要 Logging；
 - [x] 禁用 Sampling、Roots 和 Elicitation；
 - [x] 实现受服务身份保护的 Knowledge Application Service Client；
@@ -1293,11 +1286,11 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 
 - [x] 对 Query 二次脱敏；
 - [x] 限制 Tool 参数长度；
-- [ ] 限制 Resource 文本大小；
-- [ ] 把知识内容标记为不可信数据；
-- [ ] 禁止把知识内容作为 MCP 指令；
-- [ ] 不记录凭证；
-- [ ] 对外部错误脱敏；
+- [x] 限制 Resource 文本大小；
+- [x] 把知识内容标记为不可信数据；
+- [x] 禁止把知识内容作为 MCP 指令；
+- [x] 查询凭证在进入检索和日志前脱敏；
+- [x] 对外部错误脱敏；
 - [ ] 增加请求频率和并发限制。
 
 ## 14. Agent 仓库改造
@@ -1825,10 +1818,8 @@ Phase 1 实现说明：
 - `POST /v1/search` 增加 `trustguard-search-v1`、`request_id`、
   `content_revision`、结构化 `query_plan` 和枚举化 `coverage`；
 - v1 HTTP 错误使用 `trustguard-error-v1` 信封，并暂时保留兼容字段 `detail`；
-- `GET /v1/internal/knowledge-bases/{knowledge_base_id}/chunks/{chunk_id}`
-  只允许携带 `RAG_INTERNAL_SERVICE_TOKEN` 的 Bearer 调用，且只读取匹配知识库中
-  `ready` 文档的 `active` Chunk；
-- 跨库访问和不存在统一返回 404，避免通过错误差异枚举 Chunk 归属；
+- Phase 1 的按知识库/Chunk 内部读取接口属于中间实现，已在上线前收敛为不透明 Resource Ref
+  直接读取，不进入最终生产接口；
 - `tests/test_phase1_contract.py` 覆盖迁移幂等、发布/删除/失败路径、请求 ID、
   错误信封、鉴权以及跨库和未发布内容隔离；
 - Phase 1 完成时全量测试为 295 项通过，检索评测测试无回归。
@@ -1865,8 +1856,8 @@ Phase 2 实现说明：
   多个知识库并限制内容类型；
 - Phase 2 初版由 `knowledge_search` 在 Gateway 内并发调用各知识库；Phase 2.1 已将该
   联邦行为迁移到 Knowledge Application Service，MCP Search 仅保留一次内部调用；
-- 多库版本使用排序后的 `knowledge_base_id:content_revision` 计算 SHA-256；Chunk
-  Resource 强制校验 Scope、知识库归属、当前 revision 以及内部 REST Service Token；
+- 多库版本使用排序后的 `knowledge_base_id:content_revision` 计算 SHA-256；Resource Ref
+  强制校验 Scope、知识库归属、来源 revision/content hash 以及内部 REST Service Token；
 - Knowledge Application Service 对查询中的常见凭证赋值和 Bearer Token 二次脱敏，
   Tool 标记为只读、幂等、非破坏且非开放世界；
 - 生产鉴权通过 JWKS 验证短期 JWT 的签名、issuer、audience、expiry、OAuth scope 和
@@ -1890,7 +1881,7 @@ Phase 2 实现说明：
 - [x] 增加不透明 `resource_ref`、来源级 `source_revision/content_hash`；
 - [x] Resource 直接定位单个知识库和 Chunk，不遍历 Scope 后取第一个匹配；
 - [x] 联邦物理身份改为 `(knowledge_base_id, chunk_id)`；
-- [x] 保留旧 Resource URI 兼容读取并制定灰度退出计划；
+- [x] 上线前移除旧 Resource URI、裸 Chunk 读取和内部单知识库 Search；
 - [x] 生产模式下鉴权或内部服务身份缺失时启动失败；
 - [x] 明确生产入口不得暴露 `/v1/internal/*`；Compose 的 18200 映射仅用于本地开发；
 - [x] 增加 REST 绕过、Workspace 越权、Chunk ID 碰撞和无关 revision 更新测试。
@@ -1898,9 +1889,9 @@ Phase 2 实现说明：
 第一批改造（2026-07-25）已完成：
 
 - 新增 `KnowledgeApplicationService`，集中执行知识库解析、混合检索和稳定响应组装；
-- 公开 `POST /v1/search` 与内部 `POST /v1/internal/knowledge/search` 复用同一应用服务；
-- 内部 Search 使用 `RAG_INTERNAL_SERVICE_TOKEN` Bearer 服务身份保护；
-- `rag-mcp` 已改为携带服务身份调用内部 Search，缺少或错误身份时 fail closed；
+- 公开 `POST /v1/search` 复用 `KnowledgeApplicationService.search`；MCP 最终只通过逻辑 Scope
+  调用内部 Scope Search，不暴露任意物理知识库搜索入口；
+- 内部 Scope Search 使用 `RAG_INTERNAL_SERVICE_TOKEN` Bearer 服务身份保护，缺少或错误身份时 fail closed；
 - 生产环境要求配置内部服务身份；启用 MCP 时强制开启 MCP OAuth 鉴权；
 - 第一批完成时 Scope 映射、跨库 RRF 和联邦降级合并仍位于 MCP Gateway；该过渡实现已在第三批移除。
 
@@ -1916,11 +1907,11 @@ Phase 2 实现说明：
 第三批改造（2026-07-25）已完成：
 
 - 将共享知识 v1 契约和 `ScopeRegistry` 从 MCP 协议包下沉到 `schemas` / `application` 层，消除应用层对 MCP Server 的反向依赖；
-- `KnowledgeApplicationService.search_scope` 统一执行 Scope 映射、逐库权限检查、多知识库并发 Search、RRF、过滤、裸 Chunk ID 兼容去重、Coverage 和 degraded 合并；
+- `KnowledgeApplicationService.search_scope` 统一执行 Scope 映射、逐库权限检查、多知识库并发 Search、RRF、过滤、物理身份去重、Coverage 和 degraded 合并；
 - 新增 `POST /v1/internal/knowledge/search-scope`，仅接受 MCP 内部服务身份；Gateway 服务 Token 不能调用；
 - `rag-mcp` 的 `knowledge_search` 现在只发送一次内部 Scope Search，并校验冻结的 v1 响应契约，不再维护联邦搜索业务算法；
 - Query 凭证脱敏已移入应用层，保证任何复用 Scope Search 的协议适配器都执行相同规则；
-- 旧 Resource URI 暂时保留 Scope 遍历和聚合 revision 兼容逻辑，仅用于 Phase 2 客户端迁移。
+- 上线前删除 Phase 2 中间态的 Scope 遍历 Resource Read，只保留 Resource Ref 直接读取。
 
 第四批改造（2026-07-25）已完成：
 
@@ -1931,9 +1922,18 @@ Phase 2 实现说明：
 - 使用 AES-GCM 签发 `krf1.*` 不透明 Resource Ref，绑定 Scope、知识库、Chunk、来源版本和内容哈希；
 - 新 Resource Read 直接定位唯一 `(knowledge_base_id, chunk_id)`，来源变化返回 `RESOURCE_STALE`，无关知识库 revision 更新不会使其失效；
 - 联邦 RRF 使用 `(knowledge_base_id, chunk_id)` 作为物理身份，并以 `(content_hash, chunk_index)` 做内容去重；
-- MCP 同时提供新 Resource Ref Template 和旧 Chunk URI Template，迁移期保持 v1 客户端兼容；
+- MCP 只提供 Resource Ref Template；北向契约不暴露裸 Chunk ID；
 - 新增 REST 身份绕过、可信上下文、Workspace/Workflow 越权、Resource Ref 篡改、Chunk ID 碰撞、来源 stale 和无关 revision 测试；
 - 生产环境强制配置至少 32 字符的 `RAG_RESOURCE_REF_SECRET`。生产反向代理或 API Gateway 必须只发布业务 REST/MCP 路径并屏蔽 `/v1/internal/*`；仓库 Compose 保留 18200 端口映射，作为本地开发和容器互通拓扑。
+
+上线前精简（2026-07-25）已完成：
+
+- 删除旧 Chunk Resource Template、Scope revision 遍历回读及其 Backend/Gateway 分支；
+- 删除 `/v1/internal/knowledge/search`、裸 Chunk 读取和独立 content revision 内部接口，MCP 只能按逻辑 Scope 搜索；
+- `resource_ref/source_revision/content_hash` 改为 v1 必填字段，并从北向 Hit/Resource 删除裸 Chunk ID；
+- `RAG_MCP_SCOPE_MAPPING_JSON` 只接受完整 `ScopeDefinition`，不再接受数组简写；
+- 删除 `app.mcp_server.models/scopes` 兼容导出，调用方直接依赖应用层和 Schema 层；
+- MCP Tool 直接返回 Pydantic Structured Content，不再手工构造兼容返回体。
 
 完成条件：
 
@@ -1941,7 +1941,7 @@ Phase 2 实现说明：
 - MCP、REST 和评测对相同请求使用同一检索语义；
 - Search-only Token 不需要 `rag.resource.read`；
 - Resource Read 能唯一定位来源，且不会因无关知识库更新失效；
-- Phase 2 已有 Client 和旧 URI 在迁移窗口内保持兼容；
+- v1 Client 统一使用 Resource Ref，没有未上线历史协议分支；
 - 安全和边界加固测试全部通过。
 
 Phase 2.1 是 Phase 3 的前置门槛。公共静态知识可继续使用 Phase 2 实现做开发验证，但

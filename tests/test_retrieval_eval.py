@@ -113,8 +113,10 @@ def test_scope_search_uses_shared_endpoint_and_adapts_hits() -> None:
                 "content_revision": "scope-revision",
                 "hits": [
                     {
-                        "external_chunk_id": "chunk-1",
                         "resource_uri": "trustguard-rag://compliance/resources/krf1.opaque",
+                        "resource_ref": "krf1.opaque",
+                        "source_revision": 1,
+                        "content_hash": f"sha256:{'a' * 64}",
                         "snippet": "证据",
                         "score": 1.0,
                         "filename": "evidence.pdf",

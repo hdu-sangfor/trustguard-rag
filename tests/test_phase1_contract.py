@@ -162,84 +162,6 @@ async def test_validation_error_uses_stable_envelope_and_keeps_detail(client) ->
 
 
 @pytest.mark.asyncio
-async def test_internal_chunk_read_requires_auth_and_enforces_scope(client, monkeypatch) -> None:
-    first = await KnowledgeBaseStore().create(
-        name="内部读取知识库 A",
-        profile=get_embedding_profile("configured"),
-    )
-    second = await KnowledgeBaseStore().create(
-        name="内部读取知识库 B",
-        profile=get_embedding_profile("configured"),
-    )
-    document = await DocumentStore().create(
-        source_type="file",
-        source_uri="upload://internal.txt",
-        content_hash="b" * 64,
-        status=DocumentStatus.READY,
-        title="内部读取测试",
-        original_filename="internal.txt",
-        knowledge_base_id=first.id,
-    )
-    chunk_id = str(uuid4())
-    await ChunkStore().create_many(
-        [
-            {
-                "id": chunk_id,
-                "document_id": document.id,
-                "chunk_index": 0,
-                "text": "只能由匹配知识库和服务身份读取",
-                "metadata": {"content_type": "security_guide"},
-            }
-        ]
-    )
-    path = f"/v1/internal/knowledge-bases/{first.id}/chunks/{chunk_id}"
-
-    get_settings.cache_clear()
-    unconfigured = await client.get(path)
-    assert unconfigured.status_code == 503
-    assert unconfigured.json()["code"] == "RAG_UNAVAILABLE"
-
-    monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "phase1-secret")
-    get_settings.cache_clear()
-    unauthorized = await client.get(path, headers={"Authorization": "Bearer wrong"})
-    assert unauthorized.status_code == 401
-    assert unauthorized.headers["WWW-Authenticate"] == "Bearer"
-
-    authorized = await client.get(
-        path,
-        headers={
-            "Authorization": "Bearer phase1-secret",
-            "X-Request-ID": "req-phase1-resource",
-        },
-    )
-    assert authorized.status_code == 200
-    body = authorized.json()
-    assert body["schema_version"] == "trustguard-internal-chunk-v1"
-    assert body["request_id"] == "req-phase1-resource"
-    assert body["knowledge_base_id"] == first.id
-    assert body["chunk_id"] == chunk_id
-    assert body["text"] == "只能由匹配知识库和服务身份读取"
-    assert body["source_revision"] == 1
-    assert body["content_hash"] == "b" * 64
-
-    cross_scope = await client.get(
-        f"/v1/internal/knowledge-bases/{second.id}/chunks/{chunk_id}",
-        headers={"Authorization": "Bearer phase1-secret"},
-    )
-    assert cross_scope.status_code == 404
-    assert cross_scope.json()["detail"] == "Chunk not found"
-
-    await DocumentStore().update_status(document.id, DocumentStatus.FAILED)
-    unpublished = await client.get(
-        path,
-        headers={"Authorization": "Bearer phase1-secret"},
-    )
-    assert unpublished.status_code == 404
-
-    get_settings.cache_clear()
-
-
-@pytest.mark.asyncio
 async def test_internal_resource_ref_is_source_bound_and_scope_safe(
     client,
     monkeypatch,
@@ -278,7 +200,7 @@ async def test_internal_resource_ref_is_source_bound_and_scope_safe(
     monkeypatch.setenv("RAG_RESOURCE_REF_SECRET", secret)
     monkeypatch.setenv(
         "RAG_MCP_SCOPE_MAPPING_JSON",
-        json.dumps({"compliance": [first.id, second.id]}),
+        json.dumps({"compliance": {"knowledge_base_ids": [first.id, second.id]}}),
     )
     get_settings.cache_clear()
     codec = ResourceRefCodec(secret)

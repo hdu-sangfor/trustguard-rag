@@ -154,14 +154,9 @@ def _search_response(
 
 
 def _scope_registry(*, allowed_content_types: bool = True) -> ScopeRegistry:
-    allowed = (
-        ',"allowed_content_types":["legal_article"]'
-        if allowed_content_types
-        else ""
-    )
+    allowed = ',"allowed_content_types":["legal_article"]' if allowed_content_types else ""
     return ScopeRegistry.from_json(
-        '{"compliance":{"knowledge_base_ids":["kb-a","kb-b"]'
-        f"{allowed}}}}}"
+        f'{{"compliance":{{"knowledge_base_ids":["kb-a","kb-b"]{allowed}}}}}'
     )
 
 
@@ -211,15 +206,15 @@ async def test_scope_search_fuses_multiple_knowledge_bases_and_redacts_query() -
 
     assert response.status == "ok"
     assert response.content_revision == aggregate_revision({"kb-a": 2, "kb-b": 7})
-    assert [item.external_chunk_id for item in response.hits] == [
-        "shared",
-        "b-only",
-        "a-only",
+    assert [item.snippet for item in response.hits] == [
+        "A shared",
+        "B only",
+        "A only",
     ]
     assert "/resources/krf1." in response.hits[0].resource_uri
     assert all(item.resource_ref for item in response.hits)
     assert all(item.source_revision == 1 for item in response.hits)
-    assert all(item.content_hash and item.content_hash.startswith("sha256:") for item in response.hits)
+    assert all(item.content_hash.startswith("sha256:") for item in response.hits)
     assert all("hunter2" not in item.query for item in service.seen_requests)
     assert all("abcdefghijklmnop" not in item.query for item in service.seen_requests)
     assert response.query_plan.source == "heuristic"
@@ -249,7 +244,7 @@ async def test_scope_search_returns_degraded_result_when_one_database_fails() ->
     assert response.degraded_components == ["federation"]
     assert response.coverage.status == "unknown"
     assert response.content_revision == aggregate_revision({"kb-a": 2, "kb-b": 7})
-    assert [item.external_chunk_id for item in response.hits] == ["a-only"]
+    assert [item.snippet for item in response.hits] == ["A only"]
 
 
 @pytest.mark.asyncio
@@ -343,8 +338,7 @@ async def test_resource_ref_reads_one_source_and_ignores_unrelated_revision() ->
         access_context=context,
         scopes=scopes,
     )
-    hit = next(item for item in response.hits if item.external_chunk_id == "a-only")
-    assert hit.resource_ref is not None
+    hit = next(item for item in response.hits if item.snippet == "A only")
 
     service.responses["kb-b"] = service.responses["kb-b"].model_copy(
         update={"content_revision": 99}
@@ -358,7 +352,6 @@ async def test_resource_ref_reads_one_source_and_ignores_unrelated_revision() ->
         scopes=scopes,
     )
 
-    assert resource.chunk_id == "a-only"
     assert resource.text == "A only"
     assert resource.source_revision == 1
     assert resource.content_hash == hit.content_hash
@@ -385,7 +378,6 @@ async def test_resource_ref_becomes_stale_only_when_bound_source_changes() -> No
         scopes=scopes,
     )
     resource_ref = response.hits[0].resource_ref
-    assert resource_ref is not None
     service.source_revisions[("kb-a", "a-only")] = 2
 
     with pytest.raises(KnowledgeSearchError) as captured:
@@ -431,10 +423,7 @@ async def test_federation_uses_physical_identity_for_same_chunk_id() -> None:
         scopes=_scope_registry(allowed_content_types=False),
     )
 
-    assert [item.external_chunk_id for item in response.hits] == [
-        "collision",
-        "collision",
-    ]
+    assert [item.snippet for item in response.hits] == ["A collision", "B collision"]
     assert response.hits[0].resource_ref != response.hits[1].resource_ref
     assert response.hits[0].content_hash != response.hits[1].content_hash
 
@@ -475,9 +464,7 @@ async def test_scope_search_enforces_workspace_and_workflow_visibility() -> None
             ],
         ),
     }
-    service.source_types[("kb-a", "workspace-experience")] = (
-        KnowledgeSourceType.EXPERIENCE
-    )
+    service.source_types[("kb-a", "workspace-experience")] = KnowledgeSourceType.EXPERIENCE
     scopes = ScopeRegistry.from_json(
         '{"compliance":{"knowledge_base_ids":["kb-a","kb-b"],'
         '"allowed_workflow_types":["penetration"]}}'
@@ -504,7 +491,5 @@ async def test_scope_search_enforces_workspace_and_workflow_visibility() -> None
         scopes=scopes,
     )
 
-    assert [item.external_chunk_id for item in allowed.hits] == [
-        "workspace-experience"
-    ]
+    assert [item.snippet for item in allowed.hits] == ["Workspace experience"]
     assert denied.hits == []

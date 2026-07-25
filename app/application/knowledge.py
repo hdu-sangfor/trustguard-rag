@@ -382,7 +382,6 @@ class KnowledgeApplicationService:
             resource_ref=resource_ref,
             source_revision=source.source_revision,
             content_hash=f"sha256:{source.content_hash}",
-            chunk_id=source.chunk_id,
             document_id=source.document_id,
             experience_id=_optional_string(metadata.get("experience_id")),
             text=source.text[: settings.mcp_resource_max_chars],
@@ -502,7 +501,6 @@ class KnowledgeApplicationService:
             metadata = source.metadata
             hits.append(
                 KnowledgeHit(
-                    external_chunk_id=source.chunk_id,
                     resource_uri=(
                         f"trustguard-rag://{quote(request.scope.value, safe='')}"
                         f"/resources/{quote(resource_ref, safe='')}"

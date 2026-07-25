@@ -5,7 +5,6 @@
   "resource_ref": "krf1.contract-fixture",
   "source_revision": 17,
   "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "chunk_id": "fa584199-172f-4b02-9ba8-f9116e09e3e6",
   "document_id": "c6fbc783-657e-4ffc-adc7-b6b3866c6c0d",
   "experience_id": null,
   "text": "Apache Shiro 的 RememberMe 功能需要验证反序列化风险。",

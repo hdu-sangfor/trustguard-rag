@@ -38,7 +38,6 @@
 
 - `POST /v1/search`：只执行检索，返回知识片段、来源、得分和查询规划信息；生产环境要求 Agent Gateway 服务身份。
 - `POST /v1/search/scope`：通过逻辑 Scope 执行联邦检索，供 Agent Gateway、普通 REST 和评测使用；复用共享 Scope 应用服务。
-- `POST /v1/internal/knowledge/search`：要求内部 Bearer 服务身份，供 MCP Gateway 等受信服务调用；与公开 Search 复用相同应用服务。
 - `POST /v1/internal/knowledge/search-scope`：供 MCP 以受信服务身份调用共享 Scope 应用服务。
 - `GET /v1/internal/knowledge/resources/{resource_ref}`：校验 Scope 和来源版本后直接读取唯一来源 Chunk。
 - `POST /v1/answer`：复用相同检索流程，再执行上下文构建、LLM 回答和引用校验。
@@ -297,14 +296,9 @@ Chunk、来源版本和内容哈希。回读时应用服务直接定位唯一 `(
 和 `content_hash`。来源内容发生变化返回 `RESOURCE_STALE`；同一 Scope 内其他知识库更新不会
 使该引用失效。
 
-迁移期仍接受旧 URI：
-
-```text
-trustguard-rag://{scope}/chunks/{chunk_id}?revision={scope_revision}
-```
-
-新客户端应优先使用 Resource Ref。旧 URI 依赖 Scope 聚合 revision，仅用于 Phase 2 客户端
-兼容，后续在迁移窗口结束后移除。
+服务尚未上线，当前只接受 Resource Ref URI，不保留旧 Chunk URI、裸 Chunk 读取或 Scope
+遍历回读分支。Search Hit 和 Resource 中的 `resource_ref`、`source_revision`、`content_hash`
+均为必填字段。
 
 ## 9. 枚举型问题的能力边界
 
