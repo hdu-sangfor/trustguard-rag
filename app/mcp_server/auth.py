@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import jwt
@@ -74,14 +75,24 @@ class ScopeAuthorizationError(PermissionError):
     pass
 
 
+@dataclass(frozen=True)
+class AuthorizedKnowledgeContext:
+    workspace_id: str
+    allowed_workflow_types: frozenset[str] | None
+
+
 def authorize_knowledge_scope(
     scope: str,
     *,
     required_permission: str,
     auth_enabled: bool,
-) -> None:
+    default_workspace_id: str = "default",
+) -> AuthorizedKnowledgeContext:
     if not auth_enabled:
-        return
+        return AuthorizedKnowledgeContext(
+            workspace_id=default_workspace_id,
+            allowed_workflow_types=None,
+        )
     access_token = get_access_token()
     if access_token is None:
         raise ScopeAuthorizationError("Authentication is required")
@@ -95,6 +106,24 @@ def authorize_knowledge_scope(
         raise ScopeAuthorizationError(
             "The access token is not authorized for this knowledge scope"
         )
+    workspace_id = claims.get("workspace_id", default_workspace_id)
+    if not isinstance(workspace_id, str) or workspace_id != default_workspace_id:
+        raise ScopeAuthorizationError(
+            "The access token is not authorized for this workspace"
+        )
+    raw_workflow_types = claims.get("workflow_types")
+    if raw_workflow_types is None:
+        allowed_workflow_types = frozenset()
+    elif isinstance(raw_workflow_types, list):
+        allowed_workflow_types = frozenset(
+            str(item) for item in raw_workflow_types if isinstance(item, str)
+        )
+    else:
+        raise ScopeAuthorizationError("The workflow_types claim is invalid")
+    return AuthorizedKnowledgeContext(
+        workspace_id=workspace_id,
+        allowed_workflow_types=allowed_workflow_types,
+    )
 
 
 def _token_scopes(value: Any) -> list[str]:

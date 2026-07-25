@@ -2,7 +2,7 @@
 
 > 文档快照：2026-07-25<br>
 > 对应分支：`feature/rag-experience-knowledge`<br>
-> 当前阶段：Phase 2.1 第一批内部检索边界已完成
+> 当前阶段：Phase 2.1 安全与业务边界加固已完成
 
 本文总结当前系统从文档入库到检索、回答和引用校验的完整 RAG 流程。若本文与旧设计文档冲突，以当前源码为准。
 
@@ -18,8 +18,8 @@
     → MySQL 保存权威数据
     → Qdrant 向量索引 + OpenSearch BM25 索引
 
-在线问答
-  用户问题 + knowledge_base_id
+在线问答 / 知识检索
+  用户问题 + knowledge_base_id 或逻辑 scope
     → 查询规划
     → 多查询向量召回 + 多查询关键词召回
     → 融合
@@ -37,7 +37,10 @@
 系统提供公开检索、内部检索和回答接口：
 
 - `POST /v1/search`：只执行检索，返回知识片段、来源、得分和查询规划信息；生产环境要求 Agent Gateway 服务身份。
+- `POST /v1/search/scope`：通过逻辑 Scope 执行联邦检索，供 Agent Gateway、普通 REST 和评测使用；复用共享 Scope 应用服务。
 - `POST /v1/internal/knowledge/search`：要求内部 Bearer 服务身份，供 MCP Gateway 等受信服务调用；与公开 Search 复用相同应用服务。
+- `POST /v1/internal/knowledge/search-scope`：供 MCP 以受信服务身份调用共享 Scope 应用服务。
+- `GET /v1/internal/knowledge/resources/{resource_ref}`：校验 Scope 和来源版本后直接读取唯一来源 Chunk。
 - `POST /v1/answer`：复用相同检索流程，再执行上下文构建、LLM 回答和引用校验。
 
 ## 2. 文档入库流程
@@ -78,7 +81,7 @@
 
 ## 3. 请求范围解析
 
-每次检索必须携带 `knowledge_base_id`。后端首先：
+单知识库检索必须携带 `knowledge_base_id`。后端首先：
 
 1. 解析并校验知识库是否存在。
 2. 取得该知识库的 Embedding Profile。
@@ -86,6 +89,15 @@
 4. 合并用户提供的其他文档、页码和元数据过滤条件。
 
 因此知识库不是一个仅供前端展示的参数，而是后端检索隔离边界。所有召回、相邻 Chunk 扩展和文档状态检查都必须保持在这个范围内。
+
+联邦检索不接受调用方提供物理知识库列表，而是接收逻辑 `scope`。`ScopeRegistry` 把 Scope
+映射到允许的知识库集合，`KnowledgeApplicationService.search_scope` 统一执行逐库权限检查、
+并发检索、RRF、配额、内容去重、Coverage 和 degraded 合并。MCP、公开 REST 和评测都调用
+这一实现。
+
+当前系统维持单租户 `workspace_id=default`，但应用层已经强制执行 Workspace、visibility 和
+Workflow ABAC：workspace 内容必须匹配调用上下文，经验内容必须带 `workflow_type`，Scope
+和已验证 Token 的 Workflow Allowlist 会共同收窄结果。非默认 Workspace 会 fail closed。
 
 ## 4. 查询规划
 
@@ -271,6 +283,29 @@ Search 和 Answer 响应会返回：
 - `fallback`：LLM 不可用或结果不可信时降级；
 - `disabled`：查询规划功能关闭。
 
+### 8.1 Resource Ref 与精确回读
+
+Scope Search 的新命中 URI 使用：
+
+```text
+trustguard-rag://{scope}/resources/{resource_ref}
+```
+
+`resource_ref` 是服务端使用 AES-GCM 签发的 `krf1.*` 不透明标识，绑定 Scope、物理知识库、
+Chunk、来源版本和内容哈希。回读时应用服务直接定位唯一 `(knowledge_base_id, chunk_id)`，并
+重新检查 Scope 映射、Workspace/Workflow 权限、文档 ready/active 状态、`source_revision`
+和 `content_hash`。来源内容发生变化返回 `RESOURCE_STALE`；同一 Scope 内其他知识库更新不会
+使该引用失效。
+
+迁移期仍接受旧 URI：
+
+```text
+trustguard-rag://{scope}/chunks/{chunk_id}?revision={scope_revision}
+```
+
+新客户端应优先使用 Resource Ref。旧 URI 依赖 Scope 聚合 revision，仅用于 Phase 2 客户端
+兼容，后续在迁移窗口结束后移除。
+
 ## 9. 枚举型问题的能力边界
 
 对于“网络安全法包括哪些条款”这类问题，系统现在会提高召回预算、放宽单文档 Chunk 上限并扩展相邻内容，因此不会再被固定的 3 条文档配额过早截断。
@@ -284,9 +319,9 @@ Search 和 Answer 响应会返回：
 ## 10. 一次请求的简化时序
 
 ```text
-浏览器 ── 用户登录 Token ── Agent Gateway ── Gateway 服务 Token ── /v1/search ─┐
+浏览器/评测 ── Agent Gateway 服务 Token ── /v1/search 或 /v1/search/scope ─────┐
                                                                                │
-Agent Runtime ── MCP OAuth ── rag-mcp ── MCP 内部服务 Token ── internal Search ─┤
+Agent Runtime ── MCP OAuth ── rag-mcp ── MCP 内部服务 Token ── internal Scope ─┤
                                                                                ▼
                                               API Schema 校验
                                                      ▼
@@ -307,10 +342,16 @@ BM25 多查询 ─┘
 相邻 Chunk 扩展
   ▼
 Rerank → 每文档 Chunk 限制 → top_k
-  ├─ 公开 /v1/search 或内部 /v1/internal/knowledge/search：返回相同检索结果
+  ├─ 单库 Search：公开和内部接口复用基础 Search 服务
+  ├─ Scope Search：公开 REST、MCP 和评测复用 search_scope
+  ├─ Resource Ref：直接定位来源并重新鉴权、校验版本
   └─ /v1/answer
        → Token 上下文预算
        → LLM JSON 回答
        → 引用校验 / 一次修复
        → 带来源回答或拒答
 ```
+
+生产环境必须由反向代理或 API Gateway 屏蔽 `/v1/internal/*`，内部接口只允许服务网络中的
+`rag-mcp` 等受信工作负载访问。`docker-compose.yml` 对 18200 的宿主机映射是本地开发拓扑，
+不代表生产发布策略。

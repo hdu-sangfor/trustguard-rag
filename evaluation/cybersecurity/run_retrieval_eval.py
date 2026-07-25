@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import statistics
 import time
 from datetime import datetime
@@ -24,10 +25,19 @@ KS = (1, 3, 5, 10)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-url", default="http://127.0.0.1:18200")
-    parser.add_argument(
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument(
         "--knowledge-base-id",
-        required=True,
         help="评测语料所在的知识库 ID",
+    )
+    target.add_argument(
+        "--scope",
+        help="评测语料所在的逻辑知识 Scope；通过共享联邦检索服务执行",
+    )
+    parser.add_argument(
+        "--gateway-service-token",
+        default=os.getenv("RAG_GATEWAY_SERVICE_TOKEN"),
+        help="生产环境 Gateway Bearer Token；默认读取 RAG_GATEWAY_SERVICE_TOKEN",
     )
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_RESULTS)
@@ -118,26 +128,33 @@ def evaluate_question(
     client: httpx.Client,
     question: dict[str, Any],
     body: dict[str, Any],
+    *,
+    endpoint: str = "/v1/search",
 ) -> dict[str, Any]:
     """执行单条检索，并把请求或响应失败规范化为可计分的报告项。"""
     gold = gold_keys(question)
     acceptable_gold = acceptable_gold_keys(question)
     started = time.perf_counter()
     try:
-        response = client.post("/v1/search", json=body)
+        response = client.post(endpoint, json=body)
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
             raise ValueError("搜索响应必须是 JSON 对象")
-        results = payload.get("results")
-        if not isinstance(results, list):
-            raise ValueError("搜索响应缺少 results 数组")
-        search_status = payload.get("search_status")
+        if endpoint == "/v1/search/scope":
+            hits = payload.get("hits")
+            if not isinstance(hits, list):
+                raise ValueError("Scope 搜索响应缺少 hits 数组")
+            results = [scope_hit_to_result(hit) for hit in hits]
+            search_status = payload.get("status")
+        else:
+            results = payload.get("results")
+            if not isinstance(results, list):
+                raise ValueError("搜索响应缺少 results 数组")
+            search_status = payload.get("search_status")
         if search_status not in {"ok", "degraded"}:
             raise ValueError(f"搜索响应包含无效的 search_status: {search_status!r}")
-        retrieved = [
-            f"{filename}#page={page}" for filename, page in map(result_key, results)
-        ]
+        retrieved = [f"{filename}#page={page}" for filename, page in map(result_key, results)]
     except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
         elapsed_ms = (time.perf_counter() - started) * 1000
         error_info: dict[str, Any] = {
@@ -173,7 +190,10 @@ def evaluate_question(
         }
 
     elapsed_ms = (time.perf_counter() - started) * 1000
-    latency_ms = payload.get("retrieval_time_ms", elapsed_ms)
+    latency_ms = payload.get(
+        "latency_ms" if endpoint == "/v1/search/scope" else "retrieval_time_ms",
+        elapsed_ms,
+    )
     if not isinstance(latency_ms, (int, float)) or isinstance(latency_ms, bool):
         latency_ms = elapsed_ms
     return {
@@ -193,13 +213,71 @@ def evaluate_question(
         "latency_ms": latency_ms,
         "wall_time_ms": elapsed_ms,
         "search_status": search_status,
-        "effective_mode": payload.get("effective_mode"),
+        "effective_mode": (
+            payload.get("query_plan", {}).get("intent")
+            if endpoint == "/v1/search/scope" and isinstance(payload.get("query_plan"), dict)
+            else payload.get("effective_mode")
+        ),
         "components": payload.get("components", {}),
         "degraded_components": payload.get("degraded_components", []),
         "query_plan": payload.get("query_plan"),
-        "coverage_status": payload.get("coverage_status"),
+        "coverage_status": (
+            payload.get("coverage", {}).get("status")
+            if endpoint == "/v1/search/scope" and isinstance(payload.get("coverage"), dict)
+            else payload.get("coverage_status")
+        ),
         "results": results,
     }
+
+
+def scope_hit_to_result(hit: Any) -> dict[str, Any]:
+    """把知识 v1 Hit 适配为既有评测器使用的 Search Result 形状。"""
+    if not isinstance(hit, dict):
+        raise ValueError("Scope 搜索 hits 必须包含 JSON 对象")
+    return {
+        **hit,
+        "source": {
+            "original_filename": hit.get("filename"),
+            "page_no": hit.get("page_no"),
+            "document_id": hit.get("document_id"),
+            "source_uri": hit.get("source_uri"),
+        },
+    }
+
+
+def build_search_request(args: argparse.Namespace, query: str) -> tuple[str, dict[str, Any]]:
+    """按评测目标构造单知识库或逻辑 Scope 请求。"""
+    scope = getattr(args, "scope", None)
+    if scope:
+        return (
+            "/v1/search/scope",
+            {
+                "schema_version": "trustguard-knowledge-search-request-v1",
+                "query": query,
+                "scope": scope,
+                "mode": getattr(args, "retrieval_mode", "auto"),
+                "limit": args.top_k,
+            },
+        )
+
+    body = {
+        "query": query,
+        "knowledge_base_id": args.knowledge_base_id,
+        "fusion_method": args.fusion_method,
+        "enable_vector": args.enable_vector,
+        "enable_keyword": args.enable_keyword,
+        "enable_rerank": args.enable_rerank,
+        "retrieval_mode": getattr(args, "retrieval_mode", "auto"),
+    }
+    if not getattr(args, "adaptive_budgets", False):
+        body.update(
+            {
+                "top_k": args.top_k,
+                "vector_top_k": args.vector_top_k,
+                "keyword_top_k": args.keyword_top_k,
+            }
+        )
+    return "/v1/search", body
 
 
 def summarize_queries(query_reports: list[dict[str, Any]]) -> dict[str, Any]:
@@ -285,7 +363,11 @@ def render_report(report: dict[str, Any]) -> str:
             "",
         ]
     )
-    misses = [item for item in report["queries"] if item.get("answerable") and item["metrics"]["hit@10"] == 0]
+    misses = [
+        item
+        for item in report["queries"]
+        if item.get("answerable") and item["metrics"]["hit@10"] == 0
+    ]
     if not misses:
         lines.append("无。")
     else:
@@ -295,13 +377,17 @@ def render_report(report: dict[str, Any]) -> str:
             lines.append(f"  - Top 3：{', '.join(item['retrieved'][:3])}")
     lines.extend(["", "## Top 1 未命中问题", ""])
     top1_misses = [
-        item for item in report["queries"] if item.get("answerable") and item["metrics"]["hit@1"] == 0
+        item
+        for item in report["queries"]
+        if item.get("answerable") and item["metrics"]["hit@1"] == 0
     ]
     if not top1_misses:
         lines.append("无。")
     else:
         for item in top1_misses:
-            lines.append(f"- `{item['query_id']}` {item['query']} → {item['retrieved'][0] if item['retrieved'] else '空结果'}")
+            lines.append(
+                f"- `{item['query_id']}` {item['query']} → {item['retrieved'][0] if item['retrieved'] else '空结果'}"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -312,28 +398,26 @@ def main() -> int:
 
     questions = load_jsonl(args.dataset.resolve())
     query_reports: list[dict[str, Any]] = []
-    with httpx.Client(base_url=args.api_url.rstrip("/"), timeout=args.timeout) as client:
+    client_headers = (
+        {"Authorization": f"Bearer {args.gateway_service_token}"}
+        if getattr(args, "gateway_service_token", None)
+        else None
+    )
+    with httpx.Client(
+        base_url=args.api_url.rstrip("/"),
+        timeout=args.timeout,
+        headers=client_headers,
+    ) as client:
         health = client.get("/health")
         health.raise_for_status()
         for index, question in enumerate(questions, start=1):
-            body = {
-                "query": question["query"],
-                "knowledge_base_id": args.knowledge_base_id,
-                "fusion_method": args.fusion_method,
-                "enable_vector": args.enable_vector,
-                "enable_keyword": args.enable_keyword,
-                "enable_rerank": args.enable_rerank,
-                "retrieval_mode": getattr(args, "retrieval_mode", "auto"),
-            }
-            if not getattr(args, "adaptive_budgets", False):
-                body.update(
-                    {
-                        "top_k": args.top_k,
-                        "vector_top_k": args.vector_top_k,
-                        "keyword_top_k": args.keyword_top_k,
-                    }
-                )
-            query_report = evaluate_question(client, question, body)
+            endpoint, body = build_search_request(args, question["query"])
+            query_report = evaluate_question(
+                client,
+                question,
+                body,
+                endpoint=endpoint,
+            )
             query_reports.append(query_report)
             print(
                 f"[{index:02d}/{len(questions)}] {question['query_id']} "
@@ -348,7 +432,8 @@ def main() -> int:
         "dataset": str(args.dataset.resolve().relative_to(PROJECT_ROOT)),
         "api_url": args.api_url,
         "config": {
-            "knowledge_base_id": args.knowledge_base_id,
+            "knowledge_base_id": getattr(args, "knowledge_base_id", None),
+            "scope": getattr(args, "scope", None),
             "top_k": args.top_k,
             "vector_top_k": args.vector_top_k,
             "keyword_top_k": args.keyword_top_k,

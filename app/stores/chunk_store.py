@@ -98,6 +98,39 @@ class ChunkStore:
             )
             return result.one_or_none()
 
+    async def get_scoped_active_many(
+        self,
+        identities: list[tuple[str, str]],
+    ) -> dict[tuple[str, str], tuple[ChunkRow, DocumentRow, KnowledgeBaseRow]]:
+        """批量解析物理 `(knowledge_base_id, chunk_id)`，仅返回活动且已发布来源。"""
+        requested = set(identities)
+        if not requested:
+            return {}
+        chunk_ids = list(dict.fromkeys(chunk_id for _, chunk_id in identities))
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(
+                select(ChunkRow, DocumentRow, KnowledgeBaseRow)
+                .join(DocumentRow, DocumentRow.id == ChunkRow.document_id)
+                .join(
+                    KnowledgeBaseRow,
+                    KnowledgeBaseRow.id == DocumentRow.knowledge_base_id,
+                )
+                .where(
+                    ChunkRow.id.in_(chunk_ids),
+                    ChunkRow.status == "active",
+                    DocumentRow.status == DocumentStatus.READY,
+                )
+            )
+            resolved: dict[
+                tuple[str, str],
+                tuple[ChunkRow, DocumentRow, KnowledgeBaseRow],
+            ] = {}
+            for chunk, document, knowledge_base in result.all():
+                identity = (knowledge_base.id, chunk.id)
+                if identity in requested:
+                    resolved[identity] = (chunk, document, knowledge_base)
+            return resolved
+
     async def neighbors_for_anchors(
         self,
         anchors: list[tuple[str, int]],

@@ -1,7 +1,7 @@
 # TrustGuard RAG MCP 化与多 Workflow 接入计划
 
-> 文档状态：Phase 0～2 已完成；Phase 2.1 安全与边界加固实施中；Phase 3 尚未实施<br>
-> 文档日期：2026-07-24<br>
+> 文档状态：Phase 0～2.1 已完成；Phase 3 尚未实施<br>
+> 文档日期：2026-07-25<br>
 > RAG 基线分支：`origin/main`<br>
 > RAG 基线提交：`93d08d0`<br>
 > Agent 调研基线：`trustguard-agent/main@c8f3796`<br>
@@ -1230,7 +1230,7 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 - [ ] 增加精确按 Chunk ID 读取接口，强制知识库隔离；
 - [x] 增加 Scope 配置模型；
 - [x] 为多知识库 Scope 准备 revision 聚合；
-- [ ] 为 Hit 和 Resource 增加可选 `resource_ref/source_revision/content_hash`；
+- [x] 为 Hit 和 Resource 增加可选 `resource_ref/source_revision/content_hash`；
 - [ ] 输出稳定的来源字段；
 - [ ] 明确文本长度和元数据上限。
 - [ ] 增加原生 `experience_items`、反馈事件和状态历史模型；
@@ -1247,7 +1247,7 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 - [ ] 校验 issuer/audience/expiry/scope；
 - [x] Search 与 Resource Read 独立授权，遵循最小权限；
 - [x] 实现 knowledge scope 授权；
-- [ ] 在 Knowledge Application Service 强制实施 Workspace、visibility 和 Workflow ABAC；
+- [x] 在 Knowledge Application Service 强制实施单租户 Workspace、visibility 和 Workflow ABAC；
 - [ ] 普通 REST 不得通过任意 `knowledge_base_id` 绕过 Scope 和 Workspace 授权；
 - [x] 增加 Origin 和 Host Allowlist；
 - [ ] 管理接口与检索接口分权；
@@ -1259,7 +1259,7 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 - [x] 新增 `app/mcp_server/`；
 - [x] 定义 Pydantic Input/Output；
 - [x] 实现 `knowledge_search`；
-- [ ] 实现不透明 Resource Ref Template，并兼容旧 Chunk Resource URI；
+- [x] 实现不透明 Resource Ref Template，并兼容旧 Chunk Resource URI；
 - [x] 只启用 Tools、Resources 和必要 Logging；
 - [x] 禁用 Sampling、Roots 和 Elicitation；
 - [x] 实现受服务身份保护的 Knowledge Application Service Client；
@@ -1272,10 +1272,10 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 ### 13.4 Knowledge Application Service
 
 - [x] 统一 Scope → KB 映射；
-- [ ] 统一 Service Identity、knowledge scope 和 Workspace ABAC（服务身份和默认 Workspace 已完成，租户 ABAC 待多租户阶段）；
+- [x] 统一 Service Identity、knowledge scope 和单租户 Workspace/Workflow ABAC；
 - [x] 统一联邦检索、单库/总配额、RRF、去重、Coverage 和 degraded 合并；
-- [ ] 统一 Resource Ref 签发、解析、来源版本和 active/ready 校验；
-- [ ] 为 MCP、普通 REST 和评测提供相同业务语义；
+- [x] 统一 Resource Ref 签发、解析、来源版本和 active/ready 校验；
+- [x] 为 MCP、普通 REST 和评测提供相同业务语义；
 - [x] 生产内部接口只允许受信服务身份访问。
 
 ### 13.5 经验写入与索引
@@ -1883,17 +1883,17 @@ Phase 2 实现说明：
 - [x] MCP 不再通过无服务鉴权的普通 `/v1/search` 检索；
 - [x] 将 Scope 映射、联邦检索、配额、RRF、去重、Coverage 和 degraded 合并下沉到 Knowledge Application Service；
 - [x] MCP 与内部 REST Scope Search 复用相同业务服务；公开单知识库 Search 继续复用同一基础 Search 服务；
-- [ ] 评测脚本和未来公开 Scope REST 接口复用相同联邦业务服务；
-- [ ] 在单租户基础上补齐 Workspace、visibility 和 Workflow ABAC；
+- [x] 评测脚本和公开 Scope REST 接口复用相同联邦业务服务；
+- [x] 在单租户基础上补齐 Workspace、visibility 和 Workflow ABAC；
 - [x] Search 和 Resource Read 实施独立最小权限；
 - [x] 明确 HTTP 401/403 与 MCP Tool/Resource 授权错误边界；
-- [ ] 增加不透明 `resource_ref`、来源级 `source_revision/content_hash`；
-- [ ] Resource 直接定位单个知识库和 Chunk，不遍历 Scope 后取第一个匹配；
-- [ ] 联邦物理身份改为 `(knowledge_base_id, chunk_id)`；
-- [ ] 保留旧 Resource URI 兼容读取并制定灰度退出计划；
+- [x] 增加不透明 `resource_ref`、来源级 `source_revision/content_hash`；
+- [x] Resource 直接定位单个知识库和 Chunk，不遍历 Scope 后取第一个匹配；
+- [x] 联邦物理身份改为 `(knowledge_base_id, chunk_id)`；
+- [x] 保留旧 Resource URI 兼容读取并制定灰度退出计划；
 - [x] 生产模式下鉴权或内部服务身份缺失时启动失败；
-- [ ] 生产部署不直接暴露 RAG 内部检索端口；
-- [ ] 增加 REST 绕过、Workspace 越权、Chunk ID 碰撞和无关 revision 更新测试。
+- [x] 明确生产入口不得暴露 `/v1/internal/*`；Compose 的 18200 映射仅用于本地开发；
+- [x] 增加 REST 绕过、Workspace 越权、Chunk ID 碰撞和无关 revision 更新测试。
 
 第一批改造（2026-07-25）已完成：
 
@@ -1920,7 +1920,20 @@ Phase 2 实现说明：
 - 新增 `POST /v1/internal/knowledge/search-scope`，仅接受 MCP 内部服务身份；Gateway 服务 Token 不能调用；
 - `rag-mcp` 的 `knowledge_search` 现在只发送一次内部 Scope Search，并校验冻结的 v1 响应契约，不再维护联邦搜索业务算法；
 - Query 凭证脱敏已移入应用层，保证任何复用 Scope Search 的协议适配器都执行相同规则；
-- Resource Read 暂时保留旧 Scope 遍历和聚合 revision 兼容逻辑；下一批处理不透明 `resource_ref`、来源级 revision 和物理身份 `(knowledge_base_id, chunk_id)`。
+- 旧 Resource URI 暂时保留 Scope 遍历和聚合 revision 兼容逻辑，仅用于 Phase 2 客户端迁移。
+
+第四批改造（2026-07-25）已完成：
+
+- 新增 `POST /v1/search/scope`，Agent Gateway 和评测通过公开 REST 复用同一个 `search_scope` 应用服务；
+- 检索评测支持 `--knowledge-base-id` 与 `--scope` 二选一，Scope 模式不再复制联邦算法；
+- 在当前单租户 `workspace_id=default` 基础上强制执行 Workspace、visibility、Scope Workflow Allowlist 和 Token Workflow Allowlist；
+- MCP JWT 接受 `workspace_id` 与 `workflow_types` Claim，并只通过验证过的内部服务请求头传入 RAG；
+- 使用 AES-GCM 签发 `krf1.*` 不透明 Resource Ref，绑定 Scope、知识库、Chunk、来源版本和内容哈希；
+- 新 Resource Read 直接定位唯一 `(knowledge_base_id, chunk_id)`，来源变化返回 `RESOURCE_STALE`，无关知识库 revision 更新不会使其失效；
+- 联邦 RRF 使用 `(knowledge_base_id, chunk_id)` 作为物理身份，并以 `(content_hash, chunk_index)` 做内容去重；
+- MCP 同时提供新 Resource Ref Template 和旧 Chunk URI Template，迁移期保持 v1 客户端兼容；
+- 新增 REST 身份绕过、可信上下文、Workspace/Workflow 越权、Resource Ref 篡改、Chunk ID 碰撞、来源 stale 和无关 revision 测试；
+- 生产环境强制配置至少 32 字符的 `RAG_RESOURCE_REF_SECRET`。生产反向代理或 API Gateway 必须只发布业务 REST/MCP 路径并屏蔽 `/v1/internal/*`；仓库 Compose 保留 18200 端口映射，作为本地开发和容器互通拓扑。
 
 完成条件：
 

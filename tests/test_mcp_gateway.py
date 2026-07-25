@@ -42,6 +42,7 @@ class _FakeBackend:
         self.scope_search: dict[str, Any] | BaseException = RuntimeError(
             "scope search is not configured"
         )
+        self.resources: dict[str, dict[str, Any] | BaseException] = {}
         self.searches: dict[str, dict[str, Any] | BaseException] = {}
         self.revisions: dict[str, int | BaseException] = {}
         self.chunks: dict[tuple[str, str], dict[str, Any] | None | BaseException] = {}
@@ -54,11 +55,27 @@ class _FakeBackend:
         *,
         request_id: str,
         payload: dict[str, Any],
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
     ) -> dict[str, Any]:
         self.seen_scope_payloads.append(payload)
         if isinstance(self.scope_search, BaseException):
             raise self.scope_search
         return self.scope_search
+
+    async def get_resource(
+        self,
+        *,
+        scope: str,
+        resource_ref: str,
+        request_id: str,
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
+    ) -> dict[str, Any]:
+        value = self.resources[resource_ref]
+        if isinstance(value, BaseException):
+            raise value
+        return value
 
     async def search(
         self,
@@ -78,13 +95,22 @@ class _FakeBackend:
         knowledge_base_id: str,
         chunk_id: str,
         request_id: str,
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
     ) -> dict[str, Any] | None:
         value = self.chunks.get((knowledge_base_id, chunk_id))
         if isinstance(value, BaseException):
             raise value
         return value
 
-    async def get_content_revision(self, knowledge_base_id: str) -> int:
+    async def get_content_revision(
+        self,
+        knowledge_base_id: str,
+        *,
+        request_id: str = "req-resource-revision",
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
+    ) -> int:
         value = self.revisions[knowledge_base_id]
         if isinstance(value, BaseException):
             raise value
@@ -125,11 +151,15 @@ def _knowledge_hit(
     revision: str,
     text: str,
 ) -> dict[str, Any]:
+    resource_ref = f"krf1.{chunk_id}-opaque"
     return {
         "external_chunk_id": chunk_id,
         "resource_uri": (
-            f"trustguard-rag://compliance/chunks/{chunk_id}?revision={revision}"
+            f"trustguard-rag://compliance/resources/{resource_ref}"
         ),
+        "resource_ref": resource_ref,
+        "source_revision": 1,
+        "content_hash": f"sha256:{'a' * 64}",
         "snippet": text,
         "score": 0.5,
         "title": "安全资料",
@@ -142,6 +172,34 @@ def _knowledge_hit(
         "effectiveness": None,
         "visibility": "global",
         "expanded": False,
+    }
+
+
+def _knowledge_resource_payload(
+    *,
+    resource_ref: str,
+    text: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "trustguard-knowledge-resource-v1",
+        "scope": "compliance",
+        "content_revision": "4",
+        "resource_ref": resource_ref,
+        "source_revision": 1,
+        "content_hash": f"sha256:{'a' * 64}",
+        "chunk_id": "chunk-1",
+        "document_id": "doc-1",
+        "experience_id": None,
+        "text": text,
+        "title": "安全资料",
+        "filename": "doc-1.pdf",
+        "page_no": 1,
+        "source_uri": "upload://doc-1.pdf",
+        "source_type": "document",
+        "workflow_type": None,
+        "effectiveness": None,
+        "visibility": "global",
+        "metadata": {},
     }
 
 
@@ -274,6 +332,10 @@ async def test_official_mcp_client_lists_and_calls_read_only_contract() -> None:
         revision=revision,
         hits=[_knowledge_hit("chunk-1", revision=revision, text="检索片段")],
     )
+    backend.resources["krf1.chunk-1-opaque"] = _knowledge_resource_payload(
+        resource_ref="krf1.chunk-1-opaque",
+        text="完整检索片段",
+    )
     backend.revisions = {"kb-a": 4}
     backend.chunks = {
         ("kb-a", "chunk-1"): {
@@ -311,7 +373,7 @@ async def test_official_mcp_client_lists_and_calls_read_only_contract() -> None:
                     assert annotations.readOnlyHint is True
                     assert annotations.destructiveHint is False
                     templates = await session.list_resource_templates()
-                    assert len(templates.resourceTemplates) == 1
+                    assert len(templates.resourceTemplates) == 2
 
                     called = await session.call_tool(
                         "knowledge_search",
@@ -359,6 +421,8 @@ async def test_jwt_verifier_and_claim_based_knowledge_scope_authorization(
             "aud": "trustguard-rag-mcp",
             "scope": "rag.search rag.resource.read",
             "knowledge_scopes": ["compliance"],
+            "workspace_id": "default",
+            "workflow_types": ["penetration"],
             "exp": int(time.time()) + 60,
         },
         private_key,
@@ -383,11 +447,13 @@ async def test_jwt_verifier_and_claim_based_knowledge_scope_authorization(
 
     context_token = auth_context_var.set(AuthenticatedUser(access_token))
     try:
-        authorize_knowledge_scope(
+        authorization = authorize_knowledge_scope(
             "compliance",
             required_permission="rag.search",
             auth_enabled=True,
         )
+        assert authorization.workspace_id == "default"
+        assert authorization.allowed_workflow_types == frozenset({"penetration"})
         with pytest.raises(ScopeAuthorizationError):
             authorize_knowledge_scope(
                 "penetration",

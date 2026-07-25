@@ -15,6 +15,11 @@ from app.application.access import (
     KnowledgeAccessDenied,
     KnowledgePermission,
 )
+from app.application.resource_refs import (
+    InvalidResourceRef,
+    ResourceRefClaims,
+    ResourceRefCodec,
+)
 from app.application.scopes import ScopeRegistry
 from app.core.retrieval.request_context import resolve_search_execution
 from app.core.retrieval.search import SearchUnavailableError, get_hybrid_search
@@ -23,15 +28,23 @@ from app.schemas.knowledge import (
     KnowledgeCoverage,
     KnowledgeEffectiveness,
     KnowledgeHit,
+    KnowledgeResource,
     KnowledgeSearchRequest as ScopeSearchRequest,
     KnowledgeSearchResponse as ScopeSearchResponse,
     KnowledgeSourceType,
     KnowledgeVisibility,
     McpQueryPlan,
     McpQueryPlanSource,
+    ScopeDefinition,
 )
-from app.schemas.search import SearchCoverage, SearchRequest, SearchResponse
+from app.schemas.search import (
+    SearchCoverage,
+    SearchRequest,
+    SearchResponse,
+    SearchResult,
+)
 from app.settings import get_settings
+from app.stores.chunk_store import get_chunk_store
 from app.stores.knowledge_base_store import get_knowledge_base_store
 
 _SECRET_ASSIGNMENT = re.compile(
@@ -51,6 +64,31 @@ _INTENT_PRIORITY = {
 class _SuccessfulScopeSearch:
     knowledge_base_id: str
     response: SearchResponse
+
+
+@dataclass(frozen=True)
+class ResolvedKnowledgeSource:
+    knowledge_base_id: str
+    content_revision: int
+    chunk_id: str
+    chunk_index: int
+    document_id: str
+    source_revision: int
+    content_hash: str
+    text: str
+    title: str | None
+    filename: str | None
+    page_no: int | None
+    source_uri: str
+    source_type: KnowledgeSourceType
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _RankedScopeHit:
+    knowledge_base_id: str
+    score: float
+    item: SearchResult
 
 
 class KnowledgeSearchError(RuntimeError):
@@ -244,10 +282,11 @@ class KnowledgeApplicationService:
             )
 
         revision = aggregate_revision(revisions)
-        hits = _fuse_scope_hits(
+        hits = await self._build_scope_hits(
             successful,
             request=request,
-            revision=revision,
+            definition=definition,
+            access_context=access_context,
             rrf_k=settings.mcp_rrf_k,
             snippet_max_chars=settings.mcp_snippet_max_chars,
         )
@@ -267,6 +306,254 @@ class KnowledgeApplicationService:
             degraded_components=degraded,
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
         )
+
+    async def read_resource(
+        self,
+        *,
+        scope: str,
+        resource_ref: str,
+        request_id: str,
+        access_context: KnowledgeAccessContext,
+        scopes: ScopeRegistry | None = None,
+    ) -> KnowledgeResource:
+        """解析不透明引用并直接读取唯一物理来源。"""
+        del request_id
+        try:
+            access_context.require(KnowledgePermission.RESOURCE_READ)
+        except KnowledgeAccessDenied as error:
+            raise KnowledgeSearchError(
+                str(error),
+                status_code=403,
+                code="AUTH_FORBIDDEN",
+            ) from error
+        settings = get_settings()
+        registry = scopes or ScopeRegistry.from_json(settings.mcp_scope_mapping_json)
+        try:
+            definition = registry.require(scope)
+        except LookupError as error:
+            raise KnowledgeSearchError(
+                "The requested knowledge scope is not configured",
+                status_code=404,
+                code="UNKNOWN_SCOPE",
+            ) from error
+        try:
+            claims = _resource_ref_codec().parse(resource_ref)
+        except InvalidResourceRef as error:
+            raise KnowledgeSearchError(
+                "Knowledge resource not found",
+                status_code=404,
+                code="RESOURCE_NOT_FOUND",
+            ) from error
+        if (
+            claims.scope != scope
+            or claims.knowledge_base_id not in definition.knowledge_base_ids
+        ):
+            raise KnowledgeSearchError(
+                "Knowledge resource not found",
+                status_code=404,
+                code="RESOURCE_NOT_FOUND",
+            )
+        source = await self.resolve_scoped_source(
+            knowledge_base_id=claims.knowledge_base_id,
+            chunk_id=claims.chunk_id,
+            access_context=access_context,
+            definition=definition,
+        )
+        if source is None:
+            raise KnowledgeSearchError(
+                "Knowledge resource not found",
+                status_code=404,
+                code="RESOURCE_NOT_FOUND",
+            )
+        if (
+            source.source_revision != claims.source_revision
+            or source.content_hash != claims.content_hash
+        ):
+            raise KnowledgeSearchError(
+                "The knowledge resource source has changed",
+                status_code=409,
+                code="RESOURCE_STALE",
+            )
+        metadata = source.metadata
+        return KnowledgeResource(
+            schema_version="trustguard-knowledge-resource-v1",
+            scope=scope,
+            content_revision=str(source.content_revision),
+            resource_ref=resource_ref,
+            source_revision=source.source_revision,
+            content_hash=f"sha256:{source.content_hash}",
+            chunk_id=source.chunk_id,
+            document_id=source.document_id,
+            experience_id=_optional_string(metadata.get("experience_id")),
+            text=source.text[: settings.mcp_resource_max_chars],
+            title=source.title,
+            filename=source.filename,
+            page_no=source.page_no,
+            source_uri=source.source_uri,
+            source_type=source.source_type,
+            workflow_type=_optional_string(metadata.get("workflow_type")),
+            effectiveness=_effectiveness(metadata.get("effectiveness")),
+            visibility=_visibility(metadata.get("visibility")),
+            metadata=metadata,
+        )
+
+    async def resolve_scoped_source(
+        self,
+        *,
+        knowledge_base_id: str,
+        chunk_id: str,
+        access_context: KnowledgeAccessContext,
+        definition: ScopeDefinition | None = None,
+    ) -> ResolvedKnowledgeSource | None:
+        """按物理身份读取来源，并实施单租户 Workspace/Workflow 可见性。"""
+        try:
+            access_context.require(
+                KnowledgePermission.RESOURCE_READ,
+                knowledge_base_id=knowledge_base_id,
+            )
+        except KnowledgeAccessDenied as error:
+            raise KnowledgeSearchError(
+                str(error),
+                status_code=403,
+                code="AUTH_FORBIDDEN",
+            ) from error
+        sources = await self._resolve_resource_sources(
+            [(knowledge_base_id, chunk_id)]
+        )
+        source = sources.get((knowledge_base_id, chunk_id))
+        if source is None or not _is_source_authorized(
+            source,
+            access_context=access_context,
+            definition=definition,
+        ):
+            return None
+        return source
+
+    async def _build_scope_hits(
+        self,
+        searches: list[_SuccessfulScopeSearch],
+        *,
+        request: ScopeSearchRequest,
+        definition: ScopeDefinition,
+        access_context: KnowledgeAccessContext,
+        rrf_k: int,
+        snippet_max_chars: int,
+    ) -> list[KnowledgeHit]:
+        ranked = _rank_scope_hits(searches, rrf_k=rrf_k)
+        sources = await self._resolve_resource_sources(
+            [
+                (candidate.knowledge_base_id, candidate.item.chunk_id)
+                for candidate in ranked
+            ]
+        )
+        visible: list[tuple[_RankedScopeHit, ResolvedKnowledgeSource]] = []
+        for candidate in ranked:
+            identity = (candidate.knowledge_base_id, candidate.item.chunk_id)
+            source = sources.get(identity)
+            if source is None:
+                continue
+            if not _matches_filters(source, request):
+                continue
+            if not _is_source_authorized(
+                source,
+                access_context=access_context,
+                definition=definition,
+            ):
+                continue
+            visible.append((candidate, source))
+
+        deduplicated: dict[
+            tuple[str, int],
+            tuple[_RankedScopeHit, ResolvedKnowledgeSource],
+        ] = {}
+        for candidate, source in visible:
+            content_identity = (source.content_hash, source.chunk_index)
+            previous = deduplicated.get(content_identity)
+            if previous is None:
+                deduplicated[content_identity] = (candidate, source)
+                continue
+            previous_candidate, previous_source = previous
+            deduplicated[content_identity] = (
+                _RankedScopeHit(
+                    knowledge_base_id=previous_candidate.knowledge_base_id,
+                    score=previous_candidate.score + candidate.score,
+                    item=previous_candidate.item,
+                ),
+                previous_source,
+            )
+
+        codec = _resource_ref_codec()
+        hits: list[KnowledgeHit] = []
+        ordered = sorted(
+            deduplicated.values(),
+            key=lambda pair: pair[0].score,
+            reverse=True,
+        )
+        for candidate, source in ordered:
+            resource_ref = codec.issue(
+                ResourceRefClaims(
+                    scope=request.scope.value,
+                    knowledge_base_id=source.knowledge_base_id,
+                    chunk_id=source.chunk_id,
+                    source_revision=source.source_revision,
+                    content_hash=source.content_hash,
+                )
+            )
+            metadata = source.metadata
+            hits.append(
+                KnowledgeHit(
+                    external_chunk_id=source.chunk_id,
+                    resource_uri=(
+                        f"trustguard-rag://{quote(request.scope.value, safe='')}"
+                        f"/resources/{quote(resource_ref, safe='')}"
+                    ),
+                    resource_ref=resource_ref,
+                    source_revision=source.source_revision,
+                    content_hash=f"sha256:{source.content_hash}",
+                    snippet=candidate.item.text[:snippet_max_chars],
+                    score=candidate.score,
+                    title=source.title or candidate.item.title,
+                    document_id=source.document_id,
+                    filename=source.filename,
+                    page_no=source.page_no,
+                    source_uri=source.source_uri,
+                    source_type=source.source_type,
+                    workflow_type=_optional_string(metadata.get("workflow_type")),
+                    effectiveness=_effectiveness(metadata.get("effectiveness")),
+                    visibility=_visibility(metadata.get("visibility")),
+                    expanded=candidate.item.expanded,
+                )
+            )
+        return hits
+
+    async def _resolve_resource_sources(
+        self,
+        identities: list[tuple[str, str]],
+    ) -> dict[tuple[str, str], ResolvedKnowledgeSource]:
+        rows = await get_chunk_store().get_scoped_active_many(identities)
+        sources: dict[tuple[str, str], ResolvedKnowledgeSource] = {}
+        for identity, (chunk, document, knowledge_base) in rows.items():
+            metadata = {
+                **(document.metadata_json or {}),
+                **(chunk.metadata_json or {}),
+            }
+            sources[identity] = ResolvedKnowledgeSource(
+                knowledge_base_id=knowledge_base.id,
+                content_revision=knowledge_base.content_revision,
+                chunk_id=chunk.id,
+                chunk_index=chunk.chunk_index,
+                document_id=document.id,
+                source_revision=document.doc_version,
+                content_hash=document.content_hash.lower(),
+                text=chunk.text,
+                title=document.title,
+                filename=document.original_filename,
+                page_no=chunk.page_no,
+                source_uri=document.source_uri,
+                source_type=_source_type(document.source_type, metadata),
+                metadata=metadata,
+            )
+        return sources
 
     async def _content_revision(self, knowledge_base_id: str) -> int:
         knowledge_base = await get_knowledge_base_store().resolve(knowledge_base_id)
@@ -294,54 +581,30 @@ def redact_query(query: str) -> str:
     )
 
 
-def _fuse_scope_hits(
+def _rank_scope_hits(
     searches: list[_SuccessfulScopeSearch],
     *,
-    request: ScopeSearchRequest,
-    revision: str,
     rrf_k: int,
-    snippet_max_chars: int,
-) -> list[KnowledgeHit]:
-    fused: dict[str, tuple[float, Any]] = {}
+) -> list[_RankedScopeHit]:
+    fused: dict[tuple[str, str], _RankedScopeHit] = {}
     for search in searches:
-        filtered = [
-            item for item in search.response.results if _matches_filters(item, request)
-        ]
-        for rank, item in enumerate(filtered, start=1):
-            chunk_id = item.chunk_id
+        for rank, item in enumerate(search.response.results, start=1):
+            identity = (search.knowledge_base_id, item.chunk_id)
             rrf_score = 1.0 / (rrf_k + rank)
-            previous = fused.get(chunk_id)
+            previous = fused.get(identity)
             if previous is None:
-                fused[chunk_id] = (rrf_score, item)
+                fused[identity] = _RankedScopeHit(
+                    knowledge_base_id=search.knowledge_base_id,
+                    score=rrf_score,
+                    item=item,
+                )
             else:
-                fused[chunk_id] = (previous[0] + rrf_score, previous[1])
-
-    ordered = sorted(fused.items(), key=lambda row: row[1][0], reverse=True)
-    hits: list[KnowledgeHit] = []
-    for chunk_id, (score, item) in ordered:
-        metadata = item.metadata or {}
-        hits.append(
-            KnowledgeHit(
-                external_chunk_id=chunk_id,
-                resource_uri=(
-                    f"trustguard-rag://{quote(request.scope.value, safe='')}"
-                    f"/chunks/{quote(chunk_id, safe='')}?revision={revision}"
-                ),
-                snippet=item.text[:snippet_max_chars],
-                score=score,
-                title=item.title,
-                document_id=item.source.document_id,
-                filename=item.source.original_filename,
-                page_no=item.source.page_no,
-                source_uri=item.source.source_uri,
-                source_type=_source_type(metadata.get("source_type"), metadata),
-                workflow_type=_optional_string(metadata.get("workflow_type")),
-                effectiveness=_effectiveness(metadata.get("effectiveness")),
-                visibility=_visibility(metadata.get("visibility")),
-                expanded=item.expanded,
-            )
-        )
-    return hits
+                fused[identity] = _RankedScopeHit(
+                    knowledge_base_id=previous.knowledge_base_id,
+                    score=previous.score + rrf_score,
+                    item=previous.item,
+                )
+    return sorted(fused.values(), key=lambda item: item.score, reverse=True)
 
 
 def _validate_scope_filters(
@@ -436,16 +699,64 @@ def _degraded_components(
     return degraded
 
 
-def _matches_filters(item: Any, request: ScopeSearchRequest) -> bool:
-    metadata = item.metadata or {}
-    source_type = _source_type(metadata.get("source_type"), metadata)
-    if request.filters.source_types and source_type not in request.filters.source_types:
+def _matches_filters(
+    source: ResolvedKnowledgeSource,
+    request: ScopeSearchRequest,
+) -> bool:
+    if (
+        request.filters.source_types
+        and source.source_type not in request.filters.source_types
+    ):
         return False
     if request.filters.content_types:
-        content_type = metadata.get("content_type")
+        content_type = source.metadata.get("content_type")
         if content_type not in request.filters.content_types:
             return False
     return True
+
+
+def _is_source_authorized(
+    source: ResolvedKnowledgeSource,
+    *,
+    access_context: KnowledgeAccessContext,
+    definition: ScopeDefinition | None,
+) -> bool:
+    metadata = source.metadata
+    visibility = _visibility(metadata.get("visibility"))
+    if visibility == KnowledgeVisibility.WORKSPACE:
+        workspace_id = _optional_string(metadata.get("workspace_id"))
+        if workspace_id != access_context.workspace_id:
+            return False
+
+    workflow_type = _optional_string(metadata.get("workflow_type"))
+    if source.source_type == KnowledgeSourceType.EXPERIENCE and not workflow_type:
+        return False
+    if (
+        definition is not None
+        and definition.allowed_workflow_types
+        and workflow_type not in definition.allowed_workflow_types
+    ):
+        return False
+    if access_context.allowed_workflow_types is not None and workflow_type:
+        if workflow_type not in access_context.allowed_workflow_types:
+            return False
+    if (
+        source.source_type == KnowledgeSourceType.EXPERIENCE
+        and access_context.allowed_workflow_types is not None
+        and workflow_type not in access_context.allowed_workflow_types
+    ):
+        return False
+    return True
+
+
+def _resource_ref_codec() -> ResourceRefCodec:
+    settings = get_settings()
+    secret = (
+        settings.resource_ref_secret
+        or settings.internal_service_token
+        or f"development-only:{settings.default_workspace_id}:resource-ref"
+    )
+    return ResourceRefCodec(secret)
 
 
 def _source_type(value: Any, metadata: dict[str, Any]) -> KnowledgeSourceType:

@@ -32,6 +32,7 @@ class KnowledgeAccessContext:
     workspace_id: str
     permissions: frozenset[KnowledgePermission]
     allowed_knowledge_base_ids: frozenset[str] | None = None
+    allowed_workflow_types: frozenset[str] | None = None
 
     def require(
         self,
@@ -81,6 +82,7 @@ def mcp_access_context(
     *,
     service_id: str,
     workspace_id: str,
+    allowed_workflow_types: frozenset[str] | None = None,
 ) -> KnowledgeAccessContext:
     return KnowledgeAccessContext(
         caller_type=KnowledgeCallerType.MCP,
@@ -92,5 +94,5 @@ def mcp_access_context(
                 KnowledgePermission.RESOURCE_READ,
             }
         ),
+        allowed_workflow_types=allowed_workflow_types,
     )
-

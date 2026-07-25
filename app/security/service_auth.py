@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+import re
 from typing import Annotated
 
 from fastapi import Header, HTTPException, Request
@@ -13,6 +14,8 @@ from app.application.access import (
     mcp_access_context,
 )
 from app.settings import get_settings
+
+_CONTEXT_VALUE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
 def _verify_bearer(
@@ -65,6 +68,14 @@ async def require_gateway_service(
 async def require_internal_service(
     request: Request,
     authorization: Annotated[str | None, Header()] = None,
+    workspace_id: Annotated[
+        str | None,
+        Header(alias="X-TrustGuard-Workspace-ID"),
+    ] = None,
+    workflow_types: Annotated[
+        str | None,
+        Header(alias="X-TrustGuard-Workflow-Types"),
+    ] = None,
 ) -> KnowledgeAccessContext:
     """验证 rag-mcp 调用 RAG 内部 Search/Resource API 的服务身份。"""
     settings = get_settings()
@@ -73,10 +84,21 @@ async def require_internal_service(
         expected=settings.internal_service_token,
         unconfigured_message="Internal service authentication is not configured",
     )
+    trusted_workspace_id = workspace_id or settings.default_workspace_id
+    if (
+        not _CONTEXT_VALUE.fullmatch(trusted_workspace_id)
+        or trusted_workspace_id != settings.default_workspace_id
+    ):
+        raise HTTPException(status_code=403, detail="Unsupported workspace context")
+    trusted_workflow_types = frozenset(
+        item.strip()
+        for item in (workflow_types or "").split(",")
+        if item.strip() and _CONTEXT_VALUE.fullmatch(item.strip())
+    )
     context = mcp_access_context(
         service_id="trustguard-rag-mcp",
-        workspace_id=settings.default_workspace_id,
+        workspace_id=trusted_workspace_id,
+        allowed_workflow_types=trusted_workflow_types,
     )
     request.state.knowledge_access_context = context
     return context
-

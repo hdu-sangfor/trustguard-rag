@@ -25,3 +25,7 @@ v1 冻结以下边界：
 | `experience_event` | Agent Outbox → RAG Consumer | 可靠异步经验事件 |
 
 MCP 只暴露前四项只读契约。后三项供后续内部 REST 和 RabbitMQ 写入链路使用。
+
+Phase 2.1 为 `knowledge_search_response` 的 Hit 和 `knowledge_resource` 增加了向后兼容的可选
+字段 `resource_ref`、`source_revision`、`content_hash`。新客户端优先通过
+`trustguard-rag://{scope}/resources/{resource_ref}` 回读；旧 Chunk Resource URI 在迁移期保留。

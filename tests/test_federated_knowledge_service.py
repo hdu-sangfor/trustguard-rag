@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import pytest
@@ -15,10 +16,11 @@ from app.application.access import (
 from app.application.knowledge import (
     KnowledgeApplicationService,
     KnowledgeSearchError,
+    ResolvedKnowledgeSource,
     aggregate_revision,
 )
 from app.application.scopes import ScopeRegistry
-from app.schemas.knowledge import KnowledgeSearchRequest
+from app.schemas.knowledge import KnowledgeSearchRequest, KnowledgeSourceType
 from app.schemas.search import SearchRequest, SearchResponse
 
 
@@ -27,6 +29,10 @@ class _FederatedKnowledgeService(KnowledgeApplicationService):
         self.responses: dict[str, SearchResponse | BaseException] = {}
         self.revisions: dict[str, int | BaseException] = {}
         self.seen_requests: list[SearchRequest] = []
+        self.source_revisions: dict[tuple[str, str], int] = {}
+        self.content_hashes: dict[tuple[str, str], str] = {}
+        self.source_types: dict[tuple[str, str], KnowledgeSourceType] = {}
+        self.resolved_identity_batches: list[list[tuple[str, str]]] = []
 
     async def search(
         self,
@@ -53,6 +59,45 @@ class _FederatedKnowledgeService(KnowledgeApplicationService):
             raise value
         return value
 
+    async def _resolve_resource_sources(
+        self,
+        identities: list[tuple[str, str]],
+    ) -> dict[tuple[str, str], ResolvedKnowledgeSource]:
+        self.resolved_identity_batches.append(identities)
+        requested = set(identities)
+        resolved: dict[tuple[str, str], ResolvedKnowledgeSource] = {}
+        for knowledge_base_id, value in self.responses.items():
+            if not isinstance(value, SearchResponse):
+                continue
+            for item in value.results:
+                identity = (knowledge_base_id, item.chunk_id)
+                if identity not in requested:
+                    continue
+                metadata = item.metadata or {}
+                resolved[identity] = ResolvedKnowledgeSource(
+                    knowledge_base_id=knowledge_base_id,
+                    content_revision=value.content_revision,
+                    chunk_id=item.chunk_id,
+                    chunk_index=item.source.chunk_index,
+                    document_id=item.source.document_id,
+                    source_revision=self.source_revisions.get(identity, 1),
+                    content_hash=self.content_hashes.get(
+                        identity,
+                        hashlib.sha256(item.chunk_id.encode("utf-8")).hexdigest(),
+                    ),
+                    text=item.text,
+                    title=item.title,
+                    filename=item.source.original_filename,
+                    page_no=item.source.page_no,
+                    source_uri=item.source.source_uri,
+                    source_type=self.source_types.get(
+                        identity,
+                        KnowledgeSourceType.DOCUMENT,
+                    ),
+                    metadata=metadata,
+                )
+        return resolved
+
 
 def _result(
     chunk_id: str,
@@ -60,6 +105,7 @@ def _result(
     document_id: str,
     text: str,
     content_type: str = "legal_article",
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "chunk_id": chunk_id,
@@ -73,7 +119,7 @@ def _result(
             "chunk_index": 0,
             "page_no": 1,
         },
-        "metadata": {"content_type": content_type},
+        "metadata": {"content_type": content_type, **(metadata or {})},
         "expanded": False,
     }
 
@@ -170,9 +216,10 @@ async def test_scope_search_fuses_multiple_knowledge_bases_and_redacts_query() -
         "b-only",
         "a-only",
     ]
-    assert response.hits[0].resource_uri.endswith(
-        f"?revision={response.content_revision}"
-    )
+    assert "/resources/krf1." in response.hits[0].resource_uri
+    assert all(item.resource_ref for item in response.hits)
+    assert all(item.source_revision == 1 for item in response.hits)
+    assert all(item.content_hash and item.content_hash.startswith("sha256:") for item in response.hits)
     assert all("hunter2" not in item.query for item in service.seen_requests)
     assert all("abcdefghijklmnop" not in item.query for item in service.seen_requests)
     assert response.query_plan.source == "heuristic"
@@ -271,3 +318,193 @@ async def test_scope_search_checks_every_mapped_knowledge_base_permission() -> N
     assert captured.value.status_code == 403
     assert captured.value.code == "AUTH_FORBIDDEN"
     assert service.seen_requests == []
+
+
+@pytest.mark.asyncio
+async def test_resource_ref_reads_one_source_and_ignores_unrelated_revision() -> None:
+    service = _FederatedKnowledgeService()
+    service.responses = {
+        "kb-a": _search_response(
+            "kb-a",
+            revision=2,
+            results=[_result("a-only", document_id="doc-a", text="A only")],
+        ),
+        "kb-b": _search_response(
+            "kb-b",
+            revision=7,
+            results=[_result("b-only", document_id="doc-b", text="B only")],
+        ),
+    }
+    scopes = _scope_registry(allowed_content_types=False)
+    context = mcp_access_context(service_id="mcp", workspace_id="default")
+    response = await service.search_scope(
+        _request(limit=2),
+        request_id="req-resource-ref",
+        access_context=context,
+        scopes=scopes,
+    )
+    hit = next(item for item in response.hits if item.external_chunk_id == "a-only")
+    assert hit.resource_ref is not None
+
+    service.responses["kb-b"] = service.responses["kb-b"].model_copy(
+        update={"content_revision": 99}
+    )
+    service.resolved_identity_batches.clear()
+    resource = await service.read_resource(
+        scope="compliance",
+        resource_ref=hit.resource_ref,
+        request_id="req-resource-read",
+        access_context=context,
+        scopes=scopes,
+    )
+
+    assert resource.chunk_id == "a-only"
+    assert resource.text == "A only"
+    assert resource.source_revision == 1
+    assert resource.content_hash == hit.content_hash
+    assert service.resolved_identity_batches == [[("kb-a", "a-only")]]
+
+
+@pytest.mark.asyncio
+async def test_resource_ref_becomes_stale_only_when_bound_source_changes() -> None:
+    service = _FederatedKnowledgeService()
+    service.responses = {
+        "kb-a": _search_response(
+            "kb-a",
+            revision=2,
+            results=[_result("a-only", document_id="doc-a", text="A only")],
+        ),
+        "kb-b": _search_response("kb-b", revision=7, results=[]),
+    }
+    scopes = _scope_registry(allowed_content_types=False)
+    context = mcp_access_context(service_id="mcp", workspace_id="default")
+    response = await service.search_scope(
+        _request(limit=1),
+        request_id="req-stale-source",
+        access_context=context,
+        scopes=scopes,
+    )
+    resource_ref = response.hits[0].resource_ref
+    assert resource_ref is not None
+    service.source_revisions[("kb-a", "a-only")] = 2
+
+    with pytest.raises(KnowledgeSearchError) as captured:
+        await service.read_resource(
+            scope="compliance",
+            resource_ref=resource_ref,
+            request_id="req-stale-read",
+            access_context=context,
+            scopes=scopes,
+        )
+
+    assert captured.value.code == "RESOURCE_STALE"
+    assert captured.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_federation_uses_physical_identity_for_same_chunk_id() -> None:
+    service = _FederatedKnowledgeService()
+    service.responses = {
+        "kb-a": _search_response(
+            "kb-a",
+            revision=2,
+            results=[_result("collision", document_id="doc-a", text="A collision")],
+        ),
+        "kb-b": _search_response(
+            "kb-b",
+            revision=7,
+            results=[_result("collision", document_id="doc-b", text="B collision")],
+        ),
+    }
+    service.content_hashes = {
+        ("kb-a", "collision"): "a" * 64,
+        ("kb-b", "collision"): "b" * 64,
+    }
+
+    response = await service.search_scope(
+        _request(limit=2),
+        request_id="req-collision",
+        access_context=mcp_access_context(
+            service_id="mcp",
+            workspace_id="default",
+        ),
+        scopes=_scope_registry(allowed_content_types=False),
+    )
+
+    assert [item.external_chunk_id for item in response.hits] == [
+        "collision",
+        "collision",
+    ]
+    assert response.hits[0].resource_ref != response.hits[1].resource_ref
+    assert response.hits[0].content_hash != response.hits[1].content_hash
+
+
+@pytest.mark.asyncio
+async def test_scope_search_enforces_workspace_and_workflow_visibility() -> None:
+    service = _FederatedKnowledgeService()
+    service.responses = {
+        "kb-a": _search_response(
+            "kb-a",
+            revision=2,
+            results=[
+                _result(
+                    "workspace-experience",
+                    document_id="doc-a",
+                    text="Workspace experience",
+                    metadata={
+                        "visibility": "workspace",
+                        "workspace_id": "default",
+                        "workflow_type": "penetration",
+                    },
+                )
+            ],
+        ),
+        "kb-b": _search_response(
+            "kb-b",
+            revision=7,
+            results=[
+                _result(
+                    "other-workspace",
+                    document_id="doc-b",
+                    text="Other workspace",
+                    metadata={
+                        "visibility": "workspace",
+                        "workspace_id": "other",
+                    },
+                )
+            ],
+        ),
+    }
+    service.source_types[("kb-a", "workspace-experience")] = (
+        KnowledgeSourceType.EXPERIENCE
+    )
+    scopes = ScopeRegistry.from_json(
+        '{"compliance":{"knowledge_base_ids":["kb-a","kb-b"],'
+        '"allowed_workflow_types":["penetration"]}}'
+    )
+
+    allowed = await service.search_scope(
+        _request(limit=2),
+        request_id="req-workspace-allowed",
+        access_context=mcp_access_context(
+            service_id="mcp",
+            workspace_id="default",
+            allowed_workflow_types=frozenset({"penetration"}),
+        ),
+        scopes=scopes,
+    )
+    denied = await service.search_scope(
+        _request(limit=2),
+        request_id="req-workspace-denied",
+        access_context=mcp_access_context(
+            service_id="mcp",
+            workspace_id="default",
+            allowed_workflow_types=frozenset({"alert-triage"}),
+        ),
+        scopes=scopes,
+    )
+
+    assert [item.external_chunk_id for item in allowed.hits] == [
+        "workspace-experience"
+    ]
+    assert denied.hits == []

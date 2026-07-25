@@ -187,6 +187,12 @@ def create_app() -> FastAPI:
         raise ValueError(
             "RAG_GATEWAY_SERVICE_TOKEN and RAG_INTERNAL_SERVICE_TOKEN must differ"
         )
+    if s.app_env.strip().lower() == "prod" and len(
+        (s.resource_ref_secret or "").strip()
+    ) < 32:
+        raise ValueError(
+            "Production RAG API requires RAG_RESOURCE_REF_SECRET with at least 32 characters"
+        )
     app = FastAPI(
         title=s.app_name,
         version=s.app_version,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import httpx
 
@@ -28,6 +29,18 @@ class RagBackend(Protocol):
         *,
         request_id: str,
         payload: dict[str, Any],
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
+    ) -> dict[str, Any]: ...
+
+    async def get_resource(
+        self,
+        *,
+        scope: str,
+        resource_ref: str,
+        request_id: str,
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
     ) -> dict[str, Any]: ...
 
     async def search(
@@ -44,9 +57,18 @@ class RagBackend(Protocol):
         knowledge_base_id: str,
         chunk_id: str,
         request_id: str,
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
     ) -> dict[str, Any] | None: ...
 
-    async def get_content_revision(self, knowledge_base_id: str) -> int: ...
+    async def get_content_revision(
+        self,
+        knowledge_base_id: str,
+        *,
+        request_id: str = "req-resource-revision",
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
+    ) -> int: ...
 
     async def ready(self) -> bool: ...
 
@@ -74,12 +96,18 @@ class RestRagBackend:
         *,
         request_id: str,
         payload: dict[str, Any],
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
     ) -> dict[str, Any]:
         try:
             response = await self._request(
                 "POST",
                 "/v1/internal/knowledge/search-scope",
-                headers=self._internal_headers(request_id),
+                headers=self._internal_headers(
+                    request_id,
+                    workspace_id=workspace_id,
+                    allowed_workflow_types=allowed_workflow_types,
+                ),
                 json=payload,
             )
         except BackendError as error:
@@ -91,6 +119,29 @@ class RestRagBackend:
                     status_code=404,
                 ) from error
             raise
+        return _json_object(response)
+
+    async def get_resource(
+        self,
+        *,
+        scope: str,
+        resource_ref: str,
+        request_id: str,
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
+    ) -> dict[str, Any]:
+        response = await self._request(
+            "GET",
+            (
+                "/v1/internal/knowledge/resources/"
+                f"{quote(resource_ref, safe='')}?scope={quote(scope, safe='')}"
+            ),
+            headers=self._internal_headers(
+                request_id,
+                workspace_id=workspace_id,
+                allowed_workflow_types=allowed_workflow_types,
+            ),
+        )
         return _json_object(response)
 
     async def search(
@@ -114,19 +165,40 @@ class RestRagBackend:
         knowledge_base_id: str,
         chunk_id: str,
         request_id: str,
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
     ) -> dict[str, Any] | None:
         response = await self._request(
             "GET",
             f"/v1/internal/knowledge-bases/{knowledge_base_id}/chunks/{chunk_id}",
-            headers=self._internal_headers(request_id),
+            headers=self._internal_headers(
+                request_id,
+                workspace_id=workspace_id,
+                allowed_workflow_types=allowed_workflow_types,
+            ),
             allow_not_found=True,
         )
         return None if response is None else _json_object(response)
 
-    async def get_content_revision(self, knowledge_base_id: str) -> int:
+    async def get_content_revision(
+        self,
+        knowledge_base_id: str,
+        *,
+        request_id: str = "req-resource-revision",
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
+    ) -> int:
         response = await self._request(
             "GET",
-            f"/v1/knowledge-bases/{knowledge_base_id}",
+            (
+                f"/v1/internal/knowledge-bases/{knowledge_base_id}"
+                "/content-revision"
+            ),
+            headers=self._internal_headers(
+                request_id,
+                workspace_id=workspace_id,
+                allowed_workflow_types=allowed_workflow_types,
+            ),
         )
         payload = _json_object(response)
         revision = payload.get("content_revision")
@@ -148,17 +220,30 @@ class RestRagBackend:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    def _internal_headers(self, request_id: str) -> dict[str, str]:
+    def _internal_headers(
+        self,
+        request_id: str,
+        *,
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
+    ) -> dict[str, str]:
         if not self._internal_service_token:
             raise BackendError(
                 "RAG_UNAVAILABLE",
                 "RAG internal service authentication is not configured",
                 retryable=False,
             )
-        return {
+        headers = {
             "Authorization": f"Bearer {self._internal_service_token}",
             "X-Request-ID": request_id,
         }
+        if workspace_id:
+            headers["X-TrustGuard-Workspace-ID"] = workspace_id
+        if allowed_workflow_types is not None:
+            headers["X-TrustGuard-Workflow-Types"] = ",".join(
+                sorted(allowed_workflow_types)
+            )
+        return headers
 
     async def _request(
         self,
@@ -206,12 +291,7 @@ class RestRagBackend:
                 status_code=response.status_code,
             )
         if response.status_code >= 400:
-            raise BackendError(
-                "INVALID_ARGUMENT",
-                "RAG rejected the gateway request",
-                retryable=False,
-                status_code=response.status_code,
-            )
+            raise _backend_error_from_response(response)
         return response
 
 
@@ -231,3 +311,26 @@ def _json_object(response: httpx.Response) -> dict[str, Any]:
             retryable=False,
         )
     return payload
+
+
+def _backend_error_from_response(response: httpx.Response) -> BackendError:
+    code = "INVALID_ARGUMENT"
+    message = "RAG rejected the gateway request"
+    retryable = False
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        if isinstance(payload.get("code"), str):
+            code = payload["code"]
+        if isinstance(payload.get("message"), str):
+            message = payload["message"]
+        if isinstance(payload.get("retryable"), bool):
+            retryable = payload["retryable"]
+    return BackendError(
+        code,
+        message,
+        retryable=retryable,
+        status_code=response.status_code,
+    )

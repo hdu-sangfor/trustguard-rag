@@ -134,12 +134,25 @@ async def test_internal_scope_search_runs_federation_in_application_service(
             "limit": 3,
         },
     )
+    public_response = await client.post(
+        "/v1/search/scope",
+        headers={"X-Request-ID": "req-phase22-public-scope"},
+        json={
+            "schema_version": "trustguard-knowledge-search-request-v1",
+            "query": "password=secret-value 合规要求",
+            "scope": "compliance",
+            "limit": 3,
+        },
+    )
 
     assert response.status_code == 200
+    assert public_response.status_code == 200
     assert response.json()["schema_version"] == "trustguard-knowledge-search-v1"
     assert response.json()["request_id"] == "req-phase22-scope"
     assert response.json()["scope"] == "compliance"
-    assert len(engine.calls) == 2
+    assert public_response.json()["scope"] == response.json()["scope"]
+    assert public_response.json()["hits"] == response.json()["hits"]
+    assert len(engine.calls) == 4
     assert {call["knowledge_base_id"] for call in engine.calls} == {
         first.id,
         second.id,
@@ -206,6 +219,10 @@ async def test_mcp_rest_backend_delegates_one_authenticated_scope_search() -> No
         seen["path"] = request.url.path
         seen["authorization"] = request.headers.get("Authorization")
         seen["request_id"] = request.headers.get("X-Request-ID")
+        seen["workspace_id"] = request.headers.get("X-TrustGuard-Workspace-ID")
+        seen["workflow_types"] = request.headers.get(
+            "X-TrustGuard-Workflow-Types"
+        )
         seen["json"] = json.loads(request.content)
         return httpx.Response(200, json=response_payload)
 
@@ -232,6 +249,8 @@ async def test_mcp_rest_backend_delegates_one_authenticated_scope_search() -> No
         result = await backend.search_scope(
             request_id="req-scope-search",
             payload=request_payload,
+            workspace_id="default",
+            allowed_workflow_types=frozenset({"penetration"}),
         )
     finally:
         await backend.aclose()
@@ -241,6 +260,8 @@ async def test_mcp_rest_backend_delegates_one_authenticated_scope_search() -> No
         "path": "/v1/internal/knowledge/search-scope",
         "authorization": "Bearer phase21-service-secret",
         "request_id": "req-scope-search",
+        "workspace_id": "default",
+        "workflow_types": "penetration",
         "json": request_payload,
     }
 
@@ -285,6 +306,70 @@ async def test_mcp_rest_backend_maps_missing_scope_to_stable_error() -> None:
     assert captured.value.code == "UNKNOWN_SCOPE"
     assert captured.value.status_code == 404
     assert captured.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_mcp_rest_backend_reads_resource_ref_with_trusted_context() -> None:
+    seen: dict[str, Any] = {}
+    response_payload = {
+        "schema_version": "trustguard-knowledge-resource-v1",
+        "scope": "compliance",
+        "content_revision": "3",
+        "resource_ref": "krf1.opaque",
+        "source_revision": 1,
+        "content_hash": f"sha256:{'a' * 64}",
+        "chunk_id": "chunk-a",
+        "document_id": "doc-a",
+        "experience_id": None,
+        "text": "完整来源",
+        "title": None,
+        "filename": None,
+        "page_no": None,
+        "source_uri": "upload://doc-a",
+        "source_type": "document",
+        "workflow_type": None,
+        "effectiveness": None,
+        "visibility": "global",
+        "metadata": {},
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["scope"] = request.url.params.get("scope")
+        seen["workspace_id"] = request.headers.get("X-TrustGuard-Workspace-ID")
+        seen["workflow_types"] = request.headers.get(
+            "X-TrustGuard-Workflow-Types"
+        )
+        return httpx.Response(200, json=response_payload)
+
+    backend = RestRagBackend(
+        base_url="http://rag.test",
+        internal_service_token="phase21-service-secret",
+        timeout_seconds=1.0,
+    )
+    await backend._client.aclose()
+    backend._client = httpx.AsyncClient(
+        base_url="http://rag.test",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await backend.get_resource(
+            scope="compliance",
+            resource_ref="krf1.opaque",
+            request_id="req-resource-ref",
+            workspace_id="default",
+            allowed_workflow_types=frozenset({"penetration"}),
+        )
+    finally:
+        await backend.aclose()
+
+    assert result == response_payload
+    assert seen == {
+        "path": "/v1/internal/knowledge/resources/krf1.opaque",
+        "scope": "compliance",
+        "workspace_id": "default",
+        "workflow_types": "penetration",
+    }
 
 
 @pytest.mark.asyncio
@@ -333,6 +418,18 @@ def test_production_requires_internal_identity_and_mcp_auth(
     get_settings.cache_clear()
     with pytest.raises(ValueError, match="must differ"):
         create_app()
+
+    monkeypatch.setenv("RAG_GATEWAY_SERVICE_TOKEN", "gateway-service-token")
+    get_settings.cache_clear()
+    with pytest.raises(ValueError, match="RAG_RESOURCE_REF_SECRET"):
+        create_app()
+
+    monkeypatch.setenv(
+        "RAG_RESOURCE_REF_SECRET",
+        "production-resource-ref-secret-with-at-least-32-characters",
+    )
+    get_settings.cache_clear()
+    create_app()
 
     monkeypatch.delenv("RAG_INTERNAL_SERVICE_TOKEN", raising=False)
     with pytest.raises(ValueError, match="RAG_INTERNAL_SERVICE_TOKEN"):

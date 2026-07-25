@@ -69,12 +69,16 @@ class KnowledgeGateway:
         request: KnowledgeSearchRequest,
         *,
         request_id: str | None = None,
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
     ) -> KnowledgeSearchResponse:
         active_request_id = request_id or f"req-{uuid4()}"
         try:
             payload = await self._backend.search_scope(
                 request_id=active_request_id,
                 payload=request.model_dump(mode="json"),
+                workspace_id=workspace_id,
+                allowed_workflow_types=allowed_workflow_types,
             )
         except BackendError as error:
             raise _gateway_error_from_backend(error, active_request_id) from error
@@ -88,6 +92,39 @@ class KnowledgeGateway:
                 request_id=active_request_id,
             ) from error
 
+    async def read_resource_ref(
+        self,
+        *,
+        scope: str,
+        resource_ref: str,
+        request_id: str | None = None,
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
+    ) -> KnowledgeResource:
+        active_request_id = request_id or f"req-{uuid4()}"
+        try:
+            payload = await self._backend.get_resource(
+                scope=scope,
+                resource_ref=resource_ref,
+                request_id=active_request_id,
+                workspace_id=workspace_id,
+                allowed_workflow_types=allowed_workflow_types,
+            )
+        except BackendError as error:
+            raise _gateway_error_from_backend(error, active_request_id) from error
+        try:
+            resource = KnowledgeResource.model_validate(payload)
+        except ValidationError as error:
+            raise KnowledgeGatewayError(
+                "SCHEMA_MISMATCH",
+                "RAG returned an invalid knowledge resource",
+                retryable=False,
+                request_id=active_request_id,
+            ) from error
+        return resource.model_copy(
+            update={"text": resource.text[: self._resource_max_chars]}
+        )
+
     async def read_resource(
         self,
         *,
@@ -95,6 +132,8 @@ class KnowledgeGateway:
         chunk_id: str,
         revision: str,
         request_id: str | None = None,
+        workspace_id: str | None = None,
+        allowed_workflow_types: frozenset[str] | None = None,
     ) -> KnowledgeResource:
         active_request_id = request_id or f"req-{uuid4()}"
         try:
@@ -109,7 +148,12 @@ class KnowledgeGateway:
 
         revision_results = await asyncio.gather(
             *(
-                self._backend.get_content_revision(knowledge_base_id)
+                self._backend.get_content_revision(
+                    knowledge_base_id,
+                    request_id=active_request_id,
+                    workspace_id=workspace_id,
+                    allowed_workflow_types=allowed_workflow_types,
+                )
                 for knowledge_base_id in definition.knowledge_base_ids
             ),
             return_exceptions=True,
@@ -146,6 +190,8 @@ class KnowledgeGateway:
                     knowledge_base_id=knowledge_base_id,
                     chunk_id=chunk_id,
                     request_id=active_request_id,
+                    workspace_id=workspace_id,
+                    allowed_workflow_types=allowed_workflow_types,
                 )
                 for knowledge_base_id in definition.knowledge_base_ids
             ),
@@ -171,6 +217,16 @@ class KnowledgeGateway:
             schema_version="trustguard-knowledge-resource-v1",
             scope=scope,
             content_revision=current_revision,
+            source_revision=(
+                payload.get("source_revision")
+                if isinstance(payload.get("source_revision"), int)
+                else None
+            ),
+            content_hash=(
+                f"sha256:{payload['content_hash']}"
+                if isinstance(payload.get("content_hash"), str)
+                else None
+            ),
             chunk_id=str(payload.get("chunk_id") or chunk_id),
             document_id=_optional_string(payload.get("document_id")),
             experience_id=_optional_string(metadata.get("experience_id")),

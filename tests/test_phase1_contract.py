@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import inspect, text
 
+from app.application.resource_refs import ResourceRefClaims, ResourceRefCodec
 from app.core.embedding.profiles import get_embedding_profile
 from app.domain import DocumentStatus, IngestJobStatus
 from app.settings import get_settings
@@ -217,6 +219,8 @@ async def test_internal_chunk_read_requires_auth_and_enforces_scope(client, monk
     assert body["knowledge_base_id"] == first.id
     assert body["chunk_id"] == chunk_id
     assert body["text"] == "只能由匹配知识库和服务身份读取"
+    assert body["source_revision"] == 1
+    assert body["content_hash"] == "b" * 64
 
     cross_scope = await client.get(
         f"/v1/internal/knowledge-bases/{second.id}/chunks/{chunk_id}",
@@ -233,3 +237,101 @@ async def test_internal_chunk_read_requires_auth_and_enforces_scope(client, monk
     assert unpublished.status_code == 404
 
     get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_internal_resource_ref_is_source_bound_and_scope_safe(
+    client,
+    monkeypatch,
+) -> None:
+    first = await KnowledgeBaseStore().create(
+        name="Resource Ref 知识库 A",
+        profile=get_embedding_profile("configured"),
+    )
+    second = await KnowledgeBaseStore().create(
+        name="Resource Ref 知识库 B",
+        profile=get_embedding_profile("configured"),
+    )
+    document = await DocumentStore().create(
+        source_type="file",
+        source_uri="upload://resource-ref.txt",
+        content_hash="c" * 64,
+        status=DocumentStatus.READY,
+        title="Resource Ref 测试",
+        original_filename="resource-ref.txt",
+        knowledge_base_id=first.id,
+    )
+    chunk_id = str(uuid4())
+    await ChunkStore().create_many(
+        [
+            {
+                "id": chunk_id,
+                "document_id": document.id,
+                "chunk_index": 0,
+                "text": "Resource Ref 直接读取唯一来源",
+                "metadata": {"visibility": "global"},
+            }
+        ]
+    )
+    secret = "phase21-resource-ref-secret-with-at-least-32-characters"
+    monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "phase21-resource-token")
+    monkeypatch.setenv("RAG_RESOURCE_REF_SECRET", secret)
+    monkeypatch.setenv(
+        "RAG_MCP_SCOPE_MAPPING_JSON",
+        json.dumps({"compliance": [first.id, second.id]}),
+    )
+    get_settings.cache_clear()
+    codec = ResourceRefCodec(secret)
+    claims = ResourceRefClaims(
+        scope="compliance",
+        knowledge_base_id=first.id,
+        chunk_id=chunk_id,
+        source_revision=document.doc_version,
+        content_hash=document.content_hash,
+    )
+    resource_ref = codec.issue(claims)
+    path = f"/v1/internal/knowledge/resources/{resource_ref}?scope=compliance"
+    headers = {"Authorization": "Bearer phase21-resource-token"}
+
+    resource = await client.get(path, headers=headers)
+    assert resource.status_code == 200
+    assert resource.json()["resource_ref"] == resource_ref
+    assert resource.json()["source_revision"] == 1
+    assert resource.json()["content_hash"] == f"sha256:{'c' * 64}"
+
+    unrelated = await DocumentStore().create(
+        source_type="file",
+        source_uri="upload://unrelated.txt",
+        content_hash="d" * 64,
+        status=DocumentStatus.STAGING,
+        knowledge_base_id=second.id,
+    )
+    await DocumentStore().update_status(unrelated.id, DocumentStatus.READY)
+    after_unrelated_update = await client.get(path, headers=headers)
+    assert after_unrelated_update.status_code == 200
+
+    stale_ref = codec.issue(
+        ResourceRefClaims(
+            scope="compliance",
+            knowledge_base_id=first.id,
+            chunk_id=chunk_id,
+            source_revision=2,
+            content_hash=document.content_hash,
+        )
+    )
+    stale = await client.get(
+        f"/v1/internal/knowledge/resources/{stale_ref}?scope=compliance",
+        headers=headers,
+    )
+    position = len(resource_ref) // 2
+    replacement = "A" if resource_ref[position] != "A" else "B"
+    tampered_ref = resource_ref[:position] + replacement + resource_ref[position + 1 :]
+    tampered = await client.get(
+        f"/v1/internal/knowledge/resources/{tampered_ref}?scope=compliance",
+        headers=headers,
+    )
+
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "RESOURCE_STALE"
+    assert tampered.status_code == 404
+    assert tampered.json()["code"] == "RESOURCE_NOT_FOUND"

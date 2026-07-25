@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -73,6 +75,10 @@ async def test_public_search_cannot_bypass_gateway_identity(
     monkeypatch.setenv("RAG_GATEWAY_AUTH_ENABLED", "true")
     monkeypatch.setenv("RAG_GATEWAY_SERVICE_TOKEN", "gateway-service-secret")
     monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "mcp-service-secret")
+    monkeypatch.setenv(
+        "RAG_MCP_SCOPE_MAPPING_JSON",
+        json.dumps({"compliance": [knowledge_base.id]}),
+    )
     get_settings.cache_clear()
     payload = {
         "query": "不能绕过 Gateway",
@@ -91,10 +97,27 @@ async def test_public_search_cannot_bypass_gateway_identity(
         headers={"Authorization": "Bearer gateway-service-secret"},
         json=payload,
     )
+    scope_payload = {
+        "schema_version": "trustguard-knowledge-search-request-v1",
+        "query": "不能绕过 Gateway",
+        "scope": "compliance",
+    }
+    mcp_scope_identity = await client.post(
+        "/v1/search/scope",
+        headers={"Authorization": "Bearer mcp-service-secret"},
+        json=scope_payload,
+    )
+    gateway_scope_identity = await client.post(
+        "/v1/search/scope",
+        headers={"Authorization": "Bearer gateway-service-secret"},
+        json=scope_payload,
+    )
 
     assert missing.status_code == 401
     assert mcp_identity.status_code == 401
     assert gateway_identity.status_code == 200
+    assert mcp_scope_identity.status_code == 401
+    assert gateway_scope_identity.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -132,11 +155,20 @@ async def test_gateway_and_mcp_internal_tokens_are_not_interchangeable(
         headers={"Authorization": "Bearer mcp-service-secret"},
         json=scope_payload,
     )
+    cross_workspace_scope_search = await client.post(
+        scope_search_path,
+        headers={
+            "Authorization": "Bearer mcp-service-secret",
+            "X-TrustGuard-Workspace-ID": "other-workspace",
+        },
+        json=scope_payload,
+    )
 
     assert gateway_on_internal.status_code == 401
     assert mcp_on_internal.status_code == 404
     assert gateway_on_scope_search.status_code == 401
     assert mcp_on_scope_search.status_code == 404
+    assert cross_workspace_scope_search.status_code == 403
 
 
 def test_access_contexts_expose_only_required_permissions() -> None:

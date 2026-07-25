@@ -71,14 +71,23 @@ def _response(
 
 async def http_exception_handler(request: Request, error: HTTPException) -> JSONResponse:
     detail = error.detail
-    message = detail if isinstance(detail, str) else "Request failed"
+    structured = detail if isinstance(detail, dict) else {}
+    code = structured.get("code")
+    message = structured.get("message")
+    retryable = structured.get("retryable")
+    if not isinstance(code, str):
+        code = _code_for_status(error.status_code)
+    if not isinstance(message, str):
+        message = detail if isinstance(detail, str) else "Request failed"
+    if not isinstance(retryable, bool):
+        retryable = error.status_code in {408, 429, 503, 504}
     return _response(
         request,
         status_code=error.status_code,
-        code=_code_for_status(error.status_code),
+        code=code,
         message=message,
         detail=detail,
-        retryable=error.status_code in {408, 429, 503, 504},
+        retryable=retryable,
         headers=error.headers,
     )
 

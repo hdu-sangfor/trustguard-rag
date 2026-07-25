@@ -11,10 +11,7 @@ import httpx
 
 
 SCRIPT_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "evaluation"
-    / "cybersecurity"
-    / "run_retrieval_eval.py"
+    Path(__file__).resolve().parents[1] / "evaluation" / "cybersecurity" / "run_retrieval_eval.py"
 )
 SPEC = importlib.util.spec_from_file_location("run_retrieval_eval", SCRIPT_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -58,9 +55,7 @@ def test_evaluate_question_records_http_failure_as_zero_score() -> None:
 def test_equivalent_evidence_counts_for_ranking_but_not_required_recall() -> None:
     gold = {("required.pdf", 1)}
     acceptable = {("required.pdf", 1), ("equivalent.pdf", 2)}
-    results = [
-        {"source": {"original_filename": "equivalent.pdf", "page_no": 2}}
-    ]
+    results = [{"source": {"original_filename": "equivalent.pdf", "page_no": 2}}]
 
     metrics = retrieval_eval.query_metrics(results, gold, acceptable)
 
@@ -102,6 +97,81 @@ def test_evaluate_question_records_timeout_and_invalid_json() -> None:
     assert invalid_json_report["error"]["type"] == "JSONDecodeError"
 
 
+def test_scope_search_uses_shared_endpoint_and_adapts_hits() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "schema_version": "trustguard-knowledge-search-v1",
+                "request_id": "req-scope-eval",
+                "scope": "compliance",
+                "status": "ok",
+                "content_revision": "scope-revision",
+                "hits": [
+                    {
+                        "external_chunk_id": "chunk-1",
+                        "resource_uri": "trustguard-rag://compliance/resources/krf1.opaque",
+                        "snippet": "证据",
+                        "score": 1.0,
+                        "filename": "evidence.pdf",
+                        "page_no": 1,
+                        "source_type": "document",
+                        "visibility": "global",
+                        "expanded": False,
+                    }
+                ],
+                "query_plan": {"intent": "focused", "source": "heuristic"},
+                "coverage": {"status": "sufficient", "warning": None},
+                "degraded_components": [],
+                "latency_ms": 8.5,
+            },
+            request=request,
+        )
+
+    args = argparse.Namespace(
+        scope="compliance",
+        top_k=10,
+        retrieval_mode="auto",
+    )
+    endpoint, body = retrieval_eval.build_search_request(args, "合规要求")
+    with httpx.Client(
+        base_url="http://test",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        report = retrieval_eval.evaluate_question(
+            client,
+            question("Q-SCOPE", "合规要求"),
+            body,
+            endpoint=endpoint,
+        )
+
+    assert seen == {
+        "path": "/v1/search/scope",
+        "body": {
+            "schema_version": "trustguard-knowledge-search-request-v1",
+            "query": "合规要求",
+            "scope": "compliance",
+            "mode": "auto",
+            "limit": 10,
+        },
+    }
+    assert report["search_status"] == "ok"
+    assert report["effective_mode"] == "focused"
+    assert report["coverage_status"] == "sufficient"
+    assert report["latency_ms"] == 8.5
+    assert report["metrics"]["hit@1"] == 1.0
+    assert report["results"][0]["source"] == {
+        "original_filename": "evidence.pdf",
+        "page_no": 1,
+        "document_id": None,
+        "source_uri": None,
+    }
+
+
 def test_main_continues_after_failed_query_and_reports_failure(
     monkeypatch,
     tmp_path: Path,
@@ -119,6 +189,8 @@ def test_main_continues_after_failed_query_and_reports_failure(
     args = argparse.Namespace(
         api_url="http://test",
         knowledge_base_id="kb-test",
+        scope=None,
+        gateway_service_token=None,
         dataset=dataset,
         output_dir=output_dir,
         name="failure-test",

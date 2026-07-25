@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     gateway_auth_enabled: bool = False
     gateway_service_token: str | None = None
     internal_service_token: str | None = None
+    resource_ref_secret: str | None = None
 
     # --- MCP Gateway（独立进程，默认关闭） ---
     mcp_enabled: bool = False

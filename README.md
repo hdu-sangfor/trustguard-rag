@@ -20,11 +20,14 @@ Gateway Token 与 MCP 内部 Token 必须使用不同的随机值：
 RAG_GATEWAY_AUTH_ENABLED=true
 RAG_GATEWAY_SERVICE_TOKEN=replace-with-a-different-long-random-service-token
 RAG_INTERNAL_SERVICE_TOKEN=replace-with-a-long-random-service-token
+RAG_RESOURCE_REF_SECRET=replace-with-another-random-secret-at-least-32-characters
 ```
 
 启用后，`/v1/search`、`/v1/answer`、知识库、文档、入库和 OCR 接口都要求
 `Authorization: Bearer <RAG_GATEWAY_SERVICE_TOKEN>`。健康检查和 `/v1/internal/*` 不使用
 该身份；内部接口只接受独立的 `RAG_INTERNAL_SERVICE_TOKEN`。
+生产环境还要求 `RAG_RESOURCE_REF_SECRET` 至少 32 字符，用于签发防篡改的不透明资源引用。
+生产反向代理或 API Gateway 必须屏蔽 `/v1/internal/*`；Compose 暴露 18200 仅用于本地开发。
 
 ### 国内网络加速
 
@@ -229,13 +232,14 @@ curl -X POST http://localhost:18200/v1/search \
 ## 只读 MCP Gateway
 
 MCP Gateway 与 REST Core 使用同一镜像、独立进程和端口。它只提供
-`knowledge_search` Tool 与 Chunk Resource Template，不开放上传、删除、回答生成或
+`knowledge_search` Tool 与 Resource Ref/旧 Chunk 两个 Resource Template，不开放上传、删除、回答生成或
 经验写入。先把逻辑 Scope 映射到一个或多个知识库：
 
 ```dotenv
 RAG_MCP_ENABLED=true
 RAG_INTERNAL_SERVICE_TOKEN=replace-with-a-long-random-service-token
-RAG_MCP_SCOPE_MAPPING_JSON={"compliance":{"knowledge_base_ids":["<kb-id-1>","<kb-id-2>"],"default_mode":"comprehensive","per_knowledge_base_limit":20,"allowed_content_types":["legal_article","security_guide"]}}
+RAG_RESOURCE_REF_SECRET=replace-with-another-random-secret-at-least-32-characters
+RAG_MCP_SCOPE_MAPPING_JSON={"compliance":{"knowledge_base_ids":["<kb-id-1>","<kb-id-2>"],"default_mode":"comprehensive","per_knowledge_base_limit":20,"allowed_content_types":["legal_article","security_guide"],"allowed_workflow_types":["compliance"]}}
 ```
 
 Compose 会在 `http://localhost:18201/mcp` 启动无状态 Streamable HTTP Server：
@@ -246,17 +250,23 @@ npx -y @modelcontextprotocol/inspector@latest --cli \
   http://localhost:18201/mcp --transport http --method tools/list
 ```
 
-多知识库 Scope 会携带内部服务身份，逐库调用
-`POST /v1/internal/knowledge/search`，该接口与公开 `/v1/search` 复用同一个
-`KnowledgeApplicationService`。随后 MCP Gateway 按库内排名执行跨库 RRF；不同向量空间的
-原始分数不会直接比较。响应中的 `content_revision` 是所有知识库 ID 与 revision 排序后的
-SHA-256，Resource URI 必须携带同一 revision，内容变化后旧 URI 会返回
-`RESOURCE_STALE`。`/health/live`、`/health/ready` 和 `/metrics` 用于独立探活和监控。
+多知识库 Scope 只由 RAG Core 的 `KnowledgeApplicationService.search_scope` 解析和执行。
+MCP 携带内部服务身份调用 `POST /v1/internal/knowledge/search-scope`；普通 REST 和评测调用
+`POST /v1/search/scope`，三条路径复用同一套逐库授权、跨库 RRF、配额、去重、Coverage 和
+降级语义。当前单租户固定为 `workspace_id=default`，Scope 与 JWT 中的 Workflow Allowlist
+会继续收窄 workspace/经验内容。
+
+新命中返回 `trustguard-rag://{scope}/resources/{resource_ref}`。`resource_ref` 不暴露物理
+知识库或 Chunk ID，回读时直接定位唯一来源并校验来源 revision/content hash；无关知识库
+更新不会使引用失效。旧的 `trustguard-rag://{scope}/chunks/{chunk_id}?revision=...` 在迁移期
+仍可读取。`/health/live`、`/health/ready` 和 `/metrics` 用于独立探活和监控。
 
 生产环境必须设置 `RAG_INTERNAL_SERVICE_TOKEN` 和 `RAG_MCP_AUTH_ENABLED=true`，并配置
 issuer、audience 和 JWKS URL；缺少内部服务身份或启用 MCP 后未开启 OAuth 时启动失败。
 Gateway 验证 Client Credentials 获取的短期 JWT，包括签名、`iss`、`aud`、`exp`、
 OAuth scope 以及 `knowledge_scopes`；MCP 凭证不能用于管理接口和后续经验写入。
+可选 `workspace_id` 和 `workflow_types` Claim 只在 JWT 验证后传入 RAG，非默认 Workspace
+会被拒绝。
 
 ## RabbitMQ Worker 与 Outbox
 

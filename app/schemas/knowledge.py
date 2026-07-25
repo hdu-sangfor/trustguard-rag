@@ -104,6 +104,17 @@ class KnowledgeHit(BaseModel):
 
     external_chunk_id: str = Field(min_length=1, max_length=128)
     resource_uri: str = Field(pattern=r"^trustguard-rag://")
+    resource_ref: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2048,
+        pattern=r"^krf1\.",
+    )
+    source_revision: int | None = Field(default=None, ge=1)
+    content_hash: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[a-f0-9]{64}$",
+    )
     snippet: str = Field(max_length=4000)
     score: float
     title: str | None = Field(default=None, max_length=512)
@@ -155,6 +166,17 @@ class KnowledgeResource(BaseModel):
     schema_version: Literal["trustguard-knowledge-resource-v1"]
     scope: str = Field(min_length=1, max_length=64)
     content_revision: str = Field(min_length=1, max_length=128)
+    resource_ref: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2048,
+        pattern=r"^krf1\.",
+    )
+    source_revision: int | None = Field(default=None, ge=1)
+    content_hash: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[a-f0-9]{64}$",
+    )
     chunk_id: str = Field(min_length=1, max_length=128)
     document_id: str | None = Field(default=None, max_length=128)
     experience_id: str | None = Field(default=None, max_length=128)
@@ -179,6 +201,7 @@ class ScopeDefinition(BaseModel):
     default_mode: RetrievalMode = RetrievalMode.AUTO
     per_knowledge_base_limit: int = Field(default=20, ge=1, le=100)
     allowed_content_types: list[str] = Field(default_factory=list, max_length=100)
+    allowed_workflow_types: list[str] = Field(default_factory=list, max_length=32)
 
     @field_validator("knowledge_base_ids")
     @classmethod
@@ -187,3 +210,8 @@ class ScopeDefinition(BaseModel):
         if not normalized:
             raise ValueError("knowledge_base_ids cannot be empty")
         return normalized
+
+    @field_validator("allowed_content_types", "allowed_workflow_types")
+    @classmethod
+    def normalize_allowlists(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))

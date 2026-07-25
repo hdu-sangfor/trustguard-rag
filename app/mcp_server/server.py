@@ -127,10 +127,11 @@ def create_mcp_server(
         started = time.perf_counter()
         try:
             _ensure_enabled(active_settings)
-            authorize_knowledge_scope(
+            authorization = authorize_knowledge_scope(
                 scope.value,
                 required_permission="rag.search",
                 auth_enabled=active_settings.mcp_auth_enabled,
+                default_workspace_id=active_settings.default_workspace_id,
             )
             request = KnowledgeSearchRequest(
                 schema_version=schema_version,
@@ -144,6 +145,8 @@ def create_mcp_server(
             response = await gateway.search(
                 request,
                 request_id=_request_id(ctx),
+                workspace_id=authorization.workspace_id,
+                allowed_workflow_types=authorization.allowed_workflow_types,
             )
             metrics.observe(
                 "knowledge_search",
@@ -185,10 +188,62 @@ def create_mcp_server(
             raise ToolError(error.as_json()) from error
 
     @mcp.resource(
-        "trustguard-rag://{scope}/chunks/{chunk_id}?revision={revision}",
-        name="knowledge_chunk",
+        "trustguard-rag://{scope}/resources/{resource_ref}",
+        name="knowledge_resource",
         description=(
-            "精确读取 knowledge_search 命中的完整 Chunk；URI 中版本过期时拒绝读取。"
+            "使用 knowledge_search 签发的不可解析 Resource Ref 精确读取完整 Chunk。"
+        ),
+        mime_type="application/json",
+    )
+    async def knowledge_resource(
+        scope: str,
+        resource_ref: str,
+        ctx: Context,
+    ) -> str:
+        started = time.perf_counter()
+        try:
+            _ensure_enabled(active_settings)
+            authorization = authorize_knowledge_scope(
+                scope,
+                required_permission="rag.resource.read",
+                auth_enabled=active_settings.mcp_auth_enabled,
+                default_workspace_id=active_settings.default_workspace_id,
+            )
+            resource = await gateway.read_resource_ref(
+                scope=scope,
+                resource_ref=resource_ref,
+                request_id=_request_id(ctx),
+                workspace_id=authorization.workspace_id,
+                allowed_workflow_types=authorization.allowed_workflow_types,
+            )
+            metrics.observe(
+                "knowledge_resource",
+                "ok",
+                time.perf_counter() - started,
+            )
+            return resource.model_dump_json()
+        except ScopeAuthorizationError as error:
+            metrics.observe(
+                "knowledge_resource",
+                "forbidden",
+                time.perf_counter() - started,
+            )
+            raise ResourceError(
+                _authorization_error_json(str(error), _request_id(ctx))
+            ) from error
+        except KnowledgeGatewayError as error:
+            metrics.observe(
+                "knowledge_resource",
+                "error",
+                time.perf_counter() - started,
+            )
+            raise ResourceError(error.as_json()) from error
+
+    @mcp.resource(
+        "trustguard-rag://{scope}/chunks/{chunk_id}?revision={revision}",
+        name="knowledge_chunk_legacy",
+        description=(
+            "迁移期兼容旧 Chunk URI；新调用方应使用不可解析 Resource Ref。"
         ),
         mime_type="application/json",
     )
@@ -201,10 +256,11 @@ def create_mcp_server(
         started = time.perf_counter()
         try:
             _ensure_enabled(active_settings)
-            authorize_knowledge_scope(
+            authorization = authorize_knowledge_scope(
                 scope,
                 required_permission="rag.resource.read",
                 auth_enabled=active_settings.mcp_auth_enabled,
+                default_workspace_id=active_settings.default_workspace_id,
             )
             resource = await gateway.read_resource(
                 scope=scope,
@@ -213,6 +269,8 @@ def create_mcp_server(
                 chunk_id=chunk_id.removesuffix("?"),
                 revision=revision,
                 request_id=_request_id(ctx),
+                workspace_id=authorization.workspace_id,
+                allowed_workflow_types=authorization.allowed_workflow_types,
             )
             metrics.observe(
                 "knowledge_resource",
