@@ -97,6 +97,57 @@ async def test_internal_search_requires_auth_and_matches_public_semantics(
 
 
 @pytest.mark.asyncio
+async def test_internal_scope_search_runs_federation_in_application_service(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = await KnowledgeBaseStore().create(
+        name="Phase 2.2 Scope A",
+        profile=get_embedding_profile("configured"),
+    )
+    second = await KnowledgeBaseStore().create(
+        name="Phase 2.2 Scope B",
+        profile=get_embedding_profile("configured"),
+    )
+    engine = _SearchEngine()
+    monkeypatch.setattr(
+        "app.application.knowledge.get_hybrid_search",
+        lambda: engine,
+    )
+    monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "phase22-service-secret")
+    monkeypatch.setenv(
+        "RAG_MCP_SCOPE_MAPPING_JSON",
+        json.dumps({"compliance": [first.id, second.id]}),
+    )
+    get_settings.cache_clear()
+
+    response = await client.post(
+        "/v1/internal/knowledge/search-scope",
+        headers={
+            "Authorization": "Bearer phase22-service-secret",
+            "X-Request-ID": "req-phase22-scope",
+        },
+        json={
+            "schema_version": "trustguard-knowledge-search-request-v1",
+            "query": "password=secret-value 合规要求",
+            "scope": "compliance",
+            "limit": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["schema_version"] == "trustguard-knowledge-search-v1"
+    assert response.json()["request_id"] == "req-phase22-scope"
+    assert response.json()["scope"] == "compliance"
+    assert len(engine.calls) == 2
+    assert {call["knowledge_base_id"] for call in engine.calls} == {
+        first.id,
+        second.id,
+    }
+    assert all("secret-value" not in call["query"] for call in engine.calls)
+
+
+@pytest.mark.asyncio
 async def test_mcp_rest_backend_uses_authenticated_internal_search() -> None:
     seen: dict[str, Any] = {}
 
@@ -133,6 +184,107 @@ async def test_mcp_rest_backend_uses_authenticated_internal_search() -> None:
         "request_id": "req-mcp-internal-search",
         "json": {"query": "安全要求", "knowledge_base_id": "kb-a"},
     }
+
+
+@pytest.mark.asyncio
+async def test_mcp_rest_backend_delegates_one_authenticated_scope_search() -> None:
+    seen: dict[str, Any] = {}
+    response_payload = {
+        "schema_version": "trustguard-knowledge-search-v1",
+        "request_id": "req-scope-search",
+        "scope": "compliance",
+        "status": "ok",
+        "content_revision": "revision",
+        "hits": [],
+        "query_plan": {"intent": "auto", "source": "heuristic"},
+        "coverage": {"status": "not_applicable", "warning": None},
+        "degraded_components": [],
+        "latency_ms": 1.0,
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["authorization"] = request.headers.get("Authorization")
+        seen["request_id"] = request.headers.get("X-Request-ID")
+        seen["json"] = json.loads(request.content)
+        return httpx.Response(200, json=response_payload)
+
+    backend = RestRagBackend(
+        base_url="http://rag.test",
+        internal_service_token="phase21-service-secret",
+        timeout_seconds=1.0,
+    )
+    await backend._client.aclose()
+    backend._client = httpx.AsyncClient(
+        base_url="http://rag.test",
+        transport=httpx.MockTransport(handler),
+    )
+    request_payload = {
+        "schema_version": "trustguard-knowledge-search-request-v1",
+        "query": "安全要求",
+        "scope": "compliance",
+        "mode": "auto",
+        "limit": 5,
+        "rewrite": False,
+        "filters": {"content_types": [], "source_types": []},
+    }
+    try:
+        result = await backend.search_scope(
+            request_id="req-scope-search",
+            payload=request_payload,
+        )
+    finally:
+        await backend.aclose()
+
+    assert result == response_payload
+    assert seen == {
+        "path": "/v1/internal/knowledge/search-scope",
+        "authorization": "Bearer phase21-service-secret",
+        "request_id": "req-scope-search",
+        "json": request_payload,
+    }
+
+
+@pytest.mark.asyncio
+async def test_mcp_rest_backend_maps_missing_scope_to_stable_error() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={
+                "request_id": "req-missing-scope",
+                "code": "RESOURCE_NOT_FOUND",
+                "message": "The requested knowledge scope is not configured",
+                "retryable": False,
+                "detail": "The requested knowledge scope is not configured",
+            },
+        )
+
+    backend = RestRagBackend(
+        base_url="http://rag.test",
+        internal_service_token="phase21-service-secret",
+        timeout_seconds=1.0,
+    )
+    await backend._client.aclose()
+    backend._client = httpx.AsyncClient(
+        base_url="http://rag.test",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(BackendError) as captured:
+            await backend.search_scope(
+                request_id="req-missing-scope",
+                payload={
+                    "schema_version": "trustguard-knowledge-search-request-v1",
+                    "query": "安全要求",
+                    "scope": "compliance",
+                },
+            )
+    finally:
+        await backend.aclose()
+
+    assert captured.value.code == "UNKNOWN_SCOPE"
+    assert captured.value.status_code == 404
+    assert captured.value.retryable is False
 
 
 @pytest.mark.asyncio

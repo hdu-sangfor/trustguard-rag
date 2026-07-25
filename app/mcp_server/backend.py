@@ -23,6 +23,13 @@ class BackendError(RuntimeError):
 
 
 class RagBackend(Protocol):
+    async def search_scope(
+        self,
+        *,
+        request_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
     async def search(
         self,
         *,
@@ -61,6 +68,30 @@ class RestRagBackend:
             follow_redirects=False,
             trust_env=False,
         )
+
+    async def search_scope(
+        self,
+        *,
+        request_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            response = await self._request(
+                "POST",
+                "/v1/internal/knowledge/search-scope",
+                headers=self._internal_headers(request_id),
+                json=payload,
+            )
+        except BackendError as error:
+            if error.status_code == 404:
+                raise BackendError(
+                    "UNKNOWN_SCOPE",
+                    "The requested knowledge scope is not configured",
+                    retryable=False,
+                    status_code=404,
+                ) from error
+            raise
+        return _json_object(response)
 
     async def search(
         self,

@@ -236,10 +236,12 @@ rag-mcp      18201  Streamable HTTP /mcp
 `rag-mcp` 调用受服务身份保护的内部知识接口：
 
 ```text
-http://rag-service:18200/v1/internal/knowledge/search
+POST http://rag-service:18200/v1/internal/knowledge/search-scope
 ```
 
-现有 Phase 2 实现暂时调用普通 `POST /v1/search`，只适用于不包含 Workspace 私有数据的开发和验证环境。Phase 3 前必须迁移到内部受控接口；不能仅依靠网络位置或 MCP 外层 Token 保护 RAG 数据。
+该接口只接受 `RAG_INTERNAL_SERVICE_TOKEN` 对应的 MCP 内部服务身份。`rag-mcp`
+只提交一次逻辑 Scope Search 请求；Scope 解析、多知识库并发检索、RRF、过滤、去重、
+Coverage 和 degraded 合并均在 `rag-service` 的 Knowledge Application Service 内完成。
 
 优点：
 
@@ -553,10 +555,13 @@ LLM 不能自由构造或猜测知识库 ID。
 - 漏洞知识；
 - 合规处置要求。
 
-当前 RAG 单次请求只允许一个 `knowledge_base_id`。Phase 2 已在 MCP Gateway 中实现
-Scope → 多 KB 并发调用和跨库 RRF，用于验证契约及效果；该实现属于过渡形态。
+公开单知识库 Search 继续一次只接受一个 `knowledge_base_id`。逻辑 Scope 的多知识库
+联邦能力已在 Phase 2.1 下沉到 RAG Knowledge Application Service，并通过受服务身份保护的
+`POST /v1/internal/knowledge/search-scope` 暴露给 `rag-mcp`。MCP Gateway 不再维护独立的
+Scope Search、跨库 RRF、过滤、Coverage 或 degraded 合并实现。
 
-Phase 3 前应把联邦能力下沉到 RAG Knowledge Application Service，并提供受服务身份保护的受控接口。MCP、普通 REST 和评测脚本必须复用同一套 Scope 映射、过滤、配额、RRF、去重、Coverage 和 degraded 语义。MCP Gateway 不长期保留独立的联邦业务实现。
+后续普通 REST Scope Search 和评测脚本接入时必须直接复用该应用服务，不能重新实现一套
+Scope 映射或融合语义。
 
 融合要求：
 
@@ -1223,8 +1228,8 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 - [ ] 将 coverage 状态改为枚举；
 - [ ] 增加稳定错误 Envelope；
 - [ ] 增加精确按 Chunk ID 读取接口，强制知识库隔离；
-- [ ] 增加 Scope 配置模型；
-- [ ] 为多知识库 Scope 准备 revision 聚合；
+- [x] 增加 Scope 配置模型；
+- [x] 为多知识库 Scope 准备 revision 聚合；
 - [ ] 为 Hit 和 Resource 增加可选 `resource_ref/source_revision/content_hash`；
 - [ ] 输出稳定的来源字段；
 - [ ] 明确文本长度和元数据上限。
@@ -1235,43 +1240,43 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 
 ### 13.2 鉴权
 
-- [ ] 增加内部 REST Service Token；
-- [ ] 新增受服务身份保护的内部 Knowledge Search 接口；
-- [ ] 新增 OAuth/JWT TokenVerifier；
+- [x] 增加内部 REST Service Token；
+- [x] 新增受服务身份保护的内部 Knowledge Search 接口；
+- [x] 新增 OAuth/JWT TokenVerifier；
 - [ ] 实现 MCP Client Credentials 扩展；
 - [ ] 校验 issuer/audience/expiry/scope；
-- [ ] Search 与 Resource Read 独立授权，遵循最小权限；
-- [ ] 实现 knowledge scope 授权；
+- [x] Search 与 Resource Read 独立授权，遵循最小权限；
+- [x] 实现 knowledge scope 授权；
 - [ ] 在 Knowledge Application Service 强制实施 Workspace、visibility 和 Workflow ABAC；
 - [ ] 普通 REST 不得通过任意 `knowledge_base_id` 绕过 Scope 和 Workspace 授权；
-- [ ] 增加 Origin 和 Host Allowlist；
+- [x] 增加 Origin 和 Host Allowlist；
 - [ ] 管理接口与检索接口分权；
 - [ ] 增加 `rag.experience.write/feedback/admin` 并使用独立服务身份；
 - [ ] 增加审计日志。
 
 ### 13.3 MCP Server
 
-- [ ] 新增 `app/mcp_server/`；
-- [ ] 定义 Pydantic Input/Output；
-- [ ] 实现 `knowledge_search`；
+- [x] 新增 `app/mcp_server/`；
+- [x] 定义 Pydantic Input/Output；
+- [x] 实现 `knowledge_search`；
 - [ ] 实现不透明 Resource Ref Template，并兼容旧 Chunk Resource URI；
-- [ ] 只启用 Tools、Resources 和必要 Logging；
-- [ ] 禁用 Sampling、Roots 和 Elicitation；
-- [ ] 实现受服务身份保护的 Knowledge Application Service Client；
-- [ ] MCP 层不长期保留独立的跨知识库 RRF 业务逻辑；
-- [ ] 实现结构化错误映射；
-- [ ] 增加 `/health/live` 和 `/health/ready`；
-- [ ] 增加独立启动入口；
-- [ ] 更新 Docker Compose。
+- [x] 只启用 Tools、Resources 和必要 Logging；
+- [x] 禁用 Sampling、Roots 和 Elicitation；
+- [x] 实现受服务身份保护的 Knowledge Application Service Client；
+- [x] MCP Search 层不再保留独立的跨知识库 RRF 业务逻辑；
+- [x] 实现结构化错误映射；
+- [x] 增加 `/health/live` 和 `/health/ready`；
+- [x] 增加独立启动入口；
+- [x] 更新 Docker Compose。
 
 ### 13.4 Knowledge Application Service
 
-- [ ] 统一 Scope → KB 映射；
-- [ ] 统一 Service Identity、knowledge scope 和 Workspace ABAC；
-- [ ] 统一联邦检索、单库/总配额、RRF、去重、Coverage 和 degraded 合并；
+- [x] 统一 Scope → KB 映射；
+- [ ] 统一 Service Identity、knowledge scope 和 Workspace ABAC（服务身份和默认 Workspace 已完成，租户 ABAC 待多租户阶段）；
+- [x] 统一联邦检索、单库/总配额、RRF、去重、Coverage 和 degraded 合并；
 - [ ] 统一 Resource Ref 签发、解析、来源版本和 active/ready 校验；
 - [ ] 为 MCP、普通 REST 和评测提供相同业务语义；
-- [ ] 生产内部接口只允许受信服务身份访问。
+- [x] 生产内部接口只允许受信服务身份访问。
 
 ### 13.5 经验写入与索引
 
@@ -1286,8 +1291,8 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 
 ### 13.6 安全
 
-- [ ] 对 Query 二次脱敏；
-- [ ] 限制 Tool 参数长度；
+- [x] 对 Query 二次脱敏；
+- [x] 限制 Tool 参数长度；
 - [ ] 限制 Resource 文本大小；
 - [ ] 把知识内容标记为不可信数据；
 - [ ] 禁止把知识内容作为 MCP 指令；
@@ -1858,12 +1863,12 @@ Phase 2 实现说明：
   `stateless_http=true`、`json_response=true` 和 `/mcp` 单端点；
 - `RAG_MCP_SCOPE_MAPPING_JSON` 只接受冻结契约中的逻辑 Scope，可将一个 Scope 映射到
   多个知识库并限制内容类型；
-- `knowledge_search` 并发调用各知识库，对库内排名执行跨库 RRF，任一知识库失败时保留
-  可信结果并标记 `federation` 降级；
+- Phase 2 初版由 `knowledge_search` 在 Gateway 内并发调用各知识库；Phase 2.1 已将该
+  联邦行为迁移到 Knowledge Application Service，MCP Search 仅保留一次内部调用；
 - 多库版本使用排序后的 `knowledge_base_id:content_revision` 计算 SHA-256；Chunk
   Resource 强制校验 Scope、知识库归属、当前 revision 以及内部 REST Service Token；
-- Gateway 对查询中的常见凭证赋值和 Bearer Token 二次脱敏，Tool 标记为只读、幂等、
-  非破坏且非开放世界；
+- Knowledge Application Service 对查询中的常见凭证赋值和 Bearer Token 二次脱敏，
+  Tool 标记为只读、幂等、非破坏且非开放世界；
 - 生产鉴权通过 JWKS 验证短期 JWT 的签名、issuer、audience、expiry、OAuth scope 和
   `knowledge_scopes`，Origin 与 Host 由 MCP Transport Security 校验；
 - `/health/live`、`/health/ready` 和 `/metrics` 与 REST 生命周期独立；
@@ -1876,10 +1881,12 @@ Phase 2 实现说明：
 
 - [x] 新增受服务身份保护的内部 Knowledge Search 接口；
 - [x] MCP 不再通过无服务鉴权的普通 `/v1/search` 检索；
-- [ ] 将 Scope 映射、Workspace ABAC、联邦检索、配额、RRF、去重和 degraded 合并下沉到 Knowledge Application Service；
-- [ ] 普通 REST、MCP 和评测完整复用相同业务服务（单知识库 Search 已复用，联邦语义待下沉）；
-- [ ] Search 和 Resource Read 实施独立最小权限；
-- [ ] 明确 HTTP 401/403 与 MCP Tool/Resource 授权错误边界；
+- [x] 将 Scope 映射、联邦检索、配额、RRF、去重、Coverage 和 degraded 合并下沉到 Knowledge Application Service；
+- [x] MCP 与内部 REST Scope Search 复用相同业务服务；公开单知识库 Search 继续复用同一基础 Search 服务；
+- [ ] 评测脚本和未来公开 Scope REST 接口复用相同联邦业务服务；
+- [ ] 在单租户基础上补齐 Workspace、visibility 和 Workflow ABAC；
+- [x] Search 和 Resource Read 实施独立最小权限；
+- [x] 明确 HTTP 401/403 与 MCP Tool/Resource 授权错误边界；
 - [ ] 增加不透明 `resource_ref`、来源级 `source_revision/content_hash`；
 - [ ] Resource 直接定位单个知识库和 Chunk，不遍历 Scope 后取第一个匹配；
 - [ ] 联邦物理身份改为 `(knowledge_base_id, chunk_id)`；
@@ -1895,7 +1902,7 @@ Phase 2 实现说明：
 - 内部 Search 使用 `RAG_INTERNAL_SERVICE_TOKEN` Bearer 服务身份保护；
 - `rag-mcp` 已改为携带服务身份调用内部 Search，缺少或错误身份时 fail closed；
 - 生产环境要求配置内部服务身份；启用 MCP 时强制开启 MCP OAuth 鉴权；
-- 当前 Scope 映射、跨库 RRF、联邦降级合并仍位于 MCP Gateway，后续批次继续下沉。
+- 第一批完成时 Scope 映射、跨库 RRF 和联邦降级合并仍位于 MCP Gateway；该过渡实现已在第三批移除。
 
 第二批改造（2026-07-25）已完成：
 
@@ -1905,6 +1912,15 @@ Phase 2 实现说明：
 - MCP 内部 Search/Resource 继续使用独立 `RAG_INTERNAL_SERVICE_TOKEN`，两类 Token 不能互换；
 - 生产环境强制开启 Gateway 鉴权、配置两类服务身份并保证 Token 不同；
 - 新增匿名 REST 绕过、跨服务身份误用和权限集合测试；当前仍为单租户 `workspace_id=default`。
+
+第三批改造（2026-07-25）已完成：
+
+- 将共享知识 v1 契约和 `ScopeRegistry` 从 MCP 协议包下沉到 `schemas` / `application` 层，消除应用层对 MCP Server 的反向依赖；
+- `KnowledgeApplicationService.search_scope` 统一执行 Scope 映射、逐库权限检查、多知识库并发 Search、RRF、过滤、裸 Chunk ID 兼容去重、Coverage 和 degraded 合并；
+- 新增 `POST /v1/internal/knowledge/search-scope`，仅接受 MCP 内部服务身份；Gateway 服务 Token 不能调用；
+- `rag-mcp` 的 `knowledge_search` 现在只发送一次内部 Scope Search，并校验冻结的 v1 响应契约，不再维护联邦搜索业务算法；
+- Query 凭证脱敏已移入应用层，保证任何复用 Scope Search 的协议适配器都执行相同规则；
+- Resource Read 暂时保留旧 Scope 遍历和聚合 revision 兼容逻辑；下一批处理不透明 `resource_ref`、来源级 revision 和物理身份 `(knowledge_base_id, chunk_id)`。
 
 完成条件：
 

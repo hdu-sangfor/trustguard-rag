@@ -39,12 +39,26 @@ _CONTRACT_SCHEMAS = Path(__file__).parents[1] / "contracts" / "v1" / "schemas"
 
 class _FakeBackend:
     def __init__(self) -> None:
+        self.scope_search: dict[str, Any] | BaseException = RuntimeError(
+            "scope search is not configured"
+        )
         self.searches: dict[str, dict[str, Any] | BaseException] = {}
         self.revisions: dict[str, int | BaseException] = {}
         self.chunks: dict[tuple[str, str], dict[str, Any] | None | BaseException] = {}
-        self.seen_payloads: list[dict[str, Any]] = []
+        self.seen_scope_payloads: list[dict[str, Any]] = []
         self.is_ready = True
         self.closed = False
+
+    async def search_scope(
+        self,
+        *,
+        request_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.seen_scope_payloads.append(payload)
+        if isinstance(self.scope_search, BaseException):
+            raise self.scope_search
+        return self.scope_search
 
     async def search(
         self,
@@ -53,7 +67,6 @@ class _FakeBackend:
         request_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        self.seen_payloads.append(payload)
         value = self.searches[knowledge_base_id]
         if isinstance(value, BaseException):
             raise value
@@ -84,80 +97,66 @@ class _FakeBackend:
         self.closed = True
 
 
-def _search_payload(
+def _knowledge_search_payload(
     *,
-    revision: int,
-    results: list[dict[str, Any]],
+    request_id: str,
+    revision: str,
+    hits: list[dict[str, Any]],
     status: str = "ok",
     degraded: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
-        "schema_version": "trustguard-search-v1",
-        "request_id": "rest-request",
+        "schema_version": "trustguard-knowledge-search-v1",
+        "request_id": request_id,
+        "scope": "compliance",
+        "status": status,
         "content_revision": revision,
-        "search_status": status,
-        "results": results,
-        "query_plan": {"intent": "comprehensive", "source": "rule"},
+        "hits": hits,
+        "query_plan": {"intent": "comprehensive", "source": "heuristic"},
         "coverage": {"status": "not_applicable", "warning": None},
         "degraded_components": degraded or [],
+        "latency_ms": 1.0,
     }
 
 
-def _result(
+def _knowledge_hit(
     chunk_id: str,
     *,
-    document_id: str,
+    revision: str,
     text: str,
-    content_type: str = "legal_article",
 ) -> dict[str, Any]:
     return {
-        "chunk_id": chunk_id,
-        "text": text,
-        "score": 0.8,
+        "external_chunk_id": chunk_id,
+        "resource_uri": (
+            f"trustguard-rag://compliance/chunks/{chunk_id}?revision={revision}"
+        ),
+        "snippet": text,
+        "score": 0.5,
         "title": "安全资料",
-        "source": {
-            "document_id": document_id,
-            "source_uri": f"upload://{document_id}.pdf",
-            "original_filename": f"{document_id}.pdf",
-            "chunk_index": 0,
-            "page_no": 1,
-        },
-        "metadata": {"content_type": content_type},
+        "document_id": "doc-1",
+        "filename": "doc-1.pdf",
+        "page_no": 1,
+        "source_uri": "upload://doc-1.pdf",
+        "source_type": "document",
+        "workflow_type": None,
+        "effectiveness": None,
+        "visibility": "global",
         "expanded": False,
     }
 
 
 @pytest.mark.asyncio
-async def test_gateway_federates_scopes_with_rrf_and_stable_revision() -> None:
+async def test_gateway_delegates_scope_search_and_validates_contract() -> None:
     backend = _FakeBackend()
-    backend.searches = {
-        "kb-a": _search_payload(
-            revision=2,
-            results=[
-                _result("shared", document_id="doc-a", text="A shared"),
-                _result("a-only", document_id="doc-a", text="A only"),
-            ],
-        ),
-        "kb-b": _search_payload(
-            revision=7,
-            results=[
-                _result("b-only", document_id="doc-b", text="B only"),
-                _result("shared", document_id="doc-b", text="B shared"),
-            ],
-        ),
-    }
+    revision = aggregate_revision({"kb-a": 2, "kb-b": 7})
+    backend.scope_search = _knowledge_search_payload(
+        request_id="req-delegated",
+        revision=revision,
+        hits=[_knowledge_hit("shared", revision=revision, text="shared")],
+    )
     gateway = KnowledgeGateway(
         backend=backend,
-        scopes=ScopeRegistry.from_json(
-            json.dumps(
-                {
-                    "compliance": {
-                        "knowledge_base_ids": ["kb-a", "kb-b"],
-                        "allowed_content_types": ["legal_article"],
-                    }
-                }
-            )
-        ),
+        scopes=ScopeRegistry.from_json('{"compliance":["kb-a","kb-b"]}'),
     )
 
     response = await gateway.search(
@@ -169,54 +168,52 @@ async def test_gateway_federates_scopes_with_rrf_and_stable_revision() -> None:
             limit=3,
             filters={"content_types": ["legal_article"]},
         ),
-        request_id="req-federated",
+        request_id="req-delegated",
     )
 
     assert response.status == "ok"
-    assert response.content_revision == aggregate_revision({"kb-a": 2, "kb-b": 7})
-    assert [item.external_chunk_id for item in response.hits] == [
-        "shared",
-        "b-only",
-        "a-only",
+    assert response.content_revision == revision
+    assert [item.external_chunk_id for item in response.hits] == ["shared"]
+    assert backend.seen_scope_payloads == [
+        {
+            "schema_version": "trustguard-knowledge-search-request-v1",
+            "query": "password=hunter2 网络安全法要求",
+            "scope": "compliance",
+            "mode": "comprehensive",
+            "limit": 3,
+            "rewrite": False,
+            "filters": {
+                "content_types": ["legal_article"],
+                "source_types": [],
+            },
+        }
     ]
-    assert response.hits[0].resource_uri.endswith(
-        f"?revision={response.content_revision}"
+    _validate_contract(
+        "knowledge_search_response.schema.json",
+        response.model_dump(mode="json"),
     )
-    assert all("hunter2" not in payload["query"] for payload in backend.seen_payloads)
-    assert response.query_plan.source == "heuristic"
-    _validate_contract("knowledge_search_response.schema.json", response.model_dump(mode="json"))
 
 
 @pytest.mark.asyncio
-async def test_gateway_returns_degraded_results_when_one_knowledge_base_fails() -> None:
+async def test_gateway_rejects_invalid_backend_scope_contract() -> None:
     backend = _FakeBackend()
-    backend.searches = {
-        "kb-a": _search_payload(
-            revision=2,
-            results=[_result("a-only", document_id="doc-a", text="A only")],
-        ),
-        "kb-b": RuntimeError("offline"),
-    }
-    backend.revisions = {"kb-b": 7}
+    backend.scope_search = {"schema_version": "unexpected"}
     gateway = KnowledgeGateway(
         backend=backend,
-        scopes=ScopeRegistry.from_json('{"compliance":["kb-a","kb-b"]}'),
+        scopes=ScopeRegistry.from_json('{"compliance":["kb-a"]}'),
     )
 
-    response = await gateway.search(
-        KnowledgeSearchRequest(
-            schema_version="trustguard-knowledge-search-request-v1",
-            query="要求",
-            scope="compliance",
-        ),
-        request_id="req-degraded",
-    )
+    with pytest.raises(KnowledgeGatewayError) as captured:
+        await gateway.search(
+            KnowledgeSearchRequest(
+                schema_version="trustguard-knowledge-search-request-v1",
+                query="要求",
+                scope="compliance",
+            ),
+            request_id="req-schema",
+        )
 
-    assert response.status == "degraded"
-    assert response.degraded_components == ["federation"]
-    assert response.coverage.status == "unknown"
-    assert response.content_revision == aggregate_revision({"kb-a": 2, "kb-b": 7})
-    assert [item.external_chunk_id for item in response.hits] == ["a-only"]
+    assert captured.value.code == "SCHEMA_MISMATCH"
 
 
 @pytest.mark.asyncio
@@ -271,12 +268,12 @@ async def test_resource_rejects_stale_revision_and_never_crosses_scope() -> None
 @pytest.mark.asyncio
 async def test_official_mcp_client_lists_and_calls_read_only_contract() -> None:
     backend = _FakeBackend()
-    backend.searches = {
-        "kb-a": _search_payload(
-            revision=4,
-            results=[_result("chunk-1", document_id="doc-1", text="检索片段")],
-        )
-    }
+    revision = aggregate_revision({"kb-a": 4})
+    backend.scope_search = _knowledge_search_payload(
+        request_id="req-mcp-client",
+        revision=revision,
+        hits=[_knowledge_hit("chunk-1", revision=revision, text="检索片段")],
+    )
     backend.revisions = {"kb-a": 4}
     backend.chunks = {
         ("kb-a", "chunk-1"): {

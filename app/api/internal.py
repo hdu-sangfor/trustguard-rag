@@ -16,11 +16,36 @@ from app.application.knowledge import (
     get_knowledge_application_service,
 )
 from app.schemas.internal import InternalChunkResponse
+from app.schemas.knowledge import KnowledgeSearchRequest, KnowledgeSearchResponse
 from app.schemas.search import SearchRequest, SearchResponse
 from app.security.service_auth import require_internal_service
 from app.stores.chunk_store import get_chunk_store
 
 router = APIRouter(prefix="/v1/internal", tags=["internal"])
+
+
+@router.post(
+    "/knowledge/search-scope",
+    response_model=KnowledgeSearchResponse,
+)
+async def search_knowledge_scope(
+    payload: KnowledgeSearchRequest,
+    request: Request,
+    access_context: Annotated[
+        KnowledgeAccessContext,
+        Depends(require_internal_service),
+    ],
+) -> KnowledgeSearchResponse:
+    """由 RAG 应用层解析 Scope 并完成联邦检索与结果融合。"""
+    try:
+        return await get_knowledge_application_service().search_scope(
+            payload,
+            request_id=request.state.request_id,
+            access_context=access_context,
+        )
+    except KnowledgeSearchError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
+
 
 @router.post(
     "/knowledge/search",

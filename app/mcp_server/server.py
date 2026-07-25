@@ -27,13 +27,13 @@ from app.mcp_server.gateway import (
     KnowledgeGatewayError,
 )
 from app.mcp_server.metrics import McpMetrics
-from app.mcp_server.models import (
+from app.mcp_server.scopes import ScopeRegistry
+from app.schemas.knowledge import (
     KnowledgeScope,
     KnowledgeSearchFilters,
     KnowledgeSearchRequest,
     KnowledgeSearchResponse,
 )
-from app.mcp_server.scopes import ScopeRegistry
 from app.settings import Settings, get_settings
 
 
@@ -53,8 +53,6 @@ def create_mcp_server(
     gateway = KnowledgeGateway(
         backend=active_backend,
         scopes=scopes,
-        rrf_k=active_settings.mcp_rrf_k,
-        snippet_max_chars=active_settings.mcp_snippet_max_chars,
         resource_max_chars=active_settings.mcp_resource_max_chars,
     )
     metrics = McpMetrics()

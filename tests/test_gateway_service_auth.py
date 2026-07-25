@@ -107,6 +107,12 @@ async def test_gateway_and_mcp_internal_tokens_are_not_interchangeable(
     monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "mcp-service-secret")
     get_settings.cache_clear()
     internal_path = "/v1/internal/knowledge-bases/kb-a/chunks/chunk-a"
+    scope_search_path = "/v1/internal/knowledge/search-scope"
+    scope_payload = {
+        "schema_version": "trustguard-knowledge-search-request-v1",
+        "query": "安全要求",
+        "scope": "compliance",
+    }
 
     gateway_on_internal = await client.get(
         internal_path,
@@ -116,9 +122,21 @@ async def test_gateway_and_mcp_internal_tokens_are_not_interchangeable(
         internal_path,
         headers={"Authorization": "Bearer mcp-service-secret"},
     )
+    gateway_on_scope_search = await client.post(
+        scope_search_path,
+        headers={"Authorization": "Bearer gateway-service-secret"},
+        json=scope_payload,
+    )
+    mcp_on_scope_search = await client.post(
+        scope_search_path,
+        headers={"Authorization": "Bearer mcp-service-secret"},
+        json=scope_payload,
+    )
 
     assert gateway_on_internal.status_code == 401
     assert mcp_on_internal.status_code == 404
+    assert gateway_on_scope_search.status_code == 401
+    assert mcp_on_scope_search.status_code == 404
 
 
 def test_access_contexts_expose_only_required_permissions() -> None:
