@@ -13,6 +13,19 @@ docker compose up -d --build
 curl http://localhost:18200/health
 ```
 
+开发环境默认允许直接调用 RAG 业务 REST。生产环境必须启用 Agent Gateway 服务身份，且
+Gateway Token 与 MCP 内部 Token 必须使用不同的随机值：
+
+```dotenv
+RAG_GATEWAY_AUTH_ENABLED=true
+RAG_GATEWAY_SERVICE_TOKEN=replace-with-a-different-long-random-service-token
+RAG_INTERNAL_SERVICE_TOKEN=replace-with-a-long-random-service-token
+```
+
+启用后，`/v1/search`、`/v1/answer`、知识库、文档、入库和 OCR 接口都要求
+`Authorization: Bearer <RAG_GATEWAY_SERVICE_TOKEN>`。健康检查和 `/v1/internal/*` 不使用
+该身份；内部接口只接受独立的 `RAG_INTERNAL_SERVICE_TOKEN`。
+
 ### 国内网络加速
 
 `.env.example` 参考 `trustguard-agent` 统一配置了 Docker Hub、PyPI/uv 和
@@ -164,6 +177,7 @@ Worker 会延迟重试，超过任务最大尝试次数后才标记为失败。
 ```bash
 curl -X POST http://localhost:18200/v1/search \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RAG_GATEWAY_SERVICE_TOKEN}" \
   -d '{
     "query":"如何防御 SQL 注入？",
     "knowledge_base_id":"<knowledge_base_id>",

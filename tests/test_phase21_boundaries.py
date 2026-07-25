@@ -167,6 +167,22 @@ def test_production_requires_internal_identity_and_mcp_auth(
     with pytest.raises(ValueError, match="RAG_INTERNAL_SERVICE_TOKEN"):
         create_app()
 
+    monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "internal-service-token")
+    get_settings.cache_clear()
+    with pytest.raises(ValueError, match="RAG_GATEWAY_AUTH_ENABLED"):
+        create_app()
+
+    monkeypatch.setenv("RAG_GATEWAY_AUTH_ENABLED", "true")
+    get_settings.cache_clear()
+    with pytest.raises(ValueError, match="RAG_GATEWAY_SERVICE_TOKEN"):
+        create_app()
+
+    monkeypatch.setenv("RAG_GATEWAY_SERVICE_TOKEN", "internal-service-token")
+    get_settings.cache_clear()
+    with pytest.raises(ValueError, match="must differ"):
+        create_app()
+
+    monkeypatch.delenv("RAG_INTERNAL_SERVICE_TOKEN", raising=False)
     with pytest.raises(ValueError, match="RAG_INTERNAL_SERVICE_TOKEN"):
         Settings(
             _env_file=None,

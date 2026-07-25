@@ -36,7 +36,7 @@
 
 系统提供公开检索、内部检索和回答接口：
 
-- `POST /v1/search`：只执行检索，返回知识片段、来源、得分和查询规划信息。
+- `POST /v1/search`：只执行检索，返回知识片段、来源、得分和查询规划信息；生产环境要求 Agent Gateway 服务身份。
 - `POST /v1/internal/knowledge/search`：要求内部 Bearer 服务身份，供 MCP Gateway 等受信服务调用；与公开 Search 复用相同应用服务。
 - `POST /v1/answer`：复用相同检索流程，再执行上下文构建、LLM 回答和引用校验。
 
@@ -284,13 +284,13 @@ Search 和 Answer 响应会返回：
 ## 10. 一次请求的简化时序
 
 ```text
-前端 / 普通调用方 ── POST /v1/search ───────────────┐
-                                                     │
-rag-mcp ── 服务身份 ── POST /v1/internal/knowledge/search ─┤
-                                                     ▼
+浏览器 ── 用户登录 Token ── Agent Gateway ── Gateway 服务 Token ── /v1/search ─┐
+                                                                               │
+Agent Runtime ── MCP OAuth ── rag-mcp ── MCP 内部服务 Token ── internal Search ─┤
+                                                                               ▼
                                               API Schema 校验
                                                      ▼
-                                      KnowledgeApplicationService
+                              KnowledgeAccessContext + ApplicationService
                                                      ▼
 知识库与 Embedding Profile 解析
   ▼

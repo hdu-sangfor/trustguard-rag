@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 18200
     rag_mode: str = "ingest"  # 健康检查模式取值：ingest | full
+    default_workspace_id: str = "default"
+    gateway_auth_enabled: bool = False
+    gateway_service_token: str | None = None
     internal_service_token: str | None = None
 
     # --- MCP Gateway（独立进程，默认关闭） ---

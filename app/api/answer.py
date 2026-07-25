@@ -2,20 +2,41 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.application.access import (
+    KnowledgeAccessContext,
+    KnowledgeAccessDenied,
+    KnowledgePermission,
+)
 from app.core.generation import get_answer_service
 from app.core.generation.llm_client import LLMError
 from app.core.retrieval.request_context import resolve_search_execution
 from app.core.retrieval.search import SearchUnavailableError
 from app.schemas.answer import AnswerRequest, AnswerResponse
+from app.security.service_auth import require_gateway_service
 
 router = APIRouter(prefix="/v1/answer", tags=["answer"])
 
 
 @router.post("", response_model=AnswerResponse)
-async def answer(request: AnswerRequest) -> AnswerResponse:
+async def answer(
+    request: AnswerRequest,
+    access_context: Annotated[
+        KnowledgeAccessContext,
+        Depends(require_gateway_service),
+    ],
+) -> AnswerResponse:
     """检索知识库，并生成带可验证引用的单轮回答。"""
+    try:
+        access_context.require(
+            KnowledgePermission.ANSWER,
+            knowledge_base_id=request.knowledge_base_id,
+        )
+    except KnowledgeAccessDenied as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     try:
         context = await resolve_search_execution(request)
     except LookupError as error:

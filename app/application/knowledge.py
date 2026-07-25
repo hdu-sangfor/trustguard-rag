@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from app.application.access import (
+    KnowledgeAccessContext,
+    KnowledgeAccessDenied,
+    KnowledgePermission,
+)
 from app.core.retrieval.request_context import resolve_search_execution
 from app.core.retrieval.search import SearchUnavailableError, get_hybrid_search
 from app.schemas.search import SearchCoverage, SearchRequest, SearchResponse
@@ -23,7 +28,15 @@ class KnowledgeApplicationService:
         request: SearchRequest,
         *,
         request_id: str,
+        access_context: KnowledgeAccessContext,
     ) -> SearchResponse:
+        try:
+            access_context.require(
+                KnowledgePermission.SEARCH,
+                knowledge_base_id=request.knowledge_base_id,
+            )
+        except KnowledgeAccessDenied as error:
+            raise KnowledgeSearchError(str(error), status_code=403) from error
         try:
             context = await resolve_search_execution(request)
         except LookupError as error:
@@ -72,4 +85,3 @@ class KnowledgeApplicationService:
 def get_knowledge_application_service() -> KnowledgeApplicationService:
     """返回无状态知识应用服务，便于 HTTP、MCP 后端和测试复用。"""
     return KnowledgeApplicationService()
-

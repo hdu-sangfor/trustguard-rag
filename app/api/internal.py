@@ -2,60 +2,44 @@
 
 from __future__ import annotations
 
-import secrets
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from app.application.access import (
+    KnowledgeAccessContext,
+    KnowledgeAccessDenied,
+    KnowledgePermission,
+)
 from app.application.knowledge import (
     KnowledgeSearchError,
     get_knowledge_application_service,
 )
 from app.schemas.internal import InternalChunkResponse
 from app.schemas.search import SearchRequest, SearchResponse
-from app.settings import get_settings
+from app.security.service_auth import require_internal_service
 from app.stores.chunk_store import get_chunk_store
 
 router = APIRouter(prefix="/v1/internal", tags=["internal"])
 
-
-async def require_internal_service(
-    authorization: Annotated[str | None, Header()] = None,
-) -> None:
-    """使用独立 Bearer Token 保护管理面与前端不需要访问的内部接口。"""
-    expected = get_settings().internal_service_token
-    if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="Internal service authentication is not configured",
-        )
-    scheme, separator, credential = (authorization or "").partition(" ")
-    if (
-        not separator
-        or scheme.casefold() != "bearer"
-        or not secrets.compare_digest(credential, expected)
-    ):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid internal service credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-
 @router.post(
     "/knowledge/search",
     response_model=SearchResponse,
-    dependencies=[Depends(require_internal_service)],
 )
 async def search_knowledge(
     payload: SearchRequest,
     request: Request,
+    access_context: Annotated[
+        KnowledgeAccessContext,
+        Depends(require_internal_service),
+    ],
 ) -> SearchResponse:
     """使用服务身份执行与公开 Search 相同语义的知识库检索。"""
     try:
         return await get_knowledge_application_service().search(
             payload,
             request_id=request.state.request_id,
+            access_context=access_context,
         )
     except KnowledgeSearchError as error:
         raise HTTPException(status_code=error.status_code, detail=str(error)) from error
@@ -64,14 +48,24 @@ async def search_knowledge(
 @router.get(
     "/knowledge-bases/{knowledge_base_id}/chunks/{chunk_id}",
     response_model=InternalChunkResponse,
-    dependencies=[Depends(require_internal_service)],
 )
 async def get_scoped_chunk(
     knowledge_base_id: str,
     chunk_id: str,
     request: Request,
+    access_context: Annotated[
+        KnowledgeAccessContext,
+        Depends(require_internal_service),
+    ],
 ) -> InternalChunkResponse:
     """按知识库和 Chunk 双重约束读取已发布内容。"""
+    try:
+        access_context.require(
+            KnowledgePermission.RESOURCE_READ,
+            knowledge_base_id=knowledge_base_id,
+        )
+    except KnowledgeAccessDenied as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     row = await get_chunk_store().get_scoped_active(
         knowledge_base_id=knowledge_base_id,
         chunk_id=chunk_id,

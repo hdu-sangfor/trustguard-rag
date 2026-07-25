@@ -1897,6 +1897,15 @@ Phase 2 实现说明：
 - 生产环境要求配置内部服务身份；启用 MCP 时强制开启 MCP OAuth 鉴权；
 - 当前 Scope 映射、跨库 RRF、联邦降级合并仍位于 MCP Gateway，后续批次继续下沉。
 
+第二批改造（2026-07-25）已完成：
+
+- 新增协议无关的 `KnowledgeAccessContext`，统一表达调用方类型、服务身份、默认 Workspace、权限和知识库白名单扩展点；
+- Agent Gateway 使用独立 `RAG_GATEWAY_SERVICE_TOKEN` 调用 RAG 业务 REST；
+- 搜索、回答、知识库、文档、入库和 OCR 路由统一验证 Gateway 服务身份；
+- MCP 内部 Search/Resource 继续使用独立 `RAG_INTERNAL_SERVICE_TOKEN`，两类 Token 不能互换；
+- 生产环境强制开启 Gateway 鉴权、配置两类服务身份并保证 Token 不同；
+- 新增匿名 REST 绕过、跨服务身份误用和权限集合测试；当前仍为单租户 `workspace_id=default`。
+
 完成条件：
 
 - 任何调用方都不能绕过 MCP 直接访问未授权知识库或 Workspace 私有内容；
