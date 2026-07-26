@@ -205,6 +205,25 @@ class DocumentStore:
             result = await session.execute(q)
             return list(result.scalars().all())
 
+    async def find_ready_by_source_uri_prefix(
+        self,
+        source_uri_prefix: str,
+        *,
+        knowledge_base_id: str | None = None,
+    ) -> list[DocumentRow]:
+        """列出 source_uri 以前缀开头的 ready 文档（用于 sync cleanup=full）。"""
+        if not source_uri_prefix:
+            return []
+        async with AsyncSession(get_engine()) as session:
+            q = select(DocumentRow).where(
+                DocumentRow.source_uri.startswith(source_uri_prefix),
+                DocumentRow.status == DocumentStatus.READY,
+            )
+            if knowledge_base_id:
+                q = q.where(DocumentRow.knowledge_base_id == knowledge_base_id)
+            result = await session.execute(q)
+            return list(result.scalars().all())
+
     async def update_status(
         self,
         document_id: str,

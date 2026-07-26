@@ -243,6 +243,21 @@ class Settings(BaseSettings):
     # --- 健康检查 ---
     health_check_timeout_seconds: float = 3.0
 
+    # --- 增量同步（Sync Bridge） ---
+    # RAG_SYNC_ROOTS: JSON {"crawler":"/sync"} 或 crawler=/sync,other=/data
+    sync_roots: str = ""
+    sync_schedule_enabled: bool = False
+    sync_schedule_cron: str = "0 */6 * * *"  # 默认每 6 小时
+    sync_schedule_root_key: str = "crawler"
+    sync_schedule_relative_path: str = "."
+    sync_schedule_glob: str = "**/*.{md,txt,html,htm,json,csv}"
+    sync_schedule_source_uri_prefix: str = "crawler://crawler/"
+    sync_schedule_source_uri_template: str = "crawler://{root_key}/{relative}"
+    sync_schedule_cursor_key: str = "scheduled-crawler"
+    sync_schedule_cleanup: str = "none"  # none | full
+    sync_schedule_knowledge_base_id: str | None = None
+    sync_schedule_conflict_policy: str = "keep_new"
+
     @model_validator(mode="after")
     def reject_mock_retrieval_in_production(self) -> Settings:
         """校验生产检索后端和分块窗口配置。"""
@@ -305,6 +320,9 @@ class Settings(BaseSettings):
             raise ValueError("RAG_ANSWER_MAX_CONTEXT_CHUNKS 必须大于 0")
         if not self.answer_refusal_message.strip():
             raise ValueError("RAG_ANSWER_REFUSAL_MESSAGE 不能为空")
+        cleanup = self.sync_schedule_cleanup.strip().lower()
+        if cleanup not in {"none", "full"}:
+            raise ValueError("RAG_SYNC_SCHEDULE_CLEANUP 必须是 none 或 full")
         if self.app_env.strip().lower() != "prod":
             return self
         enabled_mocks: list[str] = []

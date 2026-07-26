@@ -217,6 +217,18 @@ class OutboxEventRow(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
 
 
+class IngestCursorRow(Base):
+    """增量同步水位（对照 LangChain RecordManager 的 namespace/key 账本语义）。"""
+
+    __tablename__ = "ingest_cursors"
+
+    cursor_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    cursor_value: Mapped[str] = mapped_column(String(256))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class OcrRegionRow(Base):
     """PDF/图片 OCR 区域及人工复核状态。"""
 

@@ -25,6 +25,7 @@ from app.api import (
     ocr_review,
     search,
     sources,
+    sync,
 )
 from app.api.errors import (
     http_exception_handler,
@@ -33,6 +34,7 @@ from app.api.errors import (
     validation_exception_handler,
 )
 from app.core.indexing.opensearch_backfill import backfill_ready_documents
+from app.core.ingest.scheduler import shutdown_sync_scheduler, start_sync_scheduler
 from app.settings import get_settings
 from app.security.service_auth import require_gateway_service
 from app.stores import db, opensearch_store, qdrant_store, redis_cache
@@ -140,7 +142,9 @@ async def lifespan(app: FastAPI):
             run_opensearch_backfill(),
             name="opensearch-startup-backfill",
         )
+    start_sync_scheduler()
     yield
+    shutdown_sync_scheduler()
     tasks = [knowledge_base_backfill_task]
     if backfill_task is not None:
         tasks.append(backfill_task)
@@ -216,6 +220,7 @@ def create_app() -> FastAPI:
     app.include_router(internal.router)
     gateway_dependencies = [Depends(require_gateway_service)]
     app.include_router(ingest.router, dependencies=gateway_dependencies)
+    app.include_router(sync.router, dependencies=gateway_dependencies)
     app.include_router(knowledge_bases.router, dependencies=gateway_dependencies)
     app.include_router(documents.router, dependencies=gateway_dependencies)
     app.include_router(sources.router, dependencies=gateway_dependencies)

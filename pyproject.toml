@@ -24,6 +24,7 @@ dependencies = [
     "transformers>=4.51.0",
     "markitdown>=0.1.0",
     "mcp==1.27.2",
+    "apscheduler>=3.10",
 ]
 
 [tool.setuptools.packages.find]

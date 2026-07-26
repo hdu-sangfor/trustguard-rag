@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.settings import get_settings
 from app.core.ingest.errors import (
+    FILENAME_CONFLICT,
     MAX_ATTEMPTS_EXCEEDED,
     WORKER_LEASE_EXPIRED,
 )
@@ -158,6 +159,29 @@ class JobStore:
                     seconds=get_settings().worker_job_lease_seconds
                 )
             job.step_logs = logs
+            await session.commit()
+
+    async def attach_conflict(
+        self,
+        job_id: str,
+        *,
+        pending_document_id: str,
+        conflict_candidates: list[str],
+        lease_token: str | None = None,
+    ) -> None:
+        """在 RUNNING 任务上挂起冲突候选，供同租约内 auto keep_new 直接 resolve。"""
+        async with AsyncSession(get_engine()) as session:
+            job = await session.get(IngestJobRow, job_id)
+            if not job:
+                return
+            if lease_token is not None and (
+                job.status != IngestJobStatus.RUNNING or job.lease_token != lease_token
+            ):
+                raise LeaseLostError(f"lease lost for job {job_id}")
+            job.pending_document_id = pending_document_id
+            job.conflict_candidates_json = list(conflict_candidates)
+            job.error_code = FILENAME_CONFLICT
+            job.error_message = "Filename or source conflict detected"
             await session.commit()
 
     async def claim(

@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from app.core.embedding.profiles import list_embedding_profiles
 from app.core.ingest.extractors.file import SUPPORTED_MIME_TYPES
+from app.core.ingest.sync import parse_sync_roots
 from app.settings import get_settings
 
 router = APIRouter(prefix="/v1/sources", tags=["sources"])
@@ -43,5 +44,13 @@ async def source_capabilities() -> dict:
                     "fail_open": settings.ocr_fail_open,
                 },
             }
-        ]
+        ],
+        "sync": {
+            "endpoint": "/v1/ingest/sync",
+            "cursor_endpoint": "/v1/ingest/cursors/{cursor_key}",
+            "conflict_policies": ["manual", "keep_new"],
+            "cleanup_modes": ["none", "full"],
+            "directory_roots": sorted(parse_sync_roots(settings.sync_roots).keys()),
+            "schedule_enabled": settings.sync_schedule_enabled,
+        },
     }
