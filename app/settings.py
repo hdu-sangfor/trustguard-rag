@@ -65,7 +65,10 @@ class Settings(BaseSettings):
     mcp_auth_jwks_url: str | None = None
     mcp_resource_server_url: str = "http://localhost:18201/mcp"
     mcp_jwt_algorithms: str = "RS256,ES256"
-    mcp_allowed_hosts: str = "localhost,localhost:18201,127.0.0.1,127.0.0.1:18201"
+    mcp_allowed_hosts: str = (
+        "localhost,localhost:18201,127.0.0.1,127.0.0.1:18201,"
+        "host.docker.internal,host.docker.internal:18201"
+    )
     mcp_allowed_origins: str = ""
 
     # --- 入库 ---

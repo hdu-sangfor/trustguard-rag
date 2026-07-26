@@ -55,6 +55,7 @@ class _FakeBackend:
         workspace_id: str | None = None,
         allowed_workflow_types: frozenset[str] | None = None,
     ) -> dict[str, Any]:
+        assert not self.closed
         self.seen_scope_payloads.append(payload)
         if isinstance(self.scope_search, BaseException):
             raise self.scope_search
@@ -69,12 +70,14 @@ class _FakeBackend:
         workspace_id: str | None = None,
         allowed_workflow_types: frozenset[str] | None = None,
     ) -> dict[str, Any]:
+        assert not self.closed
         value = self.resources[resource_ref]
         if isinstance(value, BaseException):
             raise value
         return value
 
     async def ready(self) -> bool:
+        assert not self.closed
         return self.is_ready
 
     async def aclose(self) -> None:
@@ -296,6 +299,31 @@ async def test_official_mcp_client_lists_and_calls_read_only_contract() -> None:
 
 
 @pytest.mark.asyncio
+async def test_default_mcp_hosts_allow_agent_compose_bridge() -> None:
+    settings = Settings(
+        _env_file=None,
+        mcp_enabled=True,
+        mcp_scope_mapping_json=('{"compliance":{"knowledge_base_ids":["kb-a"]}}'),
+    )
+    app = create_mcp_app(settings, backend=_FakeBackend())
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://host.docker.internal:18201",
+        ) as http_client:
+            async with streamable_http_client(
+                "http://host.docker.internal:18201/mcp",
+                http_client=http_client,
+            ) as (read_stream, write_stream, _):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    tools = await session.list_tools()
+
+    assert [tool.name for tool in tools.tools] == ["knowledge_search"]
+
+
+@pytest.mark.asyncio
 async def test_jwt_verifier_and_claim_based_knowledge_scope_authorization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -349,13 +377,41 @@ async def test_jwt_verifier_and_claim_based_knowledge_scope_authorization(
     finally:
         auth_context_var.reset(context_token)
 
+    search_only_token = AccessToken(
+        token="search-only",
+        client_id="trustguard-agent",
+        subject="trustguard-agent",
+        scopes=["rag.search"],
+        expires_at=int(time.time()) + 60,
+        claims={
+            "knowledge_scopes": ["compliance"],
+            "workspace_id": "default",
+            "workflow_types": ["penetration"],
+        },
+    )
+    context_token = auth_context_var.set(AuthenticatedUser(search_only_token))
+    try:
+        authorize_knowledge_scope(
+            "compliance",
+            required_permission="rag.search",
+            auth_enabled=True,
+        )
+        with pytest.raises(ScopeAuthorizationError):
+            authorize_knowledge_scope(
+                "compliance",
+                required_permission="rag.resource.read",
+                auth_enabled=True,
+            )
+    finally:
+        auth_context_var.reset(context_token)
+
 
 @pytest.mark.asyncio
-async def test_mcp_http_boundary_rejects_missing_or_under_scoped_tokens(
+async def test_mcp_http_boundary_authenticates_without_aggregating_operation_scopes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def verify_token(_self, token: str) -> AccessToken | None:
-        if token == "under-scoped":
+        if token == "search-only":
             return AccessToken(
                 token=token,
                 client_id="agent",
@@ -395,14 +451,17 @@ async def test_mcp_http_boundary_rejects_missing_or_under_scoped_tokens(
             base_url="http://test",
         ) as client:
             missing = await client.post("/mcp", json=initialize)
-            under_scoped = await client.post(
+            search_only = await client.post(
                 "/mcp",
                 json=initialize,
-                headers={"Authorization": "Bearer under-scoped"},
+                headers={
+                    "Authorization": "Bearer search-only",
+                    "Accept": "application/json, text/event-stream",
+                },
             )
 
     assert missing.status_code == 401
-    assert under_scoped.status_code == 403
+    assert search_only.status_code == 200
 
 
 def test_scope_mapping_rejects_unknown_alias_and_empty_mapping() -> None:

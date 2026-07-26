@@ -1,0 +1,34 @@
+{
+  "name": "TrustGuard 渗透测试种子知识库",
+  "version": "1.0.0",
+  "workflow_type": "penetration",
+  "visibility": "global",
+  "license": "Project-authored summaries derived from TrustGuard Agent skill contracts",
+  "documents": [
+    {
+      "filename": "01-workflow-and-evidence-gates.md",
+      "title": "TrustGuard 渗透测试阶段与证据门禁",
+      "content_type": "penetration_methodology"
+    },
+    {
+      "filename": "02-recon-and-discovery-routing.md",
+      "title": "侦察与 Web 资产发现工具路由",
+      "content_type": "tool_routing"
+    },
+    {
+      "filename": "03-vulnerability-validation-playbook.md",
+      "title": "漏洞扫描与安全验证 Playbook",
+      "content_type": "validation_playbook"
+    },
+    {
+      "filename": "04-framework-specific-routing.md",
+      "title": "框架指纹与专项验证路由",
+      "content_type": "framework_routing"
+    },
+    {
+      "filename": "05-failure-recovery-and-reporting.md",
+      "title": "渗透任务失败回退、停止条件与报告规范",
+      "content_type": "workflow_policy"
+    }
+  ]
+}

@@ -250,6 +250,10 @@ npx -y @modelcontextprotocol/inspector@latest --cli \
   http://localhost:18201/mcp --transport http --method tools/list
 ```
 
+Agent 与 RAG 使用两套 Compose 时，Agent 默认通过
+`http://host.docker.internal:18201/mcp` 访问；开发默认 Host 白名单已包含该地址，生产环境应
+按实际服务域名覆盖 `RAG_MCP_ALLOWED_HOSTS`。
+
 多知识库 Scope 只由 RAG Core 的 `KnowledgeApplicationService.search_scope` 解析和执行。
 MCP 携带内部服务身份调用 `POST /v1/internal/knowledge/search-scope`；普通 REST 和评测调用
 `POST /v1/search/scope`，三条路径复用同一套逐库授权、跨库 RRF、配额、去重、Coverage 和
@@ -267,6 +271,10 @@ Gateway 验证 Client Credentials 获取的短期 JWT，包括签名、`iss`、`
 OAuth scope 以及 `knowledge_scopes`；MCP 凭证不能用于管理接口和后续经验写入。
 可选 `workspace_id` 和 `workflow_types` Claim 只在 JWT 验证后传入 RAG，非默认 Workspace
 会被拒绝。
+
+MCP Transport 只要求 JWT 通过认证，不在会话初始化时同时要求全部业务权限。
+`knowledge_search` 单独要求 `rag.search`，Resource Read 单独要求
+`rag.resource.read`；只执行搜索的客户端无需申请 Resource Read 权限。
 
 ## RabbitMQ Worker 与 Outbox
 
