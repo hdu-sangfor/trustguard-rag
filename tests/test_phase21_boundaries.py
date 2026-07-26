@@ -7,10 +7,12 @@ from typing import Any
 
 import httpx
 import pytest
+from starlette.requests import Request
 
 from app.core.embedding.profiles import get_embedding_profile
 from app.main import create_app
 from app.mcp_server.backend import BackendError, RestRagBackend
+from app.security.service_auth import require_internal_service
 from app.settings import Settings, get_settings
 from app.stores.knowledge_base_store import KnowledgeBaseStore
 
@@ -31,6 +33,31 @@ class _SearchEngine:
             "components": {"vector": 0, "keyword": 0},
             "degraded_components": [],
         }
+
+
+@pytest.mark.asyncio
+async def test_internal_identity_preserves_absent_and_empty_workflow_constraints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "phase22-service-secret")
+    get_settings.cache_clear()
+    request = Request({"type": "http", "method": "POST", "path": "/"})
+
+    unrestricted = await require_internal_service(
+        request,
+        authorization="Bearer phase22-service-secret",
+        workspace_id=None,
+        workflow_types=None,
+    )
+    denied = await require_internal_service(
+        request,
+        authorization="Bearer phase22-service-secret",
+        workspace_id=None,
+        workflow_types="",
+    )
+
+    assert unrestricted.allowed_workflow_types is None
+    assert denied.allowed_workflow_types == frozenset()
 
 
 @pytest.mark.asyncio

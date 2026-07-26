@@ -55,6 +55,7 @@ class _FakeBackend:
         workspace_id: str | None = None,
         allowed_workflow_types: frozenset[str] | None = None,
     ) -> dict[str, Any]:
+        assert not self.closed
         self.seen_scope_payloads.append(payload)
         if isinstance(self.scope_search, BaseException):
             raise self.scope_search
@@ -69,12 +70,14 @@ class _FakeBackend:
         workspace_id: str | None = None,
         allowed_workflow_types: frozenset[str] | None = None,
     ) -> dict[str, Any]:
+        assert not self.closed
         value = self.resources[resource_ref]
         if isinstance(value, BaseException):
             raise value
         return value
 
     async def ready(self) -> bool:
+        assert not self.closed
         return self.is_ready
 
     async def aclose(self) -> None:

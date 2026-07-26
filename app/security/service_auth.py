@@ -90,10 +90,14 @@ async def require_internal_service(
         or trusted_workspace_id != settings.default_workspace_id
     ):
         raise HTTPException(status_code=403, detail="Unsupported workspace context")
-    trusted_workflow_types = frozenset(
-        item.strip()
-        for item in (workflow_types or "").split(",")
-        if item.strip() and _CONTEXT_VALUE.fullmatch(item.strip())
+    trusted_workflow_types = (
+        None
+        if workflow_types is None
+        else frozenset(
+            item.strip()
+            for item in workflow_types.split(",")
+            if item.strip() and _CONTEXT_VALUE.fullmatch(item.strip())
+        )
     )
     context = mcp_access_context(
         service_id="trustguard-rag-mcp",

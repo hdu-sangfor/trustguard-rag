@@ -37,11 +37,11 @@ from app.schemas.knowledge import (
 from app.settings import Settings, get_settings
 
 
-def create_mcp_server(
+def _build_mcp_server(
     settings: Settings | None = None,
     *,
     backend: RagBackend | None = None,
-) -> FastMCP:
+) -> tuple[FastMCP, RagBackend]:
     active_settings = settings or get_settings()
     scopes = ScopeRegistry.from_json(active_settings.mcp_scope_mapping_json)
     backend_was_injected = backend is not None
@@ -55,13 +55,6 @@ def create_mcp_server(
         resource_max_chars=active_settings.mcp_resource_max_chars,
     )
     metrics = McpMetrics()
-
-    @contextlib.asynccontextmanager
-    async def lifespan(_: FastMCP):
-        try:
-            yield
-        finally:
-            await active_backend.aclose()
 
     token_verifier = None
     auth_settings = None
@@ -93,7 +86,6 @@ def create_mcp_server(
         streamable_http_path="/mcp",
         stateless_http=True,
         json_response=True,
-        lifespan=lifespan,
         token_verifier=token_verifier,
         auth=auth_settings,
         transport_security=TransportSecuritySettings(
@@ -266,6 +258,15 @@ def create_mcp_server(
             media_type="text/plain; version=0.0.4",
         )
 
+    return mcp, active_backend
+
+
+def create_mcp_server(
+    settings: Settings | None = None,
+    *,
+    backend: RagBackend | None = None,
+) -> FastMCP:
+    mcp, _ = _build_mcp_server(settings, backend=backend)
     return mcp
 
 
@@ -274,7 +275,20 @@ def create_mcp_app(
     *,
     backend: RagBackend | None = None,
 ):
-    return create_mcp_server(settings, backend=backend).streamable_http_app()
+    mcp, active_backend = _build_mcp_server(settings, backend=backend)
+    app = mcp.streamable_http_app()
+    session_manager_lifespan = app.router.lifespan_context
+
+    @contextlib.asynccontextmanager
+    async def lifespan(starlette_app):
+        try:
+            async with session_manager_lifespan(starlette_app):
+                yield
+        finally:
+            await active_backend.aclose()
+
+    app.router.lifespan_context = lifespan
+    return app
 
 
 def _request_id(ctx: Context) -> str:
