@@ -6,6 +6,7 @@ from uuid import uuid4
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from app.core.embedding.profiles import get_embedding_profile
+from app.core.ingest.source_uri import SourceUriError, normalize_conflict_policy, validate_source_uri
 from app.schemas.ingest import ConflictResolveRequest, IngestJobCreateResponse, IngestJobResponse
 from app.stores.blob_store import get_blob_store
 from app.stores.job_store import get_job_store
@@ -51,10 +52,18 @@ async def create_ingest_job(
     file: UploadFile = File(...),
     knowledge_base_id: str | None = Form(default=None),
     embedding_profile: str | None = Form(default=None),
+    source_uri: str | None = Form(default=None),
+    conflict_policy: str | None = Form(default=None),
+    collected_at: str | None = Form(default=None),
 ) -> IngestJobCreateResponse:
     """创建文件入库任务，保存上传文件，并加入后台执行队列。"""
     if source_type != "file":
         raise HTTPException(status_code=400, detail="Only source_type=file is supported")
+    try:
+        policy = normalize_conflict_policy(conflict_policy)
+        stable_uri = validate_source_uri(source_uri) if source_uri else None
+    except (SourceUriError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     kb_store = get_knowledge_base_store()
     try:
         if knowledge_base_id:
@@ -77,23 +86,29 @@ async def create_ingest_job(
     mime = file.content_type
     job_id = str(uuid4())
     bs.put_job_upload(job_id, data)
+    options: dict = {
+        "original_filename": original_filename,
+        "mime": mime,
+        "knowledge_base_id": knowledge_base.id,
+        "embedding_profile": profile.id,
+        "embedding_provider": profile.provider,
+        "embedding_api_driver": profile.api_driver,
+        "embedding_model": profile.model,
+        "embedding_dim": profile.dimension,
+        "embedding_query_instruction": profile.query_instruction,
+        "conflict_policy": policy,
+    }
+    if stable_uri:
+        options["source_uri"] = stable_uri
+    if collected_at:
+        options["collected_at"] = collected_at
     try:
         job, event = await js.create_ingest_command(
             job_id=job_id,
             source_type=source_type,
             source=original_filename,
             knowledge_base_id=knowledge_base.id,
-            options={
-                "original_filename": original_filename,
-                "mime": mime,
-                "knowledge_base_id": knowledge_base.id,
-                "embedding_profile": profile.id,
-                "embedding_provider": profile.provider,
-                "embedding_api_driver": profile.api_driver,
-                "embedding_model": profile.model,
-                "embedding_dim": profile.dimension,
-                "embedding_query_instruction": profile.query_instruction,
-            },
+            options=options,
         )
     except Exception:
         bs.delete_job_staging(job_id)

@@ -23,8 +23,10 @@ from app.api import (
     ocr_review,
     search,
     sources,
+    sync,
 )
 from app.core.indexing.opensearch_backfill import backfill_ready_documents
+from app.core.ingest.scheduler import shutdown_sync_scheduler, start_sync_scheduler
 from app.settings import get_settings
 from app.stores import db, opensearch_store, qdrant_store, redis_cache
 from app.stores.outbox_store import ensure_outbox_schema
@@ -131,7 +133,9 @@ async def lifespan(app: FastAPI):
             run_opensearch_backfill(),
             name="opensearch-startup-backfill",
         )
+    start_sync_scheduler()
     yield
+    shutdown_sync_scheduler()
     tasks = [knowledge_base_backfill_task]
     if backfill_task is not None:
         tasks.append(backfill_task)
@@ -163,6 +167,7 @@ def create_app() -> FastAPI:
     
     app.include_router(health.router)
     app.include_router(ingest.router)
+    app.include_router(sync.router)
     app.include_router(knowledge_bases.router)
     app.include_router(documents.router)
     app.include_router(sources.router)

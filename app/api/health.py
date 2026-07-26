@@ -46,9 +46,10 @@ def _ingest_required() -> tuple[str, ...]:
         required.append("knowledge_base_index")
     if not s.search_opensearch_mock:
         required.append("opensearch")
-    # DOCX is always routed to MinerU, so advertised ingest readiness requires it
-    # even when PDF explicitly falls back to the local parser.
-    required.append("mineru")
+    # DOCX 仍走 MinerU；仅在默认 mineru PDF 解析器下把 MinerU 视为就绪必要条件。
+    # local PDF 回退时允许 MinerU 缺席（DOCX 会在入库时失败）。
+    if s.pdf_parser.strip().lower() == "mineru":
+        required.append("mineru")
     return tuple(required)
 
 
