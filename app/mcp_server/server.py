@@ -75,7 +75,11 @@ def create_mcp_server(
         auth_settings = AuthSettings(
             issuer_url=AnyHttpUrl(active_settings.mcp_auth_issuer),
             resource_server_url=AnyHttpUrl(active_settings.mcp_resource_server_url),
-            required_scopes=["rag.search", "rag.resource.read"],
+            # The transport authenticates the client, while each operation enforces
+            # its own least-privilege permission below. Requiring both permissions
+            # here would incorrectly reject search-only and resource-only clients
+            # before the requested Tool or Resource is known.
+            required_scopes=[],
         )
 
     mcp = FastMCP(

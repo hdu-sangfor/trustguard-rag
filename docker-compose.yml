@@ -160,7 +160,7 @@ services:
       RAG_MCP_AUTH_AUDIENCE: ${RAG_MCP_AUTH_AUDIENCE:-trustguard-rag-mcp}
       RAG_MCP_AUTH_JWKS_URL: ${RAG_MCP_AUTH_JWKS_URL:-}
       RAG_MCP_RESOURCE_SERVER_URL: ${RAG_MCP_RESOURCE_SERVER_URL:-http://localhost:18201/mcp}
-      RAG_MCP_ALLOWED_HOSTS: ${RAG_MCP_ALLOWED_HOSTS:-localhost,localhost:18201,127.0.0.1,127.0.0.1:18201,rag-mcp,rag-mcp:18201}
+      RAG_MCP_ALLOWED_HOSTS: ${RAG_MCP_ALLOWED_HOSTS:-localhost,localhost:18201,127.0.0.1,127.0.0.1:18201,host.docker.internal,host.docker.internal:18201,rag-mcp,rag-mcp:18201}
       RAG_MCP_ALLOWED_ORIGINS: ${RAG_MCP_ALLOWED_ORIGINS:-}
     env_file: *optional-env-files
     depends_on:
