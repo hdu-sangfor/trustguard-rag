@@ -1,0 +1,37 @@
+{
+  "schema_version": "trustguard-knowledge-search-v1",
+  "request_id": "req-contract-001",
+  "scope": "penetration",
+  "status": "ok",
+  "content_revision": "sha256:scope-revision",
+  "hits": [
+    {
+      "resource_uri": "trustguard-rag://penetration/resources/krf1.contract-fixture",
+      "resource_ref": "krf1.contract-fixture",
+      "source_revision": 17,
+      "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "snippet": "Apache Shiro 的 RememberMe 功能需要验证反序列化风险。",
+      "score": 0.91,
+      "title": "Shiro 安全检测指南",
+      "document_id": "c6fbc783-657e-4ffc-adc7-b6b3866c6c0d",
+      "filename": "shiro-guide.pdf",
+      "page_no": 12,
+      "source_uri": "upload://shiro-guide.pdf",
+      "source_type": "document",
+      "workflow_type": null,
+      "effectiveness": null,
+      "visibility": "global",
+      "expanded": false
+    }
+  ],
+  "query_plan": {
+    "intent": "comprehensive",
+    "source": "explicit"
+  },
+  "coverage": {
+    "status": "not_applicable",
+    "warning": null
+  },
+  "degraded_components": [],
+  "latency_ms": 631.2
+}

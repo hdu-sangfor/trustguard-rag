@@ -27,6 +27,7 @@ class KnowledgeBaseResponse(BaseModel):
     embedding_api_driver: str | None = None
     embedding_model: str
     embedding_dim: int
+    content_revision: int = 0
     is_default: bool = False
     is_system: bool = False
     document_count: int = 0

@@ -1,0 +1,12 @@
+{
+  "schema_version": "trustguard-knowledge-resource-v1",
+  "scope": "penetration",
+  "content_revision": "17",
+  "resource_ref": "krf1.invalid-fixture",
+  "source_revision": 1,
+  "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "text": "",
+  "source_type": "document",
+  "visibility": "global",
+  "metadata": {}
+}

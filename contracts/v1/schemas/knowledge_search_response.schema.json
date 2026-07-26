@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trustguard.local/contracts/v1/knowledge_search_response.schema.json",
+  "title": "TrustGuard Knowledge Search Response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "request_id",
+    "scope",
+    "status",
+    "content_revision",
+    "hits",
+    "query_plan",
+    "coverage",
+    "degraded_components",
+    "latency_ms"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "trustguard-knowledge-search-v1"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "scope": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "status": {
+      "enum": ["ok", "degraded"]
+    },
+    "content_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "hits": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "resource_uri",
+          "resource_ref",
+          "source_revision",
+          "content_hash",
+          "snippet",
+          "score",
+          "source_type",
+          "visibility",
+          "expanded"
+        ],
+        "properties": {
+          "resource_uri": {
+            "type": "string",
+            "pattern": "^trustguard-rag://"
+          },
+          "resource_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "pattern": "^krf1\\."
+          },
+          "source_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "snippet": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "score": {
+            "type": "number"
+          },
+          "title": {
+            "type": ["string", "null"],
+            "maxLength": 512
+          },
+          "document_id": {
+            "type": ["string", "null"],
+            "maxLength": 128
+          },
+          "filename": {
+            "type": ["string", "null"],
+            "maxLength": 512
+          },
+          "page_no": {
+            "type": ["integer", "null"],
+            "minimum": 1
+          },
+          "source_uri": {
+            "type": ["string", "null"],
+            "maxLength": 2048
+          },
+          "source_type": {
+            "enum": ["document", "experience", "playbook"]
+          },
+          "workflow_type": {
+            "type": ["string", "null"],
+            "maxLength": 64
+          },
+          "effectiveness": {
+            "type": ["string", "null"],
+            "enum": [null, "unknown", "promising", "effective", "ineffective"]
+          },
+          "visibility": {
+            "enum": ["global", "workspace"]
+          },
+          "expanded": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "query_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intent", "source"],
+      "properties": {
+        "intent": {
+          "enum": ["auto", "focused", "comprehensive", "enumeration"]
+        },
+        "source": {
+          "enum": ["explicit", "heuristic", "llm"]
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "warning"],
+      "properties": {
+        "status": {
+          "enum": ["complete", "partial", "not_applicable", "unknown"]
+        },
+        "warning": {
+          "type": ["string", "null"],
+          "maxLength": 1000
+        }
+      }
+    },
+    "degraded_components": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": ["vector", "keyword", "rerank", "rewrite", "federation"]
+      }
+    },
+    "latency_ms": {
+      "type": "number",
+      "minimum": 0
+    }
+  }
+}

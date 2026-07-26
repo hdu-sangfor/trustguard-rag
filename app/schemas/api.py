@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -29,3 +30,14 @@ class HealthResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str
     detail: str | None = None
+
+
+class StableErrorResponse(BaseModel):
+    """所有 v1 API 错误共用的稳定信封。"""
+
+    schema_version: Literal["trustguard-error-v1"] = "trustguard-error-v1"
+    request_id: str
+    code: str
+    message: str
+    retryable: bool
+    detail: Any = None

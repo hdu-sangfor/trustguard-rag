@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.core.embedding.profiles import get_embedding_profile
+from app.core.retrieval.query_planner import get_query_planner
 from app.schemas.search import SearchRequest
 from app.stores.knowledge_base_store import get_knowledge_base_store
 from app.stores.models import KnowledgeBaseRow
@@ -42,16 +43,26 @@ async def resolve_search_execution(
         else {}
     )
     filters["knowledge_base_id"] = knowledge_base.id
+    plan = await get_query_planner().plan(
+        request.query,
+        requested_mode=request.retrieval_mode,
+        enable_query_rewrite=request.enable_query_rewrite,
+        top_k=request.top_k,
+        vector_top_k=request.vector_top_k,
+        keyword_top_k=request.keyword_top_k,
+        max_chunks_per_document=request.max_chunks_per_document,
+    )
+    query_plan = plan.as_dict()
 
     return SearchExecutionContext(
         knowledge_base=knowledge_base,
         search_kwargs={
             "query": request.query,
             "knowledge_base_id": knowledge_base.id,
-            "top_k": request.top_k,
-            "vector_top_k": request.vector_top_k,
-            "keyword_top_k": request.keyword_top_k,
-            "max_chunks_per_document": request.max_chunks_per_document,
+            "top_k": plan.top_k,
+            "vector_top_k": plan.vector_top_k,
+            "keyword_top_k": plan.keyword_top_k,
+            "max_chunks_per_document": plan.max_chunks_per_document,
             "fusion_method": request.fusion_method,
             "vector_weight": request.vector_weight,
             "keyword_weight": request.keyword_weight,
@@ -71,5 +82,10 @@ async def resolve_search_execution(
             ),
             "require_exact_entity_match": request.require_exact_entity_match,
             "component_max_retries": request.component_max_retries,
+            "semantic_queries": list(plan.semantic_queries),
+            "keyword_queries": list(plan.keyword_queries),
+            "rerank_candidate_top_k": plan.rerank_candidate_top_k,
+            "query_plan": query_plan,
+            "adjacent_chunk_radius": plan.adjacent_chunk_radius,
         },
     )

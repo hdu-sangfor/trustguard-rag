@@ -43,6 +43,30 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 18200
     rag_mode: str = "ingest"  # 健康检查模式取值：ingest | full
+    default_workspace_id: str = "default"
+    gateway_auth_enabled: bool = False
+    gateway_service_token: str | None = None
+    internal_service_token: str | None = None
+    resource_ref_secret: str | None = None
+
+    # --- MCP Gateway（独立进程，默认关闭） ---
+    mcp_enabled: bool = False
+    mcp_host: str = "0.0.0.0"
+    mcp_port: int = 18201
+    mcp_backend_url: str = "http://127.0.0.1:18200"
+    mcp_scope_mapping_json: str = "{}"
+    mcp_request_timeout_seconds: float = 10.0
+    mcp_rrf_k: int = 60
+    mcp_snippet_max_chars: int = 4000
+    mcp_resource_max_chars: int = 32000
+    mcp_auth_enabled: bool = False
+    mcp_auth_issuer: str | None = None
+    mcp_auth_audience: str = "trustguard-rag-mcp"
+    mcp_auth_jwks_url: str | None = None
+    mcp_resource_server_url: str = "http://localhost:18201/mcp"
+    mcp_jwt_algorithms: str = "RS256,ES256"
+    mcp_allowed_hosts: str = "localhost,localhost:18201,127.0.0.1,127.0.0.1:18201"
+    mcp_allowed_origins: str = ""
 
     # --- 入库 ---
     ingest_max_pdf_bytes: int = 52_428_800
@@ -205,6 +229,13 @@ class Settings(BaseSettings):
     search_opensearch_mock: bool = True  # 设为 True 时使用内存模拟 BM25，无需真实 OpenSearch
     search_component_max_retries: int = 2
     search_component_retry_backoff_seconds: float = 0.25
+    query_planner_enabled: bool = True
+    query_planner_llm_enabled: bool = True
+    query_planner_timeout_seconds: float = 3.0
+    query_planner_max_rewritten_queries: int = 3
+    query_planner_cache_ttl_seconds: int = 600
+    query_planner_cache_size: int = 256
+    query_planner_min_confidence: float = 0.65
 
     # --- 健康检查 ---
     health_check_timeout_seconds: float = 3.0
@@ -227,6 +258,33 @@ class Settings(BaseSettings):
         if self.search_component_retry_backoff_seconds < 0:
             raise ValueError(
                 "RAG_SEARCH_COMPONENT_RETRY_BACKOFF_SECONDS 不能小于 0"
+            )
+        if self.query_planner_timeout_seconds <= 0:
+            raise ValueError("RAG_QUERY_PLANNER_TIMEOUT_SECONDS 必须大于 0")
+        if not 1 <= self.query_planner_max_rewritten_queries <= 5:
+            raise ValueError(
+                "RAG_QUERY_PLANNER_MAX_REWRITTEN_QUERIES 必须在 1 到 5 之间"
+            )
+        if self.query_planner_cache_ttl_seconds < 0:
+            raise ValueError("RAG_QUERY_PLANNER_CACHE_TTL_SECONDS 不能小于 0")
+        if not 1 <= self.query_planner_cache_size <= 4096:
+            raise ValueError("RAG_QUERY_PLANNER_CACHE_SIZE 必须在 1 到 4096 之间")
+        if not 0 <= self.query_planner_min_confidence <= 1:
+            raise ValueError("RAG_QUERY_PLANNER_MIN_CONFIDENCE 必须位于 [0, 1]")
+        if self.mcp_request_timeout_seconds <= 0:
+            raise ValueError("RAG_MCP_REQUEST_TIMEOUT_SECONDS 必须大于 0")
+        if self.mcp_rrf_k <= 0:
+            raise ValueError("RAG_MCP_RRF_K 必须大于 0")
+        if not 1 <= self.mcp_snippet_max_chars <= 4000:
+            raise ValueError("RAG_MCP_SNIPPET_MAX_CHARS 必须在 1 到 4000 之间")
+        if not 1 <= self.mcp_resource_max_chars <= 32000:
+            raise ValueError("RAG_MCP_RESOURCE_MAX_CHARS 必须在 1 到 32000 之间")
+        if self.mcp_auth_enabled and (
+            not self.mcp_auth_issuer or not self.mcp_auth_jwks_url
+        ):
+            raise ValueError(
+                "启用 MCP 鉴权时必须配置 RAG_MCP_AUTH_ISSUER 和 "
+                "RAG_MCP_AUTH_JWKS_URL"
             )
         if not 1 <= self.embedding_local_model_cache_size <= 8:
             raise ValueError(
@@ -254,6 +312,14 @@ class Settings(BaseSettings):
         if enabled_mocks:
             raise ValueError(
                 "Production cannot enable mock retrieval backends: " + ", ".join(enabled_mocks)
+            )
+        if self.mcp_enabled and not (self.internal_service_token or "").strip():
+            raise ValueError(
+                "Production MCP requires RAG_INTERNAL_SERVICE_TOKEN"
+            )
+        if self.mcp_enabled and not self.mcp_auth_enabled:
+            raise ValueError(
+                "Production MCP requires RAG_MCP_AUTH_ENABLED=true"
             )
         return self
 

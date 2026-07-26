@@ -13,6 +13,22 @@ docker compose up -d --build
 curl http://localhost:18200/health
 ```
 
+开发环境默认允许直接调用 RAG 业务 REST。生产环境必须启用 Agent Gateway 服务身份，且
+Gateway Token 与 MCP 内部 Token 必须使用不同的随机值：
+
+```dotenv
+RAG_GATEWAY_AUTH_ENABLED=true
+RAG_GATEWAY_SERVICE_TOKEN=replace-with-a-different-long-random-service-token
+RAG_INTERNAL_SERVICE_TOKEN=replace-with-a-long-random-service-token
+RAG_RESOURCE_REF_SECRET=replace-with-another-random-secret-at-least-32-characters
+```
+
+启用后，`/v1/search`、`/v1/answer`、知识库、文档、入库和 OCR 接口都要求
+`Authorization: Bearer <RAG_GATEWAY_SERVICE_TOKEN>`。健康检查和 `/v1/internal/*` 不使用
+该身份；内部接口只接受独立的 `RAG_INTERNAL_SERVICE_TOKEN`。
+生产环境还要求 `RAG_RESOURCE_REF_SECRET` 至少 32 字符，用于签发防篡改的不透明资源引用。
+生产反向代理或 API Gateway 必须屏蔽 `/v1/internal/*`；Compose 暴露 18200 仅用于本地开发。
+
 ### 国内网络加速
 
 `.env.example` 参考 `trustguard-agent` 统一配置了 Docker Hub、PyPI/uv 和
@@ -53,6 +69,8 @@ docker compose up -d --build
 uv sync
 docker compose up -d mysql qdrant opensearch redis rabbitmq minio
 uv run uvicorn app.main:app --reload --port 18200
+# 配好 RAG_MCP_SCOPE_MAPPING_JSON 后，可独立启动只读 MCP Gateway
+RAG_MCP_ENABLED=true uv run uvicorn app.mcp_server.main:app --port 18201
 # 另开终端启动可靠任务 Worker
 uv run python -m app.workers.main
 uv run python -m pytest
@@ -66,6 +84,7 @@ uv run python -m pytest
 | 服务 | 端口 |
 |------|------|
 | rag-service | 18200 |
+| rag-mcp（Streamable HTTP `/mcp`） | 18201 |
 | mineru-api | 18220 |
 | mysql | 18210 |
 | redis | 18211 |
@@ -161,6 +180,7 @@ Worker 会延迟重试，超过任务最大尝试次数后才标记为失败。
 ```bash
 curl -X POST http://localhost:18200/v1/search \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${RAG_GATEWAY_SERVICE_TOKEN}" \
   -d '{
     "query":"如何防御 SQL 注入？",
     "knowledge_base_id":"<knowledge_base_id>",
@@ -183,11 +203,15 @@ curl -X POST http://localhost:18200/v1/search \
 
 启动时的 OpenSearch 与 Qdrant 回填会为已有文档补齐这些字段，新文档则在入库时直接写入。
 
-融合和精确命中置顶完成后，服务会先限制每篇文档进入 rerank 的候选池，再按 rerank
-结果执行最终文档级去重。这样不会因融合阶段的初始排序过早丢弃同一文档中更相关的
-chunk。请求参数 `max_chunks_per_document` 控制最终每篇文档最多保留多少个分块，默认值为
-`1`，允许范围为 `1` 到 `10`。响应中的 `deduplicated_chunks` 表示本次去除的重复分块
-数量。若业务需要同一文档的多个上下文片段，可以显式调高该参数。
+服务会先规划查询意图，再执行融合、rerank 和最终文档级去重。`retrieval_mode=auto`
+时，高置信规则优先识别精准、综合和枚举问题，模糊问题可由配置的回答 LLM 生成受控的
+语义/关键词改写；规划失败不会中断搜索。`max_chunks_per_document` 为空时按意图自动取
+`3`、`5` 或 `10`，用户显式值始终优先。综合与枚举模式还会扩展命中分块的相邻内容。
+响应中的 `query_plan` 会返回规划来源、改写和实际预算。
+
+枚举模式会提高召回、rerank 和回答上下文预算，但仍属于相关性检索，因此响应会设置
+`coverage_status=partial` 并明确提示不能保证覆盖全部条款。入库时会识别常见的“第 X
+章/第 X 条”并保存结构元数据，后续可在此基础上增加严格的章节遍历。
 
 默认启用检索拒答：
 
@@ -204,6 +228,45 @@ chunk。请求参数 `max_chunks_per_document` 控制最终每篇文档最多保
 调用次数，通过 `recovered_components` 标识重试后恢复的组件。只有重试耗尽后才进入
 `degraded`；可用 `component_max_retries` 按请求覆盖，或通过
 `RAG_SEARCH_COMPONENT_MAX_RETRIES` 设置服务默认值。
+
+## 只读 MCP Gateway
+
+MCP Gateway 与 REST Core 使用同一镜像、独立进程和端口。它只提供
+`knowledge_search` Tool 与一个不透明 Resource Ref Template，不开放上传、删除、回答生成或
+经验写入。先把逻辑 Scope 映射到一个或多个知识库：
+
+```dotenv
+RAG_MCP_ENABLED=true
+RAG_INTERNAL_SERVICE_TOKEN=replace-with-a-long-random-service-token
+RAG_RESOURCE_REF_SECRET=replace-with-another-random-secret-at-least-32-characters
+RAG_MCP_SCOPE_MAPPING_JSON={"compliance":{"knowledge_base_ids":["<kb-id-1>","<kb-id-2>"],"default_mode":"comprehensive","per_knowledge_base_limit":20,"allowed_content_types":["legal_article","security_guide"],"allowed_workflow_types":["compliance"]}}
+```
+
+Compose 会在 `http://localhost:18201/mcp` 启动无状态 Streamable HTTP Server：
+
+```bash
+docker compose up -d --build rag-service rag-mcp
+npx -y @modelcontextprotocol/inspector@latest --cli \
+  http://localhost:18201/mcp --transport http --method tools/list
+```
+
+多知识库 Scope 只由 RAG Core 的 `KnowledgeApplicationService.search_scope` 解析和执行。
+MCP 携带内部服务身份调用 `POST /v1/internal/knowledge/search-scope`；普通 REST 和评测调用
+`POST /v1/search/scope`，三条路径复用同一套逐库授权、跨库 RRF、配额、去重、Coverage 和
+降级语义。当前单租户固定为 `workspace_id=default`，Scope 与 JWT 中的 Workflow Allowlist
+会继续收窄 workspace/经验内容。
+
+新命中返回 `trustguard-rag://{scope}/resources/{resource_ref}`。`resource_ref` 不暴露物理
+知识库或 Chunk ID，回读时直接定位唯一来源并校验来源 revision/content hash；无关知识库
+更新不会使引用失效。服务尚未上线，因此不保留旧 Chunk URI、裸 Chunk 读取和内部单知识库
+Search 兼容接口。`/health/live`、`/health/ready` 和 `/metrics` 用于独立探活和监控。
+
+生产环境必须设置 `RAG_INTERNAL_SERVICE_TOKEN` 和 `RAG_MCP_AUTH_ENABLED=true`，并配置
+issuer、audience 和 JWKS URL；缺少内部服务身份或启用 MCP 后未开启 OAuth 时启动失败。
+Gateway 验证 Client Credentials 获取的短期 JWT，包括签名、`iss`、`aud`、`exp`、
+OAuth scope 以及 `knowledge_scopes`；MCP 凭证不能用于管理接口和后续经验写入。
+可选 `workspace_id` 和 `workflow_types` Claim 只在 JWT 验证后传入 RAG，非默认 Workspace
+会被拒绝。
 
 ## RabbitMQ Worker 与 Outbox
 

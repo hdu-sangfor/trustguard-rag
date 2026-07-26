@@ -13,6 +13,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.settings import Settings, get_settings
 
 PAGE_MARKER = re.compile(r"(?:^|\n)--- Page (\d+) ---\n")
+CHAPTER_HEADING = re.compile(r"第\s*([一二三四五六七八九十百千万零〇两\d]+)\s*章")
+ARTICLE_HEADING = re.compile(r"第\s*([一二三四五六七八九十百千万零〇两\d]+)\s*条")
 
 # 优先保留文档结构和中文句子边界，最后才退化为任意字符切分。
 CHINESE_SEPARATORS = ["\n\n", "\n", "。", "！", "？", "；", "，", " ", ""]
@@ -185,7 +187,9 @@ def chunk_extracted_text(
 
     parts = PAGE_MARKER.split(text)
     if len(parts) == 1:
-        return _split_page(text, None, settings=current, token_counter=counter)
+        return _annotate_legal_structure(
+            _split_page(text, None, settings=current, token_counter=counter)
+        )
 
     preamble = parts[0].strip()
     if preamble:
@@ -202,4 +206,24 @@ def chunk_extracted_text(
                 token_counter=counter,
             )
         )
+    return _annotate_legal_structure(chunks)
+
+
+def _annotate_legal_structure(chunks: list[ChunkDraft]) -> list[ChunkDraft]:
+    """顺序识别法规章节和条款编号，为后续结构化扩展保留轻量元数据。"""
+    current_chapter: str | None = None
+    current_article: str | None = None
+    for chunk in chunks:
+        chapter = CHAPTER_HEADING.search(chunk.text)
+        article = ARTICLE_HEADING.search(chunk.text)
+        if chapter:
+            current_chapter = chapter.group(1)
+            current_article = None
+        if article:
+            current_article = article.group(1)
+        if current_chapter is not None:
+            chunk.metadata["chapter_no"] = current_chapter
+        if current_article is not None:
+            chunk.metadata["article_no"] = current_article
+            chunk.metadata["content_type"] = "legal_article"
     return chunks

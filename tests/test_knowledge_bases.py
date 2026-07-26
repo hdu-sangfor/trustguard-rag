@@ -97,7 +97,10 @@ async def test_search_forces_knowledge_base_filter(client, monkeypatch) -> None:
                 "degraded_components": [],
             }
 
-    monkeypatch.setattr("app.api.search.get_hybrid_search", lambda: _Search())
+    monkeypatch.setattr(
+        "app.application.knowledge.get_hybrid_search",
+        lambda: _Search(),
+    )
     response = await client.post(
         "/v1/search",
         json={

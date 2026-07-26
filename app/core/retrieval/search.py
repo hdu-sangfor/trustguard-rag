@@ -19,6 +19,7 @@ from app.core.retrieval.vector_retriever import get_vector_retriever
 from app.domain import EffectiveSearchMode, RetrievalComponent, SearchStatus
 from app.settings import get_settings
 from app.stores.document_store import get_document_store
+from app.stores.chunk_store import get_chunk_store
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,13 @@ class SearchUnavailableError(RuntimeError):
 class HybridSearch:
     """混合检索门面，协调向量检索、关键词检索、融合和重排。"""
 
-    def __init__(self, document_store=None) -> None:
+    def __init__(self, document_store=None, chunk_store=None) -> None:
         self._settings = get_settings()
         self._vector = get_vector_retriever()
         self._keyword = get_keyword_retriever()
         self._reranker = get_reranker()
         self._documents = document_store or get_document_store()
+        self._chunks = chunk_store or get_chunk_store()
 
     async def search(
         self,
@@ -59,6 +61,11 @@ class HybridSearch:
         min_vector_score: float | None = None,
         require_exact_entity_match: bool = True,
         component_max_retries: int | None = None,
+        semantic_queries: list[str] | None = None,
+        keyword_queries: list[str] | None = None,
+        rerank_candidate_top_k: int | None = None,
+        query_plan: dict[str, Any] | None = None,
+        adjacent_chunk_radius: int = 0,
     ) -> dict[str, Any]:
         t0 = time.perf_counter()
         knowledge_base_id = knowledge_base_id.strip()
@@ -66,6 +73,13 @@ class HybridSearch:
             raise ValueError("knowledge_base_id is required")
         if not 1 <= max_chunks_per_document <= 10:
             raise ValueError("max_chunks_per_document must be between 1 and 10")
+        rerank_candidate_top_k = (
+            rerank_candidate_top_k or self._settings.rerank_top_k
+        )
+        if not 1 <= rerank_candidate_top_k <= 200:
+            raise ValueError("rerank_candidate_top_k must be between 1 and 200")
+        if not 0 <= adjacent_chunk_radius <= 3:
+            raise ValueError("adjacent_chunk_radius must be between 0 and 3")
         scoped_filters = dict(filters or {})
         scoped_filters["knowledge_base_id"] = knowledge_base_id
         query_entity_ids = extract_security_entity_ids(query)
@@ -104,8 +118,9 @@ class HybridSearch:
             tasks.append(
                 (
                     RetrievalComponent.VECTOR,
-                    lambda: vector_retriever.retrieve(
-                        query,
+                    lambda: _retrieve_query_variants(
+                        vector_retriever,
+                        [query, *(semantic_queries or [])],
                         vector_top_k,
                         scoped_filters,
                     ),
@@ -115,8 +130,9 @@ class HybridSearch:
             tasks.append(
                 (
                     RetrievalComponent.KEYWORD,
-                    lambda: self._keyword.retrieve(
-                        query,
+                    lambda: _retrieve_query_variants(
+                        self._keyword,
+                        [query, *(keyword_queries or [])],
                         keyword_top_k,
                         scoped_filters,
                     ),
@@ -200,6 +216,12 @@ class HybridSearch:
             for item in merged
             if str(item.get("document_id")) in ready_ids
         ]
+        if adjacent_chunk_radius and merged:
+            merged = await self._expand_adjacent_chunks(
+                merged,
+                knowledge_base_id=knowledge_base_id,
+                radius=adjacent_chunk_radius,
+            )
         merged = _promote_exact_entity_matches(merged, query_entity_ids)
         abstained = False
         abstention_reason: str | None = None
@@ -256,7 +278,7 @@ class HybridSearch:
                 max_chunks_per_document=max(max_chunks_per_document, 3),
             )
             deduplicated_chunks += removed_before_rerank
-            rerank_candidates = candidate_pool[: self._settings.rerank_top_k]
+            rerank_candidates = candidate_pool[:rerank_candidate_top_k]
             try:
                 merged = await self._reranker.rerank(query, rerank_candidates, top_k)
             except RerankError as error:
@@ -301,7 +323,78 @@ class HybridSearch:
             "min_vector_score": active_min_vector_score,
             "component_attempts": component_attempts,
             "recovered_components": recovered_components,
+            "query_plan": query_plan,
+            "coverage_status": (
+                "partial"
+                if (query_plan or {}).get("intent") == "enumeration"
+                else "not_applicable"
+            ),
+            "coverage_warning": (
+                "结果来自相关性检索，不能保证覆盖知识库中的全部条款或项目。"
+                if (query_plan or {}).get("intent") == "enumeration"
+                else None
+            ),
         }
+
+    async def _expand_adjacent_chunks(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        knowledge_base_id: str,
+        radius: int,
+    ) -> list[dict[str, Any]]:
+        """把命中分块的相邻内容作为低权重候选加入 rerank。"""
+        anchors = [
+            (str(item["document_id"]), int(item["chunk_index"]))
+            for item in items
+            if item.get("document_id") and item.get("chunk_index") is not None
+        ]
+        rows = await self._chunks.neighbors_for_anchors(
+            anchors,
+            knowledge_base_id=knowledge_base_id,
+            radius=radius,
+        )
+        existing_ids = {
+            str(item.get("chunk_id") or item.get("_id")) for item in items
+        }
+        anchors_by_document: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            if item.get("document_id") and item.get("chunk_index") is not None:
+                anchors_by_document.setdefault(str(item["document_id"]), []).append(item)
+
+        expanded = list(items)
+        for chunk, document in rows:
+            if chunk.id in existing_ids:
+                continue
+            candidates = anchors_by_document.get(chunk.document_id, [])
+            if not candidates:
+                continue
+            anchor = min(
+                candidates,
+                key=lambda item: abs(int(item["chunk_index"]) - chunk.chunk_index),
+            )
+            distance = abs(int(anchor["chunk_index"]) - chunk.chunk_index)
+            expanded.append(
+                {
+                    "chunk_id": chunk.id,
+                    "document_id": chunk.document_id,
+                    "chunk_index": chunk.chunk_index,
+                    "text": chunk.text,
+                    "score": float(anchor.get("score", 0.0)) * (0.9**distance),
+                    "page_no": chunk.page_no,
+                    "source_uri": document.source_uri,
+                    "original_filename": document.original_filename,
+                    "title": document.title,
+                    "metadata": chunk.metadata_json or {},
+                    "expanded": True,
+                }
+            )
+            existing_ids.add(chunk.id)
+        return sorted(
+            expanded,
+            key=lambda item: float(item.get("score", 0.0)),
+            reverse=True,
+        )
 
 
 async def _retrieve_with_retry(
@@ -322,6 +415,67 @@ async def _retrieve_with_retry(
             if backoff_seconds > 0:
                 await asyncio.sleep(backoff_seconds * (2 ** (attempt - 1)))
     raise AssertionError("unreachable")
+
+
+async def _retrieve_query_variants(
+    retriever: Any,
+    queries: list[str],
+    top_k: int,
+    filters: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """并发执行去重后的原始/改写查询，并按 chunk 保留最高分结果。"""
+    unique_queries = list(
+        dict.fromkeys(query.strip() for query in queries if query.strip())
+    )
+    gathered = await asyncio.gather(
+        *(retriever.retrieve(item, top_k, filters) for item in unique_queries),
+        return_exceptions=True,
+    )
+    if any(isinstance(item, asyncio.CancelledError) for item in gathered):
+        raise asyncio.CancelledError
+    successful = [
+        (query, result)
+        for query, result in zip(unique_queries, gathered)
+        if not isinstance(result, BaseException)
+    ]
+    if not successful:
+        error = next(
+            (item for item in gathered if isinstance(item, BaseException)),
+            RuntimeError("all query variants failed"),
+        )
+        raise error
+
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for variant_query, results in successful:
+        for position, item in enumerate(results):
+            key = str(
+                item.get("chunk_id")
+                or item.get("_id")
+                or f"{variant_query}:{position}"
+            )
+            candidate = dict(item)
+            candidate["matched_queries"] = [variant_query]
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = candidate
+                order.append(key)
+                continue
+            matched = list(existing.get("matched_queries") or [])
+            if variant_query not in matched:
+                matched.append(variant_query)
+            if float(candidate.get("score", 0.0)) > float(
+                existing.get("score", 0.0)
+            ):
+                candidate["matched_queries"] = matched
+                merged[key] = candidate
+            else:
+                existing["matched_queries"] = matched
+    return sorted(
+        (merged[key] for key in order),
+        key=lambda item: float(item.get("score", 0.0)),
+        reverse=True,
+    )[:top_k]
 
 
 def _effective_mode(
@@ -497,6 +651,7 @@ def _format_results(merged: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "page_no": item.get("page_no"),
             },
             "metadata": item.get("metadata"),
+            "expanded": bool(item.get("expanded", False)),
         }
         )
     return results

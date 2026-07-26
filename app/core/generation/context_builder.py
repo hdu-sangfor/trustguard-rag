@@ -66,13 +66,19 @@ class ContextBuilder:
         self._settings = settings or get_settings()
         self._token_counter = token_counter or chunker.get_token_counter(self._settings)
 
-    def build(self, results: list[dict[str, Any]]) -> ContextBundle:
+    def build(
+        self,
+        results: list[dict[str, Any]],
+        *,
+        max_chunks: int | None = None,
+    ) -> ContextBundle:
         """构建不超过配置预算的 JSON 证据数组。"""
         selected: list[Evidence] = []
         seen_chunk_ids: set[str] = set()
+        chunk_limit = max_chunks or self._settings.answer_max_context_chunks
 
         for item in results:
-            if len(selected) >= self._settings.answer_max_context_chunks:
+            if len(selected) >= chunk_limit:
                 break
             chunk_id = str(item.get("chunk_id") or "").strip()
             text = str(item.get("text") or "").strip()

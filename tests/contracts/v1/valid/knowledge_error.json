@@ -1,0 +1,10 @@
+{
+  "schema_version": "trustguard-knowledge-error-v1",
+  "request_id": "req-contract-003",
+  "code": "RAG_TIMEOUT",
+  "message": "Knowledge retrieval timed out",
+  "retryable": true,
+  "details": {
+    "component": "vector"
+  }
+}

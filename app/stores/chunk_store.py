@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain import DocumentStatus
 from app.stores.db import get_engine
-from app.stores.models import ChunkRow
+from app.stores.models import ChunkRow, DocumentRow, KnowledgeBaseRow
 
 
 class ChunkStore:
@@ -75,6 +76,94 @@ class ChunkStore:
         async with AsyncSession(get_engine()) as session:
             result = await session.execute(select(ChunkRow).where(ChunkRow.id.in_(chunk_ids)))
             return list(result.scalars().all())
+
+    async def get_scoped_active(
+        self, *, knowledge_base_id: str, chunk_id: str
+    ) -> tuple[ChunkRow, DocumentRow, KnowledgeBaseRow] | None:
+        """精确读取指定知识库内仍可检索的 Chunk，禁止跨库和读取未发布文档。"""
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(
+                select(ChunkRow, DocumentRow, KnowledgeBaseRow)
+                .join(DocumentRow, DocumentRow.id == ChunkRow.document_id)
+                .join(
+                    KnowledgeBaseRow,
+                    KnowledgeBaseRow.id == DocumentRow.knowledge_base_id,
+                )
+                .where(
+                    ChunkRow.id == chunk_id,
+                    ChunkRow.status == "active",
+                    DocumentRow.knowledge_base_id == knowledge_base_id,
+                    DocumentRow.status == DocumentStatus.READY,
+                )
+            )
+            return result.one_or_none()
+
+    async def get_scoped_active_many(
+        self,
+        identities: list[tuple[str, str]],
+    ) -> dict[tuple[str, str], tuple[ChunkRow, DocumentRow, KnowledgeBaseRow]]:
+        """批量解析物理 `(knowledge_base_id, chunk_id)`，仅返回活动且已发布来源。"""
+        requested = set(identities)
+        if not requested:
+            return {}
+        chunk_ids = list(dict.fromkeys(chunk_id for _, chunk_id in identities))
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(
+                select(ChunkRow, DocumentRow, KnowledgeBaseRow)
+                .join(DocumentRow, DocumentRow.id == ChunkRow.document_id)
+                .join(
+                    KnowledgeBaseRow,
+                    KnowledgeBaseRow.id == DocumentRow.knowledge_base_id,
+                )
+                .where(
+                    ChunkRow.id.in_(chunk_ids),
+                    ChunkRow.status == "active",
+                    DocumentRow.status == DocumentStatus.READY,
+                )
+            )
+            resolved: dict[
+                tuple[str, str],
+                tuple[ChunkRow, DocumentRow, KnowledgeBaseRow],
+            ] = {}
+            for chunk, document, knowledge_base in result.all():
+                identity = (knowledge_base.id, chunk.id)
+                if identity in requested:
+                    resolved[identity] = (chunk, document, knowledge_base)
+            return resolved
+
+    async def neighbors_for_anchors(
+        self,
+        anchors: list[tuple[str, int]],
+        *,
+        knowledge_base_id: str,
+        radius: int,
+    ) -> list[tuple[ChunkRow, DocumentRow]]:
+        """返回同知识库中命中分块附近的活动分块及其文档信息。"""
+        if not anchors or radius <= 0:
+            return []
+        ranges = [
+            and_(
+                ChunkRow.document_id == document_id,
+                ChunkRow.chunk_index.between(
+                    max(0, chunk_index - radius),
+                    chunk_index + radius,
+                ),
+            )
+            for document_id, chunk_index in dict.fromkeys(anchors)
+        ]
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(
+                select(ChunkRow, DocumentRow)
+                .join(DocumentRow, DocumentRow.id == ChunkRow.document_id)
+                .where(
+                    DocumentRow.knowledge_base_id == knowledge_base_id,
+                    DocumentRow.status == DocumentStatus.READY,
+                    ChunkRow.status == "active",
+                    or_(*ranges),
+                )
+                .order_by(ChunkRow.document_id, ChunkRow.chunk_index)
+            )
+            return list(result.all())
 
     async def delete_for_document(self, document_id: str) -> list[str]:
         """删除文档分块，并返回需要清理的向量点 ID。"""

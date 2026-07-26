@@ -1,0 +1,11 @@
+{
+  "schema_version": "trustguard-experience-event-v1",
+  "event_id": "outbox-event-002",
+  "event_type": "experience.status.promoted",
+  "aggregate_id": "agent-exp-001",
+  "occurred_at": "2026-07-24T08:00:00Z",
+  "producer": "workflow-llm",
+  "payload": {
+    "status": "proven"
+  }
+}

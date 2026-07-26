@@ -72,9 +72,14 @@ services:
     environment:
       RAG_MYSQL_HOST: mysql
       RAG_MYSQL_PORT: "3306"
-      RAG_MYSQL_USER: ${MYSQL_USER:-trustguard}
-      RAG_MYSQL_PASSWORD: ${MYSQL_PASSWORD:-trustguard}
-      RAG_MYSQL_DB: ${MYSQL_DATABASE:-trustguard_rag}
+      RAG_MYSQL_USER: ${RAG_MYSQL_USER:-trustguard}
+      RAG_MYSQL_PASSWORD: ${RAG_MYSQL_PASSWORD:-trustguard}
+      RAG_MYSQL_DB: ${RAG_MYSQL_DB:-trustguard_rag}
+      RAG_GATEWAY_AUTH_ENABLED: ${RAG_GATEWAY_AUTH_ENABLED:-false}
+      RAG_GATEWAY_SERVICE_TOKEN: ${RAG_GATEWAY_SERVICE_TOKEN:-}
+      RAG_INTERNAL_SERVICE_TOKEN: ${RAG_INTERNAL_SERVICE_TOKEN:-}
+      RAG_RESOURCE_REF_SECRET: ${RAG_RESOURCE_REF_SECRET:-}
+      RAG_MCP_SCOPE_MAPPING_JSON: '${RAG_MCP_SCOPE_MAPPING_JSON:-{}}'
       RAG_QDRANT_HOST: qdrant
       RAG_QDRANT_PORT: "6333"
       RAG_OPENSEARCH_HOST: opensearch
@@ -119,6 +124,59 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:18200/health', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  rag-mcp:
+    image: ${TRUSTGUARD_IMAGE_PREFIX:-trustguard-}rag-service
+    command:
+      [
+        "uvicorn",
+        "app.mcp_server.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "18201",
+      ]
+    ports:
+      - "18201:18201"
+    environment:
+      RAG_MCP_ENABLED: "true"
+      RAG_MCP_BACKEND_URL: http://rag-service:18200
+      RAG_MCP_SCOPE_MAPPING_JSON: '${RAG_MCP_SCOPE_MAPPING_JSON:-{}}'
+      RAG_INTERNAL_SERVICE_TOKEN: ${RAG_INTERNAL_SERVICE_TOKEN:-}
+      RAG_MCP_AUTH_ENABLED: ${RAG_MCP_AUTH_ENABLED:-false}
+      RAG_MCP_AUTH_ISSUER: ${RAG_MCP_AUTH_ISSUER:-}
+      RAG_MCP_AUTH_AUDIENCE: ${RAG_MCP_AUTH_AUDIENCE:-trustguard-rag-mcp}
+      RAG_MCP_AUTH_JWKS_URL: ${RAG_MCP_AUTH_JWKS_URL:-}
+      RAG_MCP_RESOURCE_SERVER_URL: ${RAG_MCP_RESOURCE_SERVER_URL:-http://localhost:18201/mcp}
+      RAG_MCP_ALLOWED_HOSTS: ${RAG_MCP_ALLOWED_HOSTS:-localhost,localhost:18201,127.0.0.1,127.0.0.1:18201,rag-mcp,rag-mcp:18201}
+      RAG_MCP_ALLOWED_ORIGINS: ${RAG_MCP_ALLOWED_ORIGINS:-}
+    env_file: *optional-env-files
+    depends_on:
+      rag-service:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:18201/health/live', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     restart: unless-stopped
 
   rag-worker:
@@ -133,9 +191,9 @@ services:
     environment:
       RAG_MYSQL_HOST: mysql
       RAG_MYSQL_PORT: "3306"
-      RAG_MYSQL_USER: ${MYSQL_USER:-trustguard}
-      RAG_MYSQL_PASSWORD: ${MYSQL_PASSWORD:-trustguard}
-      RAG_MYSQL_DB: ${MYSQL_DATABASE:-trustguard_rag}
+      RAG_MYSQL_USER: ${RAG_MYSQL_USER:-trustguard}
+      RAG_MYSQL_PASSWORD: ${RAG_MYSQL_PASSWORD:-trustguard}
+      RAG_MYSQL_DB: ${RAG_MYSQL_DB:-trustguard_rag}
       RAG_QDRANT_HOST: qdrant
       RAG_QDRANT_PORT: "6333"
       RAG_QDRANT_MOCK: "false"
@@ -182,10 +240,11 @@ services:
   mysql:
     image: ${MYSQL_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/library/mysql:8.0}
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-trustguard_rag}
-      MYSQL_USER: ${MYSQL_USER:-trustguard}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-trustguard}
+      # 官方 MySQL 镜像要求使用 MYSQL_*；值统一来自外部的 RAG_MYSQL_* 配置。
+      MYSQL_ROOT_PASSWORD: ${RAG_MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${RAG_MYSQL_DB:-trustguard_rag}
+      MYSQL_USER: ${RAG_MYSQL_USER:-trustguard}
+      MYSQL_PASSWORD: ${RAG_MYSQL_PASSWORD:-trustguard}
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
     ports:
       - "18210:3306"

@@ -1,0 +1,36 @@
+{
+  "contract_version": "v1",
+  "json_schema_draft": "https://json-schema.org/draft/2020-12/schema",
+  "rag_baseline": "origin/main@93d08d0",
+  "agent_baseline": "trustguard-agent/main@c8f3796",
+  "contracts": [
+    {
+      "name": "knowledge_search_request",
+      "schema": "schemas/knowledge_search_request.schema.json"
+    },
+    {
+      "name": "knowledge_search_response",
+      "schema": "schemas/knowledge_search_response.schema.json"
+    },
+    {
+      "name": "knowledge_resource",
+      "schema": "schemas/knowledge_resource.schema.json"
+    },
+    {
+      "name": "knowledge_error",
+      "schema": "schemas/knowledge_error.schema.json"
+    },
+    {
+      "name": "experience_upsert",
+      "schema": "schemas/experience_upsert.schema.json"
+    },
+    {
+      "name": "experience_feedback",
+      "schema": "schemas/experience_feedback.schema.json"
+    },
+    {
+      "name": "experience_event",
+      "schema": "schemas/experience_event.schema.json"
+    }
+  ]
+}

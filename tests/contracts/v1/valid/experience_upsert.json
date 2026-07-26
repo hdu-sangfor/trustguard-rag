@@ -1,0 +1,27 @@
+{
+  "schema_version": "trustguard-experience-upsert-v1",
+  "external_id": "agent-exp-001",
+  "source_system": "trustguard-agent",
+  "source_revision": 3,
+  "knowledge_scope": "penetration",
+  "workflow_type": "penetration",
+  "experience_type": "skill_outcome",
+  "workspace_id": "workspace-redacted",
+  "visibility": "workspace",
+  "conditions": {
+    "skill_id": "http-fingerprint",
+    "technology": "Apache Shiro"
+  },
+  "action_summary": "先通过响应特征确认 RememberMe，再执行无害验证。",
+  "outcome_summary": "在适用环境中减少了误报。",
+  "skill_id": "http-fingerprint",
+  "phase": "reconnaissance",
+  "source_task_id": "task-redacted",
+  "evidence_refs": [
+    {
+      "type": "task_chunk",
+      "ref": "chk-redacted"
+    }
+  ],
+  "expires_at": null
+}

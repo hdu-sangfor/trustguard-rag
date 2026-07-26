@@ -1,0 +1,30 @@
+{
+  "schema_version": "trustguard-knowledge-search-v1",
+  "request_id": "req-contract-002",
+  "scope": "penetration",
+  "status": "ok",
+  "content_revision": "17",
+  "hits": [
+    {
+      "resource_uri": "https://internal-qdrant/chunk-id",
+      "resource_ref": "krf1.invalid-fixture",
+      "source_revision": 1,
+      "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "snippet": "泄漏了内部索引地址",
+      "score": 1.0,
+      "source_type": "document",
+      "visibility": "global",
+      "expanded": false
+    }
+  ],
+  "query_plan": {
+    "intent": "focused",
+    "source": "explicit"
+  },
+  "coverage": {
+    "status": "unknown",
+    "warning": null
+  },
+  "degraded_components": [],
+  "latency_ms": 1
+}

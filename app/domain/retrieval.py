@@ -16,8 +16,39 @@ class EffectiveSearchMode(StrEnum):
     KEYWORD_ONLY = "keyword_only"
 
 
+class RetrievalMode(StrEnum):
+    AUTO = "auto"
+    FOCUSED = "focused"
+    COMPREHENSIVE = "comprehensive"
+    ENUMERATION = "enumeration"
+
+
 class RetrievalComponent(StrEnum):
     VECTOR = "vector"
     KEYWORD = "keyword"
     RERANK = "rerank"
+
+
+class QueryIntent(StrEnum):
+    AUTO = "auto"
+    FOCUSED = "focused"
+    COMPREHENSIVE = "comprehensive"
+    ENUMERATION = "enumeration"
+
+
+class QueryPlanSource(StrEnum):
+    EXPLICIT = "explicit"
+    HEURISTIC = "heuristic"
+    RULE = "rule"
+    LLM = "llm"
+    CACHE = "cache"
+    FALLBACK = "fallback"
+    DISABLED = "disabled"
+
+
+class CoverageStatus(StrEnum):
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    NOT_APPLICABLE = "not_applicable"
+    UNKNOWN = "unknown"
 

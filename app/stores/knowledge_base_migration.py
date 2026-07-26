@@ -71,6 +71,13 @@ async def ensure_knowledge_base_schema() -> None:
                     "VARCHAR(32) NOT NULL DEFAULT 'openai_compatible'"
                 )
             )
+        if "content_revision" not in kb_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE knowledge_bases ADD COLUMN content_revision "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            )
         await conn.execute(
             text(
                 "UPDATE knowledge_bases SET embedding_provider = 'api', "

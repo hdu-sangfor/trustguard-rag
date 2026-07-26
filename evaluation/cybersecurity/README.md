@@ -68,12 +68,26 @@ uv run python evaluation/cybersecurity/build_dataset.py --reuse-pdf
 ```powershell
 uv run python evaluation/cybersecurity/run_retrieval_eval.py `
   --knowledge-base-id <knowledge_base_id> `
+  --adaptive-budgets `
   --name retrieval-hybrid-rrf-rerank
+
+# 或通过逻辑 Scope 评测与 MCP 相同的联邦检索语义
+uv run python evaluation/cybersecurity/run_retrieval_eval.py `
+  --scope compliance `
+  --top-k 10 `
+  --name retrieval-compliance-scope
 
 uv run python evaluation/cybersecurity/run_answer_eval.py `
   --knowledge-base-id <knowledge_base_id> `
+  --adaptive-budgets `
   --name answer-e2e
 ```
+
+`--knowledge-base-id` 与 `--scope` 必须二选一。Scope 模式调用公开
+`POST /v1/search/scope`，该接口与 MCP 内部 Scope Search 复用同一个
+`KnowledgeApplicationService.search_scope`，不会在评测脚本中另行实现联邦检索。生产环境
+启用 Gateway 服务鉴权时，通过 `RAG_GATEWAY_SERVICE_TOKEN` 环境变量或
+`--gateway-service-token` 传入 Bearer Token；不要使用 MCP 内部服务 Token。
 
 检索报告包含 Hit@k、Recall@k、MRR、nDCG 和延迟；回答报告包含回答/拒答准确率、必要
 事实覆盖、引用精确率/召回率、延迟和 Token。`must_include` 只是确定性下界，正式结论仍应

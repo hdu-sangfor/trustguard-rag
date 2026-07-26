@@ -10,7 +10,8 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -19,13 +20,21 @@ from app.api import (
     documents,
     health,
     ingest,
+    internal,
     knowledge_bases,
     ocr_review,
     search,
     sources,
 )
+from app.api.errors import (
+    http_exception_handler,
+    resolve_request_id,
+    unhandled_exception_handler,
+    validation_exception_handler,
+)
 from app.core.indexing.opensearch_backfill import backfill_ready_documents
 from app.settings import get_settings
+from app.security.service_auth import require_gateway_service
 from app.stores import db, opensearch_store, qdrant_store, redis_cache
 from app.stores.outbox_store import ensure_outbox_schema
 from app.stores.knowledge_base_migration import (
@@ -154,21 +163,65 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     """构建 FastAPI 应用并注册所有 HTTP 路由。"""
     s = get_settings()
+    if s.app_env.strip().lower() == "prod" and not (
+        s.internal_service_token or ""
+    ).strip():
+        raise ValueError(
+            "Production RAG API requires RAG_INTERNAL_SERVICE_TOKEN"
+        )
+    if s.app_env.strip().lower() == "prod" and not s.gateway_auth_enabled:
+        raise ValueError(
+            "Production RAG API requires RAG_GATEWAY_AUTH_ENABLED=true"
+        )
+    if s.app_env.strip().lower() == "prod" and not (
+        s.gateway_service_token or ""
+    ).strip():
+        raise ValueError(
+            "Production RAG API requires RAG_GATEWAY_SERVICE_TOKEN"
+        )
+    if (
+        s.app_env.strip().lower() == "prod"
+        and s.gateway_service_token
+        and s.gateway_service_token == s.internal_service_token
+    ):
+        raise ValueError(
+            "RAG_GATEWAY_SERVICE_TOKEN and RAG_INTERNAL_SERVICE_TOKEN must differ"
+        )
+    if s.app_env.strip().lower() == "prod" and len(
+        (s.resource_ref_secret or "").strip()
+    ) < 32:
+        raise ValueError(
+            "Production RAG API requires RAG_RESOURCE_REF_SECRET with at least 32 characters"
+        )
     app = FastAPI(
         title=s.app_name,
         version=s.app_version,
         description="TrustGuard 独立 RAG 知识库：入库、检索与基于证据的回答。",
         lifespan=lifespan,
     )
+
+    @app.middleware("http")
+    async def request_context(request: Request, call_next):
+        request_id = resolve_request_id(request.headers.get("X-Request-ID"))
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+    app.add_exception_handler(HTTPException, http_exception_handler)
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(Exception, unhandled_exception_handler)
     
     app.include_router(health.router)
-    app.include_router(ingest.router)
-    app.include_router(knowledge_bases.router)
-    app.include_router(documents.router)
-    app.include_router(sources.router)
-    app.include_router(search.router)
-    app.include_router(answer.router)
-    app.include_router(ocr_review.router)
+    app.include_router(internal.router)
+    gateway_dependencies = [Depends(require_gateway_service)]
+    app.include_router(ingest.router, dependencies=gateway_dependencies)
+    app.include_router(knowledge_bases.router, dependencies=gateway_dependencies)
+    app.include_router(documents.router, dependencies=gateway_dependencies)
+    app.include_router(sources.router, dependencies=gateway_dependencies)
+    app.include_router(search.router, dependencies=gateway_dependencies)
+    app.include_router(answer.router, dependencies=gateway_dependencies)
+    app.include_router(ocr_review.router, dependencies=gateway_dependencies)
 
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     app.mount("/assets", StaticFiles(directory=frontend_dir / "assets"), name="assets")

@@ -26,6 +26,7 @@ def _response(row, document_count: int = 0) -> KnowledgeBaseResponse:
         embedding_api_driver=row.embedding_api_driver,
         embedding_model=row.embedding_model,
         embedding_dim=row.embedding_dim,
+        content_revision=row.content_revision,
         is_default=row.is_default,
         is_system=row.is_system,
         document_count=document_count,
