@@ -81,6 +81,25 @@ class Settings(BaseSettings):
     chunk_overlap_tokens: int = 64
     ingest_json_max_chars: int = 200_000
 
+    # --- 网络安全语料采集 ---
+    crawler_enabled: bool = True
+    crawler_allow_private_urls: bool = False
+    crawler_max_results_per_keyword: int = 10
+    crawler_max_pages_per_site: int = 10
+    crawler_max_total_pages: int = 100
+    crawler_max_chars: int = 0
+    crawler_min_content_chars: int = 80
+    crawler_timeout_seconds: float = 25.0
+    crawler_fetch_delay_seconds: float = 1.0
+    crawler_max_retries: int = 2
+    crawler_retry_base_seconds: float = 1.0
+    crawler_stale_seconds: int = 600
+    crawler_review_claim_seconds: int = 600
+    crawler_legacy_corpus_root: str = "../trustguard-crawler/knowledge_bases"
+    crawler_user_agent: str = (
+        "TrustGuardCrawler/1.0 (+https://github.com/hdu-sangfor/trustguard-rag)"
+    )
+
     # --- OCR ---
     ocr_provider: str = "none"  # none | local | api
     ocr_api_driver: str = "openai_compatible"  # bailian | openai_compatible | custom
@@ -161,6 +180,7 @@ class Settings(BaseSettings):
     worker_recovery_scan_seconds: float = 15.0
     worker_indexing_stale_seconds: int = 300
     worker_eager: bool = False
+    worker_consume_queues: str = ""
 
     # --- 对象存储（MVP 可选：默认本地文件后端，见 §3 / §5.1） ---
     minio_enabled: bool = False
@@ -269,6 +289,24 @@ class Settings(BaseSettings):
             raise ValueError(
                 "RAG_CHUNK_OVERLAP_TOKENS 必须大于等于 0，并且小于 RAG_CHUNK_TARGET_TOKENS"
             )
+        if self.crawler_stale_seconds <= 0:
+            raise ValueError("RAG_CRAWLER_STALE_SECONDS 必须大于 0")
+        if self.crawler_review_claim_seconds <= 0:
+            raise ValueError("RAG_CRAWLER_REVIEW_CLAIM_SECONDS 必须大于 0")
+        crawler_bounds = (
+            ("RAG_CRAWLER_MAX_RESULTS_PER_KEYWORD", self.crawler_max_results_per_keyword, 1, 20),
+            ("RAG_CRAWLER_MAX_PAGES_PER_SITE", self.crawler_max_pages_per_site, 1, 50),
+            ("RAG_CRAWLER_MAX_TOTAL_PAGES", self.crawler_max_total_pages, 1, 200),
+            ("RAG_CRAWLER_MAX_CHARS", self.crawler_max_chars, 0, 1_000_000),
+            ("RAG_CRAWLER_MIN_CONTENT_CHARS", self.crawler_min_content_chars, 0, 10_000),
+            ("RAG_CRAWLER_TIMEOUT_SECONDS", self.crawler_timeout_seconds, 1, 120),
+            ("RAG_CRAWLER_FETCH_DELAY_SECONDS", self.crawler_fetch_delay_seconds, 0, 30),
+            ("RAG_CRAWLER_MAX_RETRIES", self.crawler_max_retries, 0, 10),
+            ("RAG_CRAWLER_RETRY_BASE_SECONDS", self.crawler_retry_base_seconds, 0, 60),
+        )
+        for name, value, lower, upper in crawler_bounds:
+            if not lower <= value <= upper:
+                raise ValueError(f"{name} 必须在 {lower} 到 {upper} 之间")
         if not 0 <= self.search_component_max_retries <= 5:
             raise ValueError(
                 "RAG_SEARCH_COMPONENT_MAX_RETRIES 必须在 0 到 5 之间"
@@ -385,6 +423,15 @@ class Settings(BaseSettings):
             if value.strip()
         )
         return values or (30_000,)
+
+    @property
+    def worker_queue_names(self) -> tuple[str, ...]:
+        """Optional allow-list used to pause legacy queues without deleting them."""
+        return tuple(
+            value.strip()
+            for value in self.worker_consume_queues.split(",")
+            if value.strip()
+        )
 
 
 @lru_cache

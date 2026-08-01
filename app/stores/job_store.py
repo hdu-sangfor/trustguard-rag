@@ -29,7 +29,12 @@ from app.stores.db import get_engine
 from app.stores.document_store import increment_content_revision
 from app.stores.models import DocumentRow, IngestJobRow, KnowledgeBaseRow
 from app.stores.outbox_store import OutboxEvent, add_outbox_event, event_from_row
-from app.workers.messages import CLEANUP_DOCUMENT, INGEST_DOCUMENT, RESOLVE_CONFLICT
+from app.workers.messages import (
+    CLEANUP_DOCUMENT,
+    INGEST_DOCUMENT,
+    REVIEWED_INGEST_DOCUMENT,
+    RESOLVE_CONFLICT,
+)
 
 
 def _utcnow() -> datetime:
@@ -91,6 +96,7 @@ class JobStore:
         source: str,
         knowledge_base_id: str,
         options: dict[str, Any] | None = None,
+        event_type: str = INGEST_DOCUMENT,
     ) -> tuple[IngestJobRow, OutboxEvent]:
         """以原子方式创建入库任务及其调度事件。"""
         async with AsyncSession(get_engine(), expire_on_commit=False) as session:
@@ -118,7 +124,7 @@ class JobStore:
             session.add(row)
             event_row = add_outbox_event(
                 session,
-                event_type=INGEST_DOCUMENT,
+                event_type=event_type,
                 aggregate_id=job_id,
                 payload={"job_id": job_id},
             )
@@ -517,7 +523,13 @@ class JobStore:
                 job.current_step = IngestStep.RETRY_WAIT
                 job.error_code = WORKER_LEASE_EXPIRED
                 job.error_message = "Previous Worker stopped before completing the task"
-                event_type = RESOLVE_CONFLICT if resolving else INGEST_DOCUMENT
+                event_type = (
+                    RESOLVE_CONFLICT
+                    if resolving
+                    else REVIEWED_INGEST_DOCUMENT
+                    if bool((job.options_json or {}).get("review_approved"))
+                    else INGEST_DOCUMENT
+                )
                 payload: dict[str, Any] = {"job_id": job.id}
                 if resolving:
                     payload["keep_document_id"] = keep_document_id

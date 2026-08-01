@@ -15,7 +15,7 @@ dependencies = [
     "redis>=5.0",
     "aio-pika>=9.4",
     "minio>=7.2",
-    "httpx>=0.27",
+    "httpx==0.28.1",
     "cryptography>=42",
     "pymupdf>=1.24.0",
     "python-multipart>=0.0.9",
@@ -23,6 +23,9 @@ dependencies = [
     "langchain-text-splitters>=0.3.8",
     "transformers>=4.51.0",
     "markitdown>=0.1.0",
+    "beautifulsoup4>=4.12.0",
+    "trafilatura>=2.0.0",
+    "ddgs>=9.0.0",
     "mcp==1.27.2",
     "apscheduler>=3.10",
 ]

@@ -102,6 +102,7 @@ services:
       RAG_MINERU_BASE_URL: ${RAG_MINERU_DOCKER_BASE_URL:-http://mineru-api:8000}
       RAG_MINERU_BACKEND: ${RAG_MINERU_BACKEND:-pipeline}
       RAG_MINERU_TIMEOUT_SECONDS: ${RAG_MINERU_TIMEOUT_SECONDS:-300}
+      RAG_CRAWLER_LEGACY_CORPUS_ROOT: /legacy-corpus
       RAG_SYNC_ROOTS: ${RAG_SYNC_ROOTS:-crawler=/sync}
       RAG_SYNC_SCHEDULE_ENABLED: ${RAG_SYNC_SCHEDULE_ENABLED:-false}
       HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
@@ -113,6 +114,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - trustguard_rag_models:/models/huggingface
+      - ${RAG_CRAWLER_LEGACY_CORPUS_HOST_PATH:-../trustguard-crawler/knowledge_bases}:/legacy-corpus:ro
       - ${RAG_SYNC_HOST_DIR:-./data/sync}:/sync:ro
     depends_on:
       mineru-api:
@@ -192,6 +194,8 @@ services:
     image: ${TRUSTGUARD_IMAGE_PREFIX:-trustguard-}rag-service
     command: ["python", "-m", "app.workers.main"]
     environment:
+      # Consume both ordinary ingest commands and review-approved crawler work.
+      RAG_WORKER_CONSUME_QUEUES: rag.crawl,rag.ingest,rag.ingest.reviewed,rag.cleanup,rag.resolve
       RAG_MYSQL_HOST: mysql
       RAG_MYSQL_PORT: "3306"
       RAG_MYSQL_USER: ${RAG_MYSQL_USER:-trustguard}
@@ -218,6 +222,7 @@ services:
       RAG_MINERU_BASE_URL: ${RAG_MINERU_DOCKER_BASE_URL:-http://mineru-api:8000}
       RAG_MINERU_BACKEND: ${RAG_MINERU_BACKEND:-pipeline}
       RAG_MINERU_TIMEOUT_SECONDS: ${RAG_MINERU_TIMEOUT_SECONDS:-300}
+      RAG_CRAWLER_LEGACY_CORPUS_ROOT: /legacy-corpus
       RAG_SYNC_ROOTS: ${RAG_SYNC_ROOTS:-crawler=/sync}
       HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
       HF_HUB_ETAG_TIMEOUT: ${HF_HUB_ETAG_TIMEOUT:-60}
@@ -226,6 +231,7 @@ services:
     env_file: *optional-env-files
     volumes:
       - trustguard_rag_models:/models/huggingface
+      - ${RAG_CRAWLER_LEGACY_CORPUS_HOST_PATH:-../trustguard-crawler/knowledge_bases}:/legacy-corpus:ro
       - ${RAG_SYNC_HOST_DIR:-./data/sync}:/sync:ro
     depends_on:
       mineru-api:
