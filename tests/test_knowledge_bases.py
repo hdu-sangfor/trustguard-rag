@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain import DocumentStatus
+from app.domain import DocumentStatus, IngestJobStatus
 from app.core.embedding.profiles import get_embedding_profile
 from app.stores.chunk_store import ChunkStore
 from app.stores.document_store import DocumentStore
@@ -38,6 +38,77 @@ async def test_default_and_custom_knowledge_bases_are_listed(client) -> None:
         json={"name": "安全运营", "embedding_profile": "qwen3-embedding-0.6b"},
     )
     assert duplicate.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_delete_empty_knowledge_base_immediately(client) -> None:
+    created = await client.post(
+        "/v1/knowledge-bases",
+        json={"name": "待删除空知识库", "embedding_profile": "configured"},
+    )
+    knowledge_base_id = created.json()["id"]
+
+    deleted = await client.delete(f"/v1/knowledge-bases/{knowledge_base_id}")
+
+    assert deleted.status_code == 204
+    assert await KnowledgeBaseStore().get(knowledge_base_id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_knowledge_base_cancels_active_ingest_jobs(client) -> None:
+    knowledge_base = await KnowledgeBaseStore().create(
+        name="待取消任务知识库",
+        profile=get_embedding_profile("configured"),
+    )
+    job, _ = await JobStore().create_ingest_command(
+        job_id=str(uuid4()),
+        source_type="file",
+        source="queued-for-deleted-kb.pdf",
+        knowledge_base_id=knowledge_base.id,
+    )
+
+    deleted = await client.delete(f"/v1/knowledge-bases/{knowledge_base.id}")
+
+    assert deleted.status_code == 204
+    cancelled_job = await JobStore().get(job.id)
+    assert cancelled_job is not None
+    assert cancelled_job.status == IngestJobStatus.CANCELLED
+    assert cancelled_job.knowledge_base_id is None
+    assert await KnowledgeBaseStore().get(knowledge_base.id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_nonempty_knowledge_base_cascades_documents(client) -> None:
+    knowledge_base = await KnowledgeBaseStore().create(
+        name="待级联删除知识库",
+        profile=get_embedding_profile("configured"),
+    )
+    document = await DocumentStore().create(
+        knowledge_base_id=knowledge_base.id,
+        source_type="file",
+        source_uri="upload://cascade-delete.txt",
+        content_hash="c" * 64,
+        status=DocumentStatus.READY,
+        original_filename="cascade-delete.txt",
+    )
+    await ChunkStore().create_many(
+        [
+            {
+                "id": str(uuid4()),
+                "document_id": document.id,
+                "chunk_index": 0,
+                "text": "cascade delete content",
+                "token_count": 3,
+            }
+        ]
+    )
+
+    deleted = await client.delete(f"/v1/knowledge-bases/{knowledge_base.id}")
+
+    assert deleted.status_code == 202
+    assert await DocumentStore().get(document.id) is None
+    assert await ChunkStore().list_for_document(document.id) == []
+    assert await KnowledgeBaseStore().get(knowledge_base.id) is None
 
 
 @pytest.mark.asyncio

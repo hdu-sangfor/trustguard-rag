@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import (
     answer,
+    crawler,
     documents,
     health,
     ingest,
@@ -206,6 +207,8 @@ def create_app() -> FastAPI:
         request.state.request_id = request_id
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
+        if request.url.path.startswith("/assets/"):
+            response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
         return response
 
     app.add_exception_handler(HTTPException, http_exception_handler)
@@ -216,6 +219,7 @@ def create_app() -> FastAPI:
     app.include_router(internal.router)
     gateway_dependencies = [Depends(require_gateway_service)]
     app.include_router(ingest.router, dependencies=gateway_dependencies)
+    app.include_router(crawler.router, dependencies=gateway_dependencies)
     app.include_router(knowledge_bases.router, dependencies=gateway_dependencies)
     app.include_router(documents.router, dependencies=gateway_dependencies)
     app.include_router(sources.router, dependencies=gateway_dependencies)

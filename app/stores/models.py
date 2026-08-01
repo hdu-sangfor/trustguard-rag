@@ -22,6 +22,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.domain import DocumentStatus, IngestJobStatus, IngestStep, OutboxStatus, OcrRegionStatus
+from app.domain.crawler import CrawlJobStatus
 
 
 def _enum_values(enum_type: type[StrEnum]) -> list[str]:
@@ -181,6 +182,64 @@ class IngestJobRow(Base):
         DateTime(timezone=False), nullable=True
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+
+
+class CrawlJobRow(Base):
+    """一次网络采集运行；单个运行可扇出多个文档入库任务。"""
+
+    __tablename__ = "crawl_jobs"
+    __table_args__ = (
+        Index("idx_crawl_jobs_status_updated", "status", "updated_at"),
+        Index("idx_crawl_jobs_knowledge_base", "knowledge_base_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    knowledge_base_id: Mapped[str] = mapped_column(String(36))
+    status: Mapped[CrawlJobStatus] = mapped_column(
+        SqlEnum(
+            CrawlJobStatus,
+            values_callable=_enum_values,
+            native_enum=False,
+            length=32,
+        ),
+        default=CrawlJobStatus.QUEUED,
+    )
+    config_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    progress_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    ingest_job_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    pause_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CrawlUrlRecordRow(Base):
+    """知识库级 URL 去重与最近采集结果。"""
+
+    __tablename__ = "crawl_url_records"
+
+    knowledge_base_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    url_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    url: Mapped[str] = mapped_column(String(2048))
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ingest_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_status: Mapped[str] = mapped_column(String(32), default="pending")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_crawled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class OutboxEventRow(Base):

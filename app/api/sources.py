@@ -42,6 +42,14 @@ async def source_capabilities() -> dict:
                     "api_driver": settings.ocr_api_driver,
                     "fail_open": settings.ocr_fail_open,
                 },
-            }
+            },
+            {
+                "source_type": "url",
+                "enabled": settings.crawler_enabled,
+                "managed_by": "/v1/crawler/jobs",
+                "public_http_only": not settings.crawler_allow_private_urls,
+                "max_total_pages": settings.crawler_max_total_pages,
+                "parsers": {"text/html": "trafilatura"},
+            },
         ]
     }

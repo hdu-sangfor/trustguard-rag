@@ -20,14 +20,18 @@ from app.domain import (
     PipelineResult,
 )
 from app.stores.blob_store import get_blob_store
+from app.stores.crawler_store import CrawlerStore
 from app.stores.document_store import DocumentStore
 from app.settings import get_settings
 from app.stores.job_store import JobLease, JobStore, LeaseLostError
+from app.stores.knowledge_base_store import KnowledgeBaseStore
 from app.stores.outbox_store import OutboxStore
 from app.workers.messages import (
     CLEANUP_DOCUMENT,
     INGEST_DOCUMENT,
+    REVIEWED_INGEST_DOCUMENT,
     RESOLVE_CONFLICT,
+    RUN_CRAWLER,
     CommandMessage,
 )
 
@@ -135,14 +139,22 @@ async def _handle_resolve(command: CommandMessage) -> None:
 async def _handle_cleanup(command: CommandMessage) -> None:
     document_id = str(command.payload.get("document_id") or command.aggregate_id)
     action = CleanupAction(command.payload.get("action") or CleanupAction.DELETE)
+    cascade_knowledge_base_id = str(
+        command.payload.get("knowledge_base_id") or ""
+    ).strip()
+    delete_knowledge_base = bool(command.payload.get("delete_knowledge_base"))
     doc = await DocumentStore().get(document_id)
     if not doc:
+        if delete_knowledge_base and cascade_knowledge_base_id:
+            await KnowledgeBaseStore().try_finalize_delete(cascade_knowledge_base_id)
         return
     compensator = get_compensator()
     if action == CleanupAction.DELETE:
         if doc.status != DocumentStatus.DELETING:
             return
         await compensator.delete_document(document_id)
+        if delete_knowledge_base and cascade_knowledge_base_id:
+            await KnowledgeBaseStore().try_finalize_delete(cascade_knowledge_base_id)
     elif action == CleanupAction.SUPERSEDE:
         if doc.status != DocumentStatus.SUPERSEDING:
             return
@@ -156,12 +168,25 @@ async def _handle_cleanup(command: CommandMessage) -> None:
         raise ValueError(f"unsupported cleanup action: {action}")
 
 
+async def _handle_crawler(command: CommandMessage) -> None:
+    crawl_job_id = str(
+        command.payload.get("crawl_job_id") or command.aggregate_id
+    )
+    if not await CrawlerStore().claim(crawl_job_id):
+        return
+    from app.core.crawler.runner import get_crawler_runner
+
+    await get_crawler_runner().run(crawl_job_id)
+
+
 async def dispatch_command(command: CommandMessage) -> None:
-    if command.event_type == INGEST_DOCUMENT:
+    if command.event_type in {INGEST_DOCUMENT, REVIEWED_INGEST_DOCUMENT}:
         await _handle_ingest(command)
     elif command.event_type == RESOLVE_CONFLICT:
         await _handle_resolve(command)
     elif command.event_type == CLEANUP_DOCUMENT:
         await _handle_cleanup(command)
+    elif command.event_type == RUN_CRAWLER:
+        await _handle_crawler(command)
     else:
         raise ValueError(f"unsupported command type: {command.event_type}")

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="TrustGuard RAG 知识库控制台">
   <title>TrustGuard · 知识库</title>
-  <link rel="stylesheet" href="/assets/app.css?v=20260724-kb-answer">
+  <link rel="stylesheet" href="/assets/app.css?v=20260731-fast-kb-load">
 </head>
 <body>
   <div class="shell">
@@ -17,6 +17,7 @@
 
       <nav class="nav" aria-label="主导航">
         <button class="nav-item active" data-view="workspace"><span>⌂</span>工作台</button>
+        <button class="nav-item" data-view="crawler"><span>◌</span>数据采集</button>
         <button class="nav-item" data-view="search"><span>⌕</span>知识检索</button>
         <button class="nav-item" data-view="documents"><span>▤</span>知识库管理</button>
         <button class="nav-item" data-view="system"><span>◉</span>系统状态</button>
@@ -84,6 +85,66 @@
           </div>
           <div id="jobs-list" class="jobs-list"></div>
           <div id="jobs-empty" class="empty-state"><span>◎</span><h3>还没有入库记录</h3><p>上传第一份知识文档后，处理进度会显示在这里。</p></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-crawler">
+        <article class="panel crawler-preset-panel">
+          <div class="panel-header">
+            <div><p class="kicker">AGENT KNOWLEDGE PRESETS</p><h2>知识库分类预置</h2></div>
+            <span class="format-tag">9 + CUSTOM</span>
+          </div>
+          <p class="search-intro">选择一个分类可自动填写采集配置；如果已有明确目标，也可以选择“自定义采集”完全跳过预置。</p>
+          <div id="crawler-presets" class="crawler-preset-grid"><small>正在加载分类预置…</small></div>
+        </article>
+
+        <div class="crawler-grid">
+          <article class="panel crawler-config-panel">
+            <div class="panel-header">
+              <div><p class="kicker">SECURITY DATA CRAWLER</p><h2>创建采集任务</h2></div>
+              <span class="format-tag">CATEGORY DRIVEN</span>
+            </div>
+            <p class="search-intro">分类预置包含所需的官方数据源；自定义采集则只使用你填写的 URL、关键词和站点入口。</p>
+            <form id="crawler-form" class="crawler-form">
+              <div id="crawler-selected-preset" class="crawler-selected-preset">请先选择知识库分类预置或自定义采集</div>
+              <label><span>基础知识库</span><select id="crawler-knowledge-base" required><option value="">正在加载知识库…</option></select></label>
+              <label><span>直接采集 URL（每行一个）</span><textarea id="crawler-urls" rows="5" placeholder="https://example.com/security/article"></textarea></label>
+              <label><span>安全关键词（每行一个）</span><textarea id="crawler-keywords" rows="4" placeholder="CVE 供应链攻击&#10;LLM prompt injection"></textarea></label>
+              <label><span>站点入口（每行一个，将发现同域链接）</span><textarea id="crawler-sites" rows="4" placeholder="https://security.example.com/"></textarea></label>
+              <div class="crawler-options">
+                <label><span>总页面上限</span><input id="crawler-max-pages" type="number" min="1" max="200" value="100"></label>
+                <label><span>每关键词结果</span><input id="crawler-max-results" type="number" min="1" max="20" value="10"></label>
+                <label><span>每站页面</span><input id="crawler-site-pages" type="number" min="1" max="50" value="10"></label>
+                <label><span>请求间隔（秒）</span><input id="crawler-delay" type="number" min="0" max="30" step="0.1" value="1"></label>
+                <label><span>最少正文字符</span><input id="crawler-min-content" type="number" min="0" max="10000" value="80"></label>
+                <label><span>失败重试次数</span><input id="crawler-max-retries" type="number" min="0" max="10" value="2"></label>
+                <label><span>重试基础间隔（秒）</span><input id="crawler-retry-base" type="number" min="0" max="60" step="0.1" value="1"></label>
+              </div>
+              <label class="crawler-force"><input id="crawler-force" type="checkbox"><span>忽略 URL 去重记录，强制重新采集</span></label>
+              <button class="primary-button" id="crawler-submit" type="submit">启动采集 <b>→</b></button>
+            </form>
+          </article>
+
+          <aside class="panel crawler-note">
+            <p class="kicker">SAFETY</p>
+            <h2>采集边界</h2>
+            <ul>
+              <li>默认拒绝内网、环回和云元数据地址</li>
+              <li>每次重定向都会重新校验目标</li>
+              <li>单页面响应最大 5 MB</li>
+              <li>结果按 URL 和内容哈希去重</li>
+              <li>分类预置自动绑定官方结构化来源</li>
+            </ul>
+          </aside>
+        </div>
+
+        <article class="panel">
+          <div class="panel-header">
+            <div><p class="kicker">CRAWL ACTIVITY</p><h2>采集任务</h2></div>
+            <button class="text-button" id="refresh-crawler">刷新</button>
+          </div>
+          <div id="crawler-jobs" class="crawler-jobs"></div>
+          <div id="crawler-empty" class="empty-state"><span>◌</span><h3>还没有采集任务</h3><p>选择知识库分类预置，确认自动填写的参数后开始采集。</p></div>
         </article>
       </section>
 
@@ -213,6 +274,6 @@
     </main>
   </div>
   <div class="toast-stack" id="toasts" aria-live="polite"></div>
-  <script src="/assets/app.js?v=20260724-kb-answer" defer></script>
+  <script src="/assets/app.js?v=20260731-fast-kb-load" defer></script>
 </body>
 </html>

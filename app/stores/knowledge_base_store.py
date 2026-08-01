@@ -14,9 +14,19 @@ from app.core.embedding.profiles import (
     canonical_embedding_profile_id,
     get_embedding_profile,
 )
-from app.domain import RESUMABLE_JOB_STATUSES
+from app.core.ingest.errors import CANCELLED
+from app.domain import (
+    DELETABLE_DOCUMENT_STATUSES,
+    RESUMABLE_JOB_STATUSES,
+    CleanupAction,
+    DocumentStatus,
+    IngestJobStatus,
+    IngestStep,
+)
 from app.stores.db import get_engine
 from app.stores.models import DocumentRow, IngestJobRow, KnowledgeBaseRow
+from app.stores.outbox_store import OutboxEvent, add_outbox_event, event_from_row
+from app.workers.messages import CLEANUP_DOCUMENT
 
 DEFAULT_KNOWLEDGE_BASE_ID = str(uuid5(NAMESPACE_URL, "trustguard:knowledge-base:default"))
 
@@ -61,6 +71,15 @@ class KnowledgeBaseStore:
     async def get(self, knowledge_base_id: str) -> KnowledgeBaseRow | None:
         async with AsyncSession(get_engine()) as session:
             return await session.get(KnowledgeBaseRow, knowledge_base_id)
+
+    async def get_by_name(self, name: str) -> KnowledgeBaseRow | None:
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(
+                select(KnowledgeBaseRow).where(
+                    KnowledgeBaseRow.name == name.strip()
+                )
+            )
+            return result.scalars().first()
 
     async def get_default(self) -> KnowledgeBaseRow:
         async with AsyncSession(get_engine()) as session:
@@ -125,10 +144,24 @@ class KnowledgeBaseStore:
 
     async def list(self) -> list[tuple[KnowledgeBaseRow, int]]:
         async with AsyncSession(get_engine()) as session:
+            document_counts = (
+                select(
+                    DocumentRow.knowledge_base_id.label("knowledge_base_id"),
+                    func.count(DocumentRow.id).label("document_count"),
+                )
+                .where(DocumentRow.knowledge_base_id.is_not(None))
+                .group_by(DocumentRow.knowledge_base_id)
+                .subquery()
+            )
             result = await session.execute(
-                select(KnowledgeBaseRow, func.count(DocumentRow.id))
-                .outerjoin(DocumentRow, DocumentRow.knowledge_base_id == KnowledgeBaseRow.id)
-                .group_by(KnowledgeBaseRow.id)
+                select(
+                    KnowledgeBaseRow,
+                    func.coalesce(document_counts.c.document_count, 0),
+                )
+                .outerjoin(
+                    document_counts,
+                    document_counts.c.knowledge_base_id == KnowledgeBaseRow.id,
+                )
                 .order_by(KnowledgeBaseRow.is_default.desc(), KnowledgeBaseRow.created_at)
             )
             return [(row, int(count)) for row, count in result.all()]
@@ -217,6 +250,160 @@ class KnowledgeBaseStore:
                 await session.rollback()
                 raise ValueError("Knowledge base is still in use") from error
             return bool(result.rowcount)
+
+    async def request_cascade_delete(
+        self, knowledge_base_id: str
+    ) -> tuple[bool, list[OutboxEvent]]:
+        """删除空知识库，或原子地为其全部文档创建清理任务。
+
+        返回 ``(True, [])`` 表示知识库已立即删除；返回 ``(False, events)``
+        表示文档进入删除流程，最后一个文档清理完成后再删除知识库。
+        """
+        async with AsyncSession(get_engine(), expire_on_commit=False) as session:
+            row = (
+                await session.execute(
+                    select(KnowledgeBaseRow)
+                    .where(KnowledgeBaseRow.id == knowledge_base_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                raise LookupError("Knowledge base not found")
+            if row.is_default or row.is_system:
+                raise ValueError("System knowledge base cannot be deleted")
+
+            active_jobs = list(
+                (
+                    await session.execute(
+                        select(IngestJobRow)
+                        .where(
+                            IngestJobRow.knowledge_base_id == knowledge_base_id,
+                            IngestJobRow.status.in_(RESUMABLE_JOB_STATUSES),
+                        )
+                        .with_for_update()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            now = _utcnow()
+            for job in active_jobs:
+                job.status = IngestJobStatus.CANCELLED
+                job.current_step = IngestStep.CANCELLED
+                job.error_code = CANCELLED
+                job.error_message = (
+                    "Task cancelled because its knowledge base was deleted"
+                )
+                job.finished_at = now
+                job.lease_owner = None
+                job.lease_token = None
+                job.lease_expires_at = None
+                job.heartbeat_at = None
+                job.knowledge_base_id = None
+
+            documents = list(
+                (
+                    await session.execute(
+                        select(DocumentRow)
+                        .where(DocumentRow.knowledge_base_id == knowledge_base_id)
+                        .with_for_update()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            blocked = sorted(
+                {
+                    document.status.value
+                    for document in documents
+                    if document.status not in DELETABLE_DOCUMENT_STATUSES
+                }
+            )
+            if blocked:
+                raise ValueError(
+                    "Knowledge base has documents that cannot be deleted while "
+                    f"status is {', '.join(blocked)}"
+                )
+
+            if not documents:
+                try:
+                    await session.delete(row)
+                    await session.commit()
+                except IntegrityError as error:
+                    await session.rollback()
+                    raise ValueError("Knowledge base is still in use") from error
+                return True, []
+
+            events: list[OutboxEvent] = []
+            had_ready_document = False
+            for document in documents:
+                had_ready_document = (
+                    had_ready_document or document.status == DocumentStatus.READY
+                )
+                document.status = DocumentStatus.DELETING
+                document.updated_at = _utcnow()
+                event_row = add_outbox_event(
+                    session,
+                    event_type=CLEANUP_DOCUMENT,
+                    aggregate_id=document.id,
+                    payload={
+                        "document_id": document.id,
+                        "action": CleanupAction.DELETE,
+                        "knowledge_base_id": knowledge_base_id,
+                        "delete_knowledge_base": True,
+                    },
+                )
+                events.append(event_from_row(event_row))
+            if had_ready_document:
+                row.content_revision += 1
+            row.updated_at = _utcnow()
+            await session.commit()
+            return False, events
+
+    async def try_finalize_delete(self, knowledge_base_id: str) -> bool:
+        """最后一个文档清理完成后尝试删除其知识库，允许并发幂等调用。"""
+        async with AsyncSession(get_engine()) as session:
+            row = (
+                await session.execute(
+                    select(KnowledgeBaseRow)
+                    .where(KnowledgeBaseRow.id == knowledge_base_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return True
+            if row.is_default or row.is_system:
+                return False
+            remaining_documents = int(
+                (
+                    await session.execute(
+                        select(func.count(DocumentRow.id)).where(
+                            DocumentRow.knowledge_base_id == knowledge_base_id
+                        )
+                    )
+                ).scalar_one()
+            )
+            if remaining_documents:
+                return False
+            active_jobs = int(
+                (
+                    await session.execute(
+                        select(func.count(IngestJobRow.id)).where(
+                            IngestJobRow.knowledge_base_id == knowledge_base_id,
+                            IngestJobRow.status.in_(RESUMABLE_JOB_STATUSES),
+                        )
+                    )
+                ).scalar_one()
+            )
+            if active_jobs:
+                return False
+            try:
+                await session.delete(row)
+                await session.commit()
+            except IntegrityError as error:
+                await session.rollback()
+                raise ValueError("Knowledge base is still in use") from error
+            return True
 
 
 def get_knowledge_base_store() -> KnowledgeBaseStore:

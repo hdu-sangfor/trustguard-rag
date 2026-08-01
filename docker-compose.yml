@@ -102,6 +102,7 @@ services:
       RAG_MINERU_BASE_URL: ${RAG_MINERU_DOCKER_BASE_URL:-http://mineru-api:8000}
       RAG_MINERU_BACKEND: ${RAG_MINERU_BACKEND:-pipeline}
       RAG_MINERU_TIMEOUT_SECONDS: ${RAG_MINERU_TIMEOUT_SECONDS:-300}
+      RAG_CRAWLER_LEGACY_CORPUS_ROOT: /legacy-corpus
       HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
       HF_HUB_ETAG_TIMEOUT: ${HF_HUB_ETAG_TIMEOUT:-60}
       HF_HUB_DOWNLOAD_TIMEOUT: ${HF_HUB_DOWNLOAD_TIMEOUT:-300}
@@ -111,6 +112,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - trustguard_rag_models:/models/huggingface
+      - ${RAG_CRAWLER_LEGACY_CORPUS_HOST_PATH:-../trustguard-crawler/knowledge_bases}:/legacy-corpus:ro
     depends_on:
       mineru-api:
         condition: service_healthy
@@ -189,6 +191,9 @@ services:
     image: ${TRUSTGUARD_IMAGE_PREFIX:-trustguard-}rag-service
     command: ["python", "-m", "app.workers.main"]
     environment:
+      # Keep the historical unreviewed rag.ingest backlog paused. Only crawler
+      # runs and explicitly approved crawler documents are consumed.
+      RAG_WORKER_CONSUME_QUEUES: rag.crawl,rag.ingest.reviewed,rag.cleanup,rag.resolve
       RAG_MYSQL_HOST: mysql
       RAG_MYSQL_PORT: "3306"
       RAG_MYSQL_USER: ${RAG_MYSQL_USER:-trustguard}
@@ -215,6 +220,7 @@ services:
       RAG_MINERU_BASE_URL: ${RAG_MINERU_DOCKER_BASE_URL:-http://mineru-api:8000}
       RAG_MINERU_BACKEND: ${RAG_MINERU_BACKEND:-pipeline}
       RAG_MINERU_TIMEOUT_SECONDS: ${RAG_MINERU_TIMEOUT_SECONDS:-300}
+      RAG_CRAWLER_LEGACY_CORPUS_ROOT: /legacy-corpus
       HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
       HF_HUB_ETAG_TIMEOUT: ${HF_HUB_ETAG_TIMEOUT:-60}
       HF_HUB_DOWNLOAD_TIMEOUT: ${HF_HUB_DOWNLOAD_TIMEOUT:-300}
@@ -222,6 +228,7 @@ services:
     env_file: *optional-env-files
     volumes:
       - trustguard_rag_models:/models/huggingface
+      - ${RAG_CRAWLER_LEGACY_CORPUS_HOST_PATH:-../trustguard-crawler/knowledge_bases}:/legacy-corpus:ro
     depends_on:
       mineru-api:
         condition: service_healthy

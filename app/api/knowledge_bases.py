@@ -12,6 +12,7 @@ from app.schemas.knowledge_base import (
     KnowledgeBaseUpdate,
 )
 from app.stores.knowledge_base_store import get_knowledge_base_store
+from app.workers.eager import dispatch_eager
 
 router = APIRouter(prefix="/v1/knowledge-bases", tags=["knowledge-bases"])
 
@@ -86,12 +87,22 @@ async def update_knowledge_base(
     return _response(row, await store.document_count(row.id))
 
 
-@router.delete("/{knowledge_base_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{knowledge_base_id}",
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={status.HTTP_204_NO_CONTENT: {"description": "Knowledge base deleted"}},
+)
 async def delete_knowledge_base(knowledge_base_id: str) -> Response:
     try:
-        deleted = await get_knowledge_base_store().delete(knowledge_base_id)
+        deleted, events = await get_knowledge_base_store().request_cascade_delete(
+            knowledge_base_id
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    if deleted:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    for event in events:
+        await dispatch_eager(event)
+    return Response(status_code=status.HTTP_202_ACCEPTED)

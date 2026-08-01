@@ -7,13 +7,17 @@ from dataclasses import dataclass
 from typing import Any
 
 INGEST_DOCUMENT = "document.ingest"
+REVIEWED_INGEST_DOCUMENT = "document.ingest.reviewed"
 CLEANUP_DOCUMENT = "document.cleanup"
 RESOLVE_CONFLICT = "document.resolve"
+RUN_CRAWLER = "crawler.run"
 
 ROUTING_KEYS = {
     INGEST_DOCUMENT: "rag.ingest",
+    REVIEWED_INGEST_DOCUMENT: "rag.ingest.reviewed",
     CLEANUP_DOCUMENT: "rag.cleanup",
     RESOLVE_CONFLICT: "rag.resolve",
+    RUN_CRAWLER: "rag.crawl",
 }
 
 

@@ -79,6 +79,111 @@ uv run python -m pytest
 依赖统一在 `pyproject.toml` 中声明，并由 `uv.lock` 锁定。修改依赖后运行
 `uv lock` 更新锁文件；CI 或发布环境可用 `uv lock --check` 校验锁文件是否同步。
 
+## 网络安全语料采集
+
+Crawler 已整合到 RAG API、Outbox 和 RabbitMQ Worker。一次采集任务既可从直接 URL、
+关键词搜索结果或站点入口发现网页，也可读取 NVD CVE、CISA KEV、MITRE CWE/CWE Views/
+CAPEC 等官方结构化数据。原版 Crawler 的 OWASP Top 10:2021、ASVS 4.0.3 和 WSTG 4.2
+产物，以及 NIST CSF 2.0、SP 800-53 Rev. 5 和国内法规/标准导航，作为明确标注版本的
+内置基线提供。每条资料作为独立文档送入指定知识库；控制台的“数据采集”页面以分类
+卡片为入口，并支持创建、暂停、继续、停止和查看任务。
+
+控制台提供 9 个面向 TrustGuard Agent 工作流的知识分类预置：资产指纹与技术栈、漏洞与
+弱点、漏洞检测与利用验证、修复处置与闭环、攻击技战术与攻击链、XDR 多源数据与检测、
+工具与技能运行手册、威胁情报与实战案例、标准合规与报告依据。选择一个分类后，系统会
+自动展开对应的结构化数据源、站点和关键词，并自动创建或复用同名 RAG 知识库。
+例如选择“02 漏洞与弱点知识”会启用近 30 天 NVD、CISA KEV、CWE/CWE Views、CISA KEV
+官方目录和 CVE 检索词。分类入口使用少量稳定的官方文档或列表页，不再自动混入全部新闻站点包。
+选择“自定义采集”则不提交分类预置，也不绑定结构化来源或分类路由，仅使用用户填写的
+直接 URL、关键词和站点入口写入所选知识库。
+
+分类预置还会为每篇文档写入 `domain_category`、`kb_tier`、`agent_phases`、`topic_tags`、
+`category_priority` 和 `crawler_preset_ids` 元数据，供 Agent 按阶段检索和后续过滤。旧版
+11 个 `category_*` preset ID 会映射到语义最接近的新分类，但不再出现在控制台分类列表；
+原 `knowledge_bases` 历史语料已迁移到相同的 9 类目录。混合任务会为未显式指定 `limit` 的
+结构化来源设置公平上限，保留网页发现额度，避免前面的结构化来源耗尽
+`max_total_pages`。单个采集任务只允许选择一个分类预置，但可以同时勾选额外的来源预置
+或结构化数据源。
+
+原版 Crawler 的 31 个互联网站点和 45 组检索词仍保留为 API 来源包，但不再默认并入分类卡片。
+9 个分类分别使用经过检查的官方入口；控制台会自动填写该分类的站点和关键词。
+`GET /v1/crawler/presets` 仍返回完整清单，便于 API 调用。
+
+原仓库 `knowledge_bases` 目录中的历史 Markdown 语料可通过
+`TrustGuard Legacy Markdown Corpus` 本地源分批导入。默认读取相邻仓库的
+`../trustguard-crawler/knowledge_bases`，部署时应通过
+`RAG_CRAWLER_LEGACY_CORPUS_ROOT` 指向只读挂载目录。当前目录包含 9 个分类、
+2211 篇 Markdown；该兼容入口保留在 API 中，可按分类和起始偏移每批导入最多 200 篇。启用
+`route_by_category` 后会按新分类名称自动创建或复用知识库，并将文档、去重记录和
+入库任务路由到对应知识库。适配器拒绝根目录以外的分类和符号链接目标。
+
+所有采集结果在进入 `rag.ingest` 前都会经过确定性清洗。清洗器会规范控制字符、空白、
+Markdown 图片和安全情报中的 `hxxp`/`[.]` 写法；对 OWASP 页面额外清理 Front Matter、
+HTML、链接目标和表格分隔符；对 CVE、CWE、CAPEC 记录过滤 `REJECTED`、`RESERVED`、
+deprecated 和 revoked 条目。低于 `min_content_chars` 的内容不会入库，拒绝原因保存在
+任务进度的 `rejections` 中。清洗版本和变更列表会写入文档元数据。
+NVD、CWE、CAPEC 文档沿用原项目的 `cleaned_<ID>.md` 清洗产物命名；NVD 正文保留
+漏洞描述、CVSS 评分/版本/向量、严重等级、CWE 和发布时间等标准字段。
+
+```bash
+curl -X POST http://localhost:18200/v1/crawler/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "knowledge_base_id": "<knowledge-base-id>",
+    "preset_ids": [
+      "government_security_agencies",
+      "chinese_security_keywords"
+    ],
+    "urls": ["https://example.com/security-advisory"],
+    "keywords": ["CVE supply chain attack"],
+    "site_urls": [],
+    "structured_sources": ["nvd", "cisa_kev", "cwe", "cwe_views", "owasp"],
+    "source_options": {
+      "nvd": {"days_back": 7, "limit": 20},
+      "cwe": {"ids": ["CWE-79", "CWE-89"]},
+      "cwe_views": {"ids": ["1000", "1003", "699"]}
+    },
+    "max_total_pages": 20,
+    "min_content_chars": 80,
+    "fetch_delay_seconds": 1,
+    "max_retries": 2,
+    "retry_base_seconds": 1,
+    "route_by_category": false
+  }'
+
+curl http://localhost:18200/v1/crawler/jobs
+curl http://localhost:18200/v1/crawler/sources
+curl http://localhost:18200/v1/crawler/presets
+curl http://localhost:18200/v1/crawler/legacy-corpus
+```
+
+历史语料可按分类和偏移提交，例如：
+
+```bash
+curl -X POST http://localhost:18200/v1/crawler/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "knowledge_base_id": "<fallback-knowledge-base-id>",
+    "structured_sources": ["legacy_corpus"],
+    "source_options": {
+      "legacy_corpus": {
+        "category": "11_安全资讯与态势感知",
+        "offset": 0
+      }
+    },
+    "max_total_pages": 200,
+    "route_by_category": true
+  }'
+```
+
+采集命令使用独立的 `rag.crawl` 队列；采集成功后再扇出原有 `rag.ingest` 文档任务。
+默认拒绝私网、环回、链路本地和云元数据地址，并在每次重定向后重新校验目标。生产环境
+不要启用 `RAG_CRAWLER_ALLOW_PRIVATE_URLS`。`max_total_pages` 同时约束网页和结构化条目
+总数；网页及官方 API 对网络异常和 429/502/503/504 响应执行指数退避重试。关键词、站点和
+CWE 单条记录的失败会写入任务进度，但不会终止其他入口。暂停后继续时会重新扫描结构化来源
+的稳定前缀，并跳过已经入库或已经被清洗器拒绝的 URL，避免漏掉断点之后的记录。可配置的上限、超时和重试参数
+参见 `.env.example`。
+
 ## 端口（182xx）
 
 | 服务 | 端口 |

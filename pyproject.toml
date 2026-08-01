@@ -23,6 +23,9 @@ dependencies = [
     "langchain-text-splitters>=0.3.8",
     "transformers>=4.51.0",
     "markitdown>=0.1.0",
+    "beautifulsoup4>=4.12.0",
+    "trafilatura>=2.0.0",
+    "ddgs>=9.0.0",
     "mcp==1.27.2",
 ]
 

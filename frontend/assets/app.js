@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { file: null, jobs: JSON.parse(localStorage.getItem("tg-jobs") || "[]"), timers: new Map(), documents: [], knowledgeBases: [], embeddingProfiles: [], documentOffset: 0, documentLimit: 10, documentTotal: 0 };
+const state = { file: null, jobs: JSON.parse(localStorage.getItem("tg-jobs") || "[]"), timers: new Map(), crawlerJobs: [], crawlerTimers: new Map(), crawlerPresets: [], crawlerPresetMode: null, selectedCrawlerPresetId: null, knowledgeBasesPromise: null, documents: [], knowledgeBases: [], embeddingProfiles: [], documentOffset: 0, documentLimit: 10, documentTotal: 0 };
 const JobStatus = Object.freeze({ QUEUED:"queued", RUNNING:"running", CONFLICT:"conflict", RESOLVING:"resolving", INGEST_RETRYING:"ingest_retrying", RESOLVE_RETRYING:"resolve_retrying", SUCCEEDED:"succeeded", DEDUPLICATED:"deduplicated", FAILED:"failed", CANCELLED:"cancelled", DISCARDED:"discarded" });
 const DocumentStatus = Object.freeze({ STAGING:"staging", INDEXING:"indexing", READY:"ready", FAILED:"failed", DELETING:"deleting", SUPERSEDED:"superseded" });
 const IngestStep = Object.freeze({ QUEUED:"queued", RECOVER:"recover", VALIDATE:"validate", EXTRACT:"extract", DEDUP:"dedup", CONFLICT_CHECK:"conflict_check", COMMIT_ARTIFACTS:"commit_artifacts", CHUNK:"chunk", EMBED:"embed", INDEX:"index", OPENSEARCH_INDEX:"opensearch_index", PUBLISH:"publish", RETRY_WAIT:"retry_wait", RESOLVE:"resolve", RESOLVE_SUPERSEDE:"resolve_supersede", SUPERSEDE_CLEANUP:"supersede_cleanup", RESOLVE_PUBLISH:"resolve_publish", RESOLVE_DISCARD:"resolve_discard", CANCELLED:"cancelled", FAILED:"failed" });
@@ -64,24 +64,31 @@ function renderKnowledgeBases(){
     const card=document.createElement("article");card.className="knowledge-base-card";
     card.innerHTML=`<div><strong>${escapeHtml(kb.name)}</strong><small>${escapeHtml(kb.embedding_model)} · ${kb.embedding_dim}维 · ${kb.embedding_provider==="api"?`API / ${escapeHtml(kb.embedding_api_driver||"openai_compatible")}`:"本地"}</small></div><span>${kb.document_count} 个文档</span><div class="knowledge-base-actions"><button class="text-button use-knowledge-base" type="button">选择</button><button class="text-button danger delete-knowledge-base" type="button">删除</button></div>`;
     card.querySelector(".use-knowledge-base").onclick=()=>{$("#upload-knowledge-base").value=kb.id;$("#search-knowledge-base").value=kb.id;$("#documents-knowledge-base").value=kb.id;updateKnowledgeBaseHint();updateSearchScopeHint({clearResults:true});loadDocuments(true);toast(`已选择知识库：${kb.name}`);};
-    const remove=card.querySelector(".delete-knowledge-base");remove.disabled=kb.is_system||kb.is_default||kb.document_count>0;remove.title=remove.disabled?(kb.document_count>0?"请先删除知识库中的文档":"系统知识库不能删除"):"删除空知识库";remove.onclick=async()=>{if(!window.confirm(`确定删除空知识库“${kb.name}”吗？`))return;try{await api(`/v1/knowledge-bases/${kb.id}`,{method:"DELETE"});await loadKnowledgeBases();toast("知识库已删除");}catch(error){toast(`知识库删除失败：${error.message}`,true);}};
+    const remove=card.querySelector(".delete-knowledge-base");remove.disabled=kb.is_system||kb.is_default;remove.title=remove.disabled?"系统知识库不能删除":kb.document_count>0?"删除知识库及其中全部文档":"删除空知识库";remove.onclick=async()=>{const detail=kb.document_count>0?`及其中 ${kb.document_count} 个文档`:"";if(!window.confirm(`确定删除知识库“${kb.name}”${detail}吗？\n该操作会清理向量索引、全文索引和文档产物，无法撤销。`))return;remove.disabled=true;remove.textContent="删除中…";try{await api(`/v1/knowledge-bases/${kb.id}`,{method:"DELETE"});toast(kb.document_count>0?"已提交知识库删除任务":"知识库已删除");monitorKnowledgeBaseDeletion(kb.id,kb.name);}catch(error){remove.disabled=false;remove.textContent="删除";toast(`知识库删除失败：${error.message}`,true);}};
     container.append(card);
   });
 }
 
-async function loadKnowledgeBases(){
-  try{
-    const data=await api("/v1/knowledge-bases");state.knowledgeBases=data.items||[];
-    populateKnowledgeBaseSelect("#upload-knowledge-base");populateKnowledgeBaseSelect("#search-knowledge-base",{requireSelection:true});populateKnowledgeBaseSelect("#documents-knowledge-base",{includeAll:true});
-    renderKnowledgeBases();
-    updateKnowledgeBaseHint();
-    updateSearchScopeHint();
-  }catch(error){toast(`知识库列表加载失败：${error.message}`,true);}
+async function loadKnowledgeBases(force=false){
+  if(!force&&state.knowledgeBases.length)return state.knowledgeBases;
+  if(state.knowledgeBasesPromise)return state.knowledgeBasesPromise;
+  state.knowledgeBasesPromise=(async()=>{
+    try{
+      const data=await api("/v1/knowledge-bases");state.knowledgeBases=data.items||[];
+      populateKnowledgeBaseSelect("#upload-knowledge-base");populateKnowledgeBaseSelect("#search-knowledge-base",{requireSelection:true});populateKnowledgeBaseSelect("#documents-knowledge-base",{includeAll:true});populateKnowledgeBaseSelect("#crawler-knowledge-base",{requireSelection:true});applyCrawlerPresetKnowledgeBase();
+      renderKnowledgeBases();
+      updateKnowledgeBaseHint();
+      updateSearchScopeHint();
+      return state.knowledgeBases;
+    }catch(error){toast(`知识库列表加载失败：${error.message}`,true);return [];}
+    finally{state.knowledgeBasesPromise=null;}
+  })();
+  return state.knowledgeBasesPromise;
 }
 
 async function createKnowledgeBase(){
   const name=$("#knowledge-base-name").value.trim(),embeddingProfile=$("#knowledge-base-profile").value;if(!name)return;
-  try{const kb=await api("/v1/knowledge-bases",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,embedding_profile:embeddingProfile})});$("#knowledge-base-name").value="";await loadKnowledgeBases();$("#upload-knowledge-base").value=kb.id;$("#search-knowledge-base").value=kb.id;updateKnowledgeBaseHint();updateSearchScopeHint({clearResults:true});toast("知识库已创建，向量化模型已固定");}
+  try{const kb=await api("/v1/knowledge-bases",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,embedding_profile:embeddingProfile})});$("#knowledge-base-name").value="";await loadKnowledgeBases(true);$("#upload-knowledge-base").value=kb.id;$("#search-knowledge-base").value=kb.id;updateKnowledgeBaseHint();updateSearchScopeHint({clearResults:true});toast("知识库已创建，向量化模型已固定");}
   catch(error){toast(`知识库创建失败：${error.message}`,true);}
 }
 function persist(){ localStorage.setItem("tg-jobs",JSON.stringify(state.jobs.slice(0,30))); }
@@ -120,7 +127,7 @@ async function upload(){
     const form=new FormData(); form.append("source_type","file"); form.append("knowledge_base_id",knowledgeBaseId); form.append("file",state.file);
     const result=await api("/v1/ingest/jobs",{method:"POST",body:form});
     state.jobs.unshift({id:result.job_id,status:result.status,filename:state.file.name,created_at:new Date().toISOString()}); persist(); renderJobs(); pollJob(result.job_id); toast("文件已提交，正在解析入库");
-    state.file=null; $("#selected-file").hidden=true; $("#file-input").value="";await loadKnowledgeBases();
+    state.file=null; $("#selected-file").hidden=true; $("#file-input").value="";await loadKnowledgeBases(true);
   }catch(error){toast(`上传失败：${error.message}`,true)}finally{button.disabled=!state.file; button.querySelector("span").textContent="开始解析入库";}
 }
 async function refreshJob(id){
@@ -167,6 +174,103 @@ async function loadDocuments(reset=false){
   $("#documents-list").innerHTML='<div class="loading">正在加载知识库…</div>';
   try{const data=await api(`/v1/documents?${params}`);state.documents=data.items;state.documentTotal=data.total;renderDocuments();}
   catch(error){$("#documents-list").innerHTML="";toast(`文档列表加载失败：${error.message}`,true);}
+}
+
+async function monitorKnowledgeBaseDeletion(id,name,remaining=90){
+  await loadKnowledgeBases(true);
+  if(!state.knowledgeBases.some(kb=>kb.id===id)){toast(`知识库已删除：${name}`);return;}
+  if(remaining<=0){toast(`知识库仍在清理中：${name}`);return;}
+  setTimeout(()=>monitorKnowledgeBaseDeletion(id,name,remaining-1),2000);
+}
+
+const crawlStatusLabel={queued:"排队中",running:"采集中",paused:"已暂停",succeeded:"已完成",failed:"失败",cancelled:"已停止"};
+const crawlTerminal=new Set(["succeeded","cancelled"]);
+function lines(selector){return $(selector).value.split(/\r?\n/).map(value=>value.trim()).filter(Boolean);}
+function renderCrawlerPresets(){
+  const target=$("#crawler-presets");target.innerHTML="";
+  const custom=document.createElement("button");
+  custom.type="button";custom.className="crawler-preset-card is-custom";custom.dataset.presetId="__custom__";custom.setAttribute("aria-pressed",String(state.crawlerPresetMode==="custom"));
+  custom.innerHTML='<span class="crawler-preset-topline"><strong>自定义采集</strong><b>CUSTOM</b></span><small>不使用分类预置，自行填写 URL、关键词或站点入口。</small><span class="crawler-preset-meta">不绑定预置数据源和分类路由</span>';
+  custom.onclick=selectCustomCrawlerMode;
+  target.append(custom);
+  state.crawlerPresets.filter(item=>item.kind==="category").forEach(preset=>{
+    const card=document.createElement("button"),count=(preset.site_urls||[]).length+(preset.keywords||[]).length+(preset.structured_sources||[]).length,phases=(preset.phases||[]).join(" → ");
+    card.type="button";card.className="crawler-preset-card";card.dataset.presetId=preset.id;card.setAttribute("aria-pressed",String(state.crawlerPresetMode==="preset"&&state.selectedCrawlerPresetId===preset.id));
+    card.innerHTML=`<span class="crawler-preset-topline"><strong>${escapeHtml(preset.name)}</strong><b>${escapeHtml(preset.priority||"")}</b></span><small>${escapeHtml(preset.description)}</small><span class="crawler-preset-meta">${count} 项采集配置${phases?` · ${escapeHtml(phases)}`:""}</span>`;
+    card.onclick=()=>selectCrawlerPreset(preset);
+    target.append(card);
+  });
+}
+async function loadCrawlerPresets(){
+  try{const data=await api("/v1/crawler/presets");state.crawlerPresets=data.items||[];renderCrawlerPresets();}
+  catch(error){toast(`分类预置加载失败：${error.message}`,true);}
+}
+function applyCrawlerPresetKnowledgeBase(preset=state.crawlerPresets.find(item=>item.id===state.selectedCrawlerPresetId)){
+  const select=$("#crawler-knowledge-base");if(!select||!preset)return;
+  const target=state.knowledgeBases.find(item=>item.name===preset.category_name)||state.knowledgeBases.find(item=>item.is_default)||state.knowledgeBases[0];
+  if(target)select.value=target.id;
+}
+function selectCrawlerPreset(preset){
+  state.crawlerPresetMode="preset";
+  state.selectedCrawlerPresetId=preset.id;
+  document.querySelectorAll(".crawler-preset-card").forEach(card=>card.setAttribute("aria-pressed",String(card.dataset.presetId===preset.id)));
+  $("#crawler-keywords").value=(preset.keywords||[]).join("\n");
+  $("#crawler-sites").value=(preset.site_urls||[]).join("\n");
+  const count=(preset.keywords||[]).length+(preset.site_urls||[]).length+(preset.structured_sources||[]).length;
+  $("#crawler-max-pages").value=String(Math.min(200,Math.max(30,count*10)));
+  applyCrawlerPresetKnowledgeBase(preset);
+  $("#crawler-selected-preset").innerHTML=`<strong>${escapeHtml(preset.name)}</strong><span>${escapeHtml(preset.description)} · 提交后自动创建或复用 ${escapeHtml(preset.category_name||preset.name)}</span>`;
+  $("#crawler-form").scrollIntoView({behavior:"smooth",block:"start"});
+}
+function selectCustomCrawlerMode(){
+  state.crawlerPresetMode="custom";
+  state.selectedCrawlerPresetId=null;
+  document.querySelectorAll(".crawler-preset-card").forEach(card=>card.setAttribute("aria-pressed",String(card.dataset.presetId==="__custom__")));
+  $("#crawler-keywords").value="";
+  $("#crawler-sites").value="";
+  $("#crawler-max-pages").value="30";
+  $("#crawler-selected-preset").innerHTML="<strong>自定义采集</strong><span>不使用分类预置；请选择知识库，并至少填写一个 URL、关键词或站点入口。</span>";
+  $("#crawler-form").scrollIntoView({behavior:"smooth",block:"start"});
+}
+function renderCrawlerJobs(){
+  const list=$("#crawler-jobs"),empty=$("#crawler-empty");list.innerHTML="";empty.hidden=state.crawlerJobs.length>0;
+  state.crawlerJobs.forEach(job=>{
+    const progress=job.progress||{},row=document.createElement("article");row.className="crawler-job";
+    const sourceCount=(job.config.urls||[]).length+(job.config.keywords||[]).length+(job.config.site_urls||[]).length+(job.config.structured_sources||[]).length;
+    row.innerHTML=`<div class="crawler-job-main"><strong>${escapeHtml(crawlStatusLabel[job.status]||job.status)}</strong><small>${escapeHtml(job.id)} · ${sourceCount} 个采集入口 · 尝试 ${job.attempt||0}</small></div><div class="crawler-metrics"><span>已抓取 <b>${progress.fetched||0}</b></span><span>已清洗 <b>${progress.cleaned||0}</b></span><span>已拒绝 <b>${progress.rejected||0}</b></span><span>已入库排队 <b>${progress.queued_for_ingest||0}</b></span><span>跳过 <b>${progress.skipped||0}</b></span><span>失败 <b>${progress.failed||0}</b></span></div><span class="status ${escapeHtml(job.status)}">${escapeHtml(crawlStatusLabel[job.status]||job.status)}</span><div class="crawler-actions"><button class="text-button crawl-refresh" type="button">刷新</button>${job.status==="running"?'<button class="text-button crawl-pause" type="button">暂停</button>':""}${["paused","failed"].includes(job.status)?'<button class="text-button crawl-resume" type="button">继续</button>':""}${!crawlTerminal.has(job.status)?'<button class="text-button danger crawl-stop" type="button">停止</button>':""}</div>${job.error_message?`<p class="crawler-error">${escapeHtml(job.error_message)}</p>`:""}`;
+    row.querySelector(".crawl-refresh").onclick=()=>refreshCrawlerJob(job.id);
+    const pause=row.querySelector(".crawl-pause");if(pause)pause.onclick=()=>controlCrawler(job.id,"pause");
+    const resume=row.querySelector(".crawl-resume");if(resume)resume.onclick=()=>controlCrawler(job.id,"resume");
+    const stop=row.querySelector(".crawl-stop");if(stop)stop.onclick=()=>controlCrawler(job.id,"stop");
+    list.append(row);
+  });
+}
+async function loadCrawlerJobs(){
+  try{const data=await api("/v1/crawler/jobs?limit=50");state.crawlerJobs=data.items||[];renderCrawlerJobs();state.crawlerJobs.filter(job=>!crawlTerminal.has(job.status)&&job.status!=="paused"&&job.status!=="failed").forEach(job=>pollCrawlerJob(job.id));}
+  catch(error){toast(`采集任务加载失败：${error.message}`,true);}
+}
+async function refreshCrawlerJob(id){
+  try{const data=await api(`/v1/crawler/jobs/${id}`),index=state.crawlerJobs.findIndex(job=>job.id===id);if(index>=0)state.crawlerJobs[index]=data;else state.crawlerJobs.unshift(data);renderCrawlerJobs();return data;}
+  catch(error){toast(`采集任务刷新失败：${error.message}`,true);}
+}
+function pollCrawlerJob(id){
+  if(state.crawlerTimers.has(id))return;
+  const tick=async()=>{const job=await refreshCrawlerJob(id);if(!job||crawlTerminal.has(job.status)||["paused","failed"].includes(job.status)){state.crawlerTimers.delete(id);return;}state.crawlerTimers.set(id,setTimeout(tick,2000));};
+  state.crawlerTimers.set(id,setTimeout(tick,0));
+}
+async function controlCrawler(id,action){
+  try{const job=await api(`/v1/crawler/jobs/${id}/${action}`,{method:"POST"});const index=state.crawlerJobs.findIndex(item=>item.id===id);if(index>=0)state.crawlerJobs[index]=job;renderCrawlerJobs();if(action==="resume")pollCrawlerJob(id);toast({pause:"已请求暂停采集",resume:"已恢复采集",stop:"已请求停止采集"}[action]);}
+  catch(error){toast(`采集任务操作失败：${error.message}`,true);}
+}
+async function createCrawlerJob(){
+  const knowledgeBaseId=$("#crawler-knowledge-base").value,presetId=state.selectedCrawlerPresetId,payload={knowledge_base_id:knowledgeBaseId,preset_ids:presetId?[presetId]:[],urls:lines("#crawler-urls"),keywords:lines("#crawler-keywords"),site_urls:lines("#crawler-sites"),max_total_pages:Number($("#crawler-max-pages").value),max_results_per_keyword:Number($("#crawler-max-results").value),max_pages_per_site:Number($("#crawler-site-pages").value),min_content_chars:Number($("#crawler-min-content").value),fetch_delay_seconds:Number($("#crawler-delay").value),max_retries:Number($("#crawler-max-retries").value),retry_base_seconds:Number($("#crawler-retry-base").value),force:$("#crawler-force").checked};
+  if(!state.crawlerPresetMode){toast("请选择知识库分类预置或自定义采集",true);return;}
+  if(!knowledgeBaseId){toast("请选择目标知识库",true);return;}
+  if(state.crawlerPresetMode==="custom"&&![payload.urls,payload.keywords,payload.site_urls].some(items=>items.length)){toast("自定义采集至少需要一个 URL、关键词或站点入口",true);return;}
+  const button=$("#crawler-submit");button.disabled=true;
+  try{const job=await api("/v1/crawler/jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});state.crawlerJobs.unshift(job);renderCrawlerJobs();pollCrawlerJob(job.id);toast("采集任务已提交");}
+  catch(error){toast(`创建采集任务失败：${error.message}`,true);}
+  finally{button.disabled=false;}
 }
 
 function renderSearchResults(data){
@@ -351,7 +455,7 @@ async function openDocument(id){
   }catch(error){target.innerHTML="";toast(`文档查询失败：${error.message}`,true)}
 }
 
-function switchView(name){ document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===`view-${name}`)); document.querySelectorAll(".nav-item").forEach(v=>v.classList.toggle("active",v.dataset.view===name)); $("#page-title").textContent={workspace:"知识工作台",search:"知识检索",documents:"知识库管理",system:"系统状态"}[name]; if(name==="documents"){loadKnowledgeBases();loadDocuments();} if(name==="search")setTimeout(()=>$("#search-query").focus(),0); }
+function switchView(name){ document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===`view-${name}`)); document.querySelectorAll(".nav-item").forEach(v=>v.classList.toggle("active",v.dataset.view===name)); $("#page-title").textContent={workspace:"知识工作台",crawler:"数据采集",search:"知识检索",documents:"知识库管理",system:"系统状态"}[name]; if(name==="documents"){loadKnowledgeBases(true);loadDocuments();} if(name==="crawler"){loadKnowledgeBases();loadCrawlerPresets();loadCrawlerJobs();} if(name==="search")setTimeout(()=>$("#search-query").focus(),0); }
 function chooseFile(file){
   if(!file)return;
   const name=file.name.toLowerCase();
@@ -387,5 +491,7 @@ $("#answer-button").onclick=runAnswer;
 $("#search-fusion").onchange=syncSearchOptions;
 $("#search-vector").onchange=syncSearchOptions;
 $("#search-keyword").onchange=syncSearchOptions;
+$("#crawler-form").onsubmit=e=>{e.preventDefault();createCrawlerJob()};
+$("#refresh-crawler").onclick=loadCrawlerJobs;
 setInterval(()=>$("#clock").textContent=new Date().toLocaleString("zh-CN",{hour12:false}),1000);
 syncSearchOptions(); loadCapabilities(); loadKnowledgeBases(); renderJobs(); refreshHealth(); state.jobs.filter(j=>!terminal.has(j.status)).forEach(j=>pollJob(j.id));

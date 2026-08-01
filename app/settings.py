@@ -81,6 +81,24 @@ class Settings(BaseSettings):
     chunk_overlap_tokens: int = 64
     ingest_json_max_chars: int = 200_000
 
+    # --- 网络安全语料采集 ---
+    crawler_enabled: bool = True
+    crawler_allow_private_urls: bool = False
+    crawler_max_results_per_keyword: int = 10
+    crawler_max_pages_per_site: int = 10
+    crawler_max_total_pages: int = 100
+    crawler_max_chars: int = 0
+    crawler_min_content_chars: int = 80
+    crawler_timeout_seconds: float = 25.0
+    crawler_fetch_delay_seconds: float = 1.0
+    crawler_max_retries: int = 2
+    crawler_retry_base_seconds: float = 1.0
+    crawler_stale_seconds: int = 600
+    crawler_legacy_corpus_root: str = "../trustguard-crawler/knowledge_bases"
+    crawler_user_agent: str = (
+        "TrustGuardCrawler/1.0 (+https://github.com/hdu-sangfor/trustguard-rag)"
+    )
+
     # --- OCR ---
     ocr_provider: str = "none"  # none | local | api
     ocr_api_driver: str = "openai_compatible"  # bailian | openai_compatible | custom
@@ -161,6 +179,7 @@ class Settings(BaseSettings):
     worker_recovery_scan_seconds: float = 15.0
     worker_indexing_stale_seconds: int = 300
     worker_eager: bool = False
+    worker_consume_queues: str = ""
 
     # --- 对象存储（MVP 可选：默认本地文件后端，见 §3 / §5.1） ---
     minio_enabled: bool = False
@@ -367,6 +386,15 @@ class Settings(BaseSettings):
             if value.strip()
         )
         return values or (30_000,)
+
+    @property
+    def worker_queue_names(self) -> tuple[str, ...]:
+        """Optional allow-list used to pause legacy queues without deleting them."""
+        return tuple(
+            value.strip()
+            for value in self.worker_consume_queues.split(",")
+            if value.strip()
+        )
 
 
 @lru_cache

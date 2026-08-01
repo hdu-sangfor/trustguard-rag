@@ -218,6 +218,12 @@ class IngestPipeline:
             extracted = await self._extractor.extract_async(
                 file_bytes, original_filename=original_filename, mime=mime
             )
+            source_options = job.options_json or {}
+            if source_options.get("source_uri"):
+                extracted.source_uri = str(source_options["source_uri"])
+            source_metadata = source_options.get("source_metadata")
+            if isinstance(source_metadata, dict):
+                extracted.metadata.update(source_metadata)
             ocr_drafts = _pop_ocr_drafts(extracted.metadata)
             ocr_base_text = _pop_ocr_base_text(extracted.metadata)
             extracted.metadata = _json_safe_metadata(extracted.metadata)
@@ -266,6 +272,7 @@ class IngestPipeline:
                     source_uri=extracted.source_uri,
                     content_hash=extracted.content_hash,
                     status=DocumentStatus.STAGING,
+                    title=str(extracted.metadata.get("title") or "")[:512] or None,
                     mime_type=extracted.mime,
                     original_filename=original_filename,
                     metadata=extracted.metadata,
@@ -292,6 +299,7 @@ class IngestPipeline:
                 source_uri=extracted.source_uri,
                 content_hash=extracted.content_hash,
                 status=DocumentStatus.INDEXING,
+                title=str(extracted.metadata.get("title") or "")[:512] or None,
                 mime_type=extracted.mime,
                 original_filename=original_filename,
                 metadata=extracted.metadata,

@@ -69,7 +69,13 @@ async def run_consumers() -> None:
             return
         await message.ack()
 
-    for queue_name in sorted(set(ROUTING_KEYS.values())):
+    queue_names = set(settings.worker_queue_names) or set(ROUTING_KEYS.values())
+    unknown_queues = queue_names - set(ROUTING_KEYS.values())
+    if unknown_queues:
+        raise ValueError(
+            f"unknown worker queues: {', '.join(sorted(unknown_queues))}"
+        )
+    for queue_name in sorted(queue_names):
         queue = await channel.get_queue(queue_name)
         await queue.consume(on_message, no_ack=False)
 

@@ -6,22 +6,25 @@ import asyncio
 import logging
 
 from app.settings import get_settings
+from app.stores.crawler_store import CrawlerStore
 from app.stores.document_store import DocumentStore
 from app.stores.job_store import JobStore
 
 logger = logging.getLogger(__name__)
 
 
-async def recover_once() -> tuple[int, int]:
+async def recover_once() -> tuple[int, int, int]:
     job_events = await JobStore().recover_expired_jobs()
     document_events = await DocumentStore().recover_orphan_publications()
-    if job_events or document_events:
+    crawler_events = await CrawlerStore().recover_stale_jobs()
+    if job_events or document_events or crawler_events:
         logger.warning(
-            "recovered expired_jobs=%s orphan_documents=%s",
+            "recovered expired_jobs=%s orphan_documents=%s crawler_jobs=%s",
             len(job_events),
             len(document_events),
+            len(crawler_events),
         )
-    return len(job_events), len(document_events)
+    return len(job_events), len(document_events), len(crawler_events)
 
 
 async def run_recovery_loop() -> None:
