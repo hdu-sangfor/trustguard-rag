@@ -17,6 +17,7 @@ _ALLOWED_SCHEMES = frozenset(
         "http",
         "https",
         "crawler",
+        "legacy-corpus",
         "file",
         "upload",
         "sync",
