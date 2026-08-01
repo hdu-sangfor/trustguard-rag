@@ -31,6 +31,7 @@ from app.core.ingest.errors import (
 )
 from app.core.ingest.extractors.file import FileExtractor
 from app.core.ingest.models import ExtractedDocument
+from app.core.ingest.source_uri import apply_source_overrides
 from app.domain import (
     CleanupAction,
     DocumentStatus,
@@ -227,6 +228,7 @@ class IngestPipeline:
             ocr_drafts = _pop_ocr_drafts(extracted.metadata)
             ocr_base_text = _pop_ocr_base_text(extracted.metadata)
             extracted.metadata = _json_safe_metadata(extracted.metadata)
+            extracted = apply_source_overrides(extracted, job.options_json)
 
             await self._jobs.mark_running(
                 job_id, IngestStep.DEDUP, lease_token=lease_token
@@ -279,6 +281,20 @@ class IngestPipeline:
                     document_id=document_id,
                     knowledge_base_id=self._knowledge_base_id,
                 )
+                policy = str(
+                    (job.options_json or {}).get("conflict_policy") or "manual"
+                ).lower()
+                if policy == "keep_new":
+                    # 对照 ragversion：hash 变更 → 替换；同租约内直接 supersede。
+                    await self._jobs.attach_conflict(
+                        job_id,
+                        pending_document_id=pending.id,
+                        conflict_candidates=conflict_ids,
+                        lease_token=lease_token,
+                    )
+                    return await self.resolve_conflict(
+                        job_id, pending.id, lease_token=lease_token
+                    )
                 await self._jobs.finish(
                     job_id,
                     IngestJobStatus.CONFLICT,
@@ -495,6 +511,7 @@ class IngestPipeline:
             extracted = await self._extractor.extract_async(
                 file_bytes, original_filename=original_filename, mime=mime
             )
+            extracted = apply_source_overrides(extracted, job.options_json)
             try:
                 pending = await self._documents.get(pending_id)
                 if pending and pending.status == DocumentStatus.FAILED:

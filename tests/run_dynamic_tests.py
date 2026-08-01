@@ -99,13 +99,22 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         r = client.get("/health")
         r.raise_for_status()
         body = r.json()
-        assert body["status"] == "ok", body
         deps = body["dependencies"]
         assert deps["mysql"]["status"] == "up"
         qdrant = deps.get("qdrant", {})
         assert qdrant.get("status") in {"disabled", "up"}
         storage = deps.get("minio") or deps.get("local_storage")
         assert storage["status"] in {"up", "disabled"}
+        # MinerU 在 RAG_PDF_PARSER=local 且未启动 mineru-api 时可为 down；
+        # 其它入库必需依赖必须 up，整体可为 ok 或仅因 mineru 降级。
+        down = sorted(
+            name for name, dep in deps.items() if dep.get("status") == "down"
+        )
+        if body["status"] == "ok":
+            assert not down or down == ["mineru"], down
+        else:
+            assert body["status"] == "degraded", body
+            assert down == ["mineru"], down
         return json.dumps({k: v["status"] for k, v in deps.items()}, ensure_ascii=False)
 
     def t_capabilities():
@@ -128,7 +137,10 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         parsers = source.get("parsers") or {}
         for key in ("text/plain", "text/markdown", "text/csv", "application/json", "text/html"):
             assert parsers.get(key) == "markitdown", f"parser for {key}: {parsers.get(key)}"
-        return f"mimes={len(mimes)} max_bytes={source['max_bytes']}"
+        sync = data.get("sync") or {}
+        assert sync.get("endpoint") == "/v1/ingest/sync", sync
+        assert "keep_new" in (sync.get("conflict_policies") or [])
+        return f"mimes={len(mimes)} max_bytes={source['max_bytes']} sync=yes"
 
     def t_upload_pdf():
         pdf = make_pdf([f"Dynamic test page one {run_id}", f"Dynamic test page two {run_id}"])
@@ -363,6 +375,149 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         assert "results" in body or "items" in body or isinstance(body, list)
         return f"status={r.status_code}"
 
+    def t_stable_uri_keep_new():
+        uri = f"crawler://dynamic/{run_id}/stable.pdf"
+        pdf1 = make_pdf([f"Stable keep_new v1 {run_id}"])
+        pdf2 = make_pdf([f"Stable keep_new v2 {run_id}"])
+        j1 = wait_job(
+            client,
+            client.post(
+                "/v1/ingest/jobs",
+                data={
+                    "source_type": "file",
+                    "source_uri": uri,
+                    "conflict_policy": "keep_new",
+                },
+                files={"file": (f"stable-{run_id}.pdf", pdf1, "application/pdf")},
+            ).json()["job_id"],
+            timeout=180,
+        )
+        assert j1["status"] == "succeeded", j1
+        old_id = j1["document_id"]
+        j2 = wait_job(
+            client,
+            client.post(
+                "/v1/ingest/jobs",
+                data={
+                    "source_type": "file",
+                    "source_uri": uri,
+                    "conflict_policy": "keep_new",
+                },
+                files={"file": (f"stable-{run_id}.pdf", pdf2, "application/pdf")},
+            ).json()["job_id"],
+            timeout=180,
+        )
+        assert j2["status"] == "succeeded", j2
+        old_doc = client.get(f"/v1/documents/{old_id}").json()
+        assert old_doc["status"] == "superseded", old_doc
+        return f"old={old_id} new={j2['document_id']}"
+
+    def t_sync_batch_skip_update_cleanup():
+        import base64
+
+        prefix = f"crawler://dynamic/{run_id}/batch/"
+        uri_a = f"{prefix}a.md"
+        uri_b = f"{prefix}b.md"
+        cursor_key = f"dyn-sync-{run_id}"
+
+        def b64(data: bytes) -> str:
+            return base64.b64encode(data).decode("ascii")
+
+        a1 = f"# A {run_id}\nfirst".encode()
+        b1 = f"# B {run_id}\nfirst".encode()
+        a2 = f"# A {run_id}\nsecond".encode()
+
+        r1 = client.post(
+            "/v1/ingest/sync",
+            json={
+                "conflict_policy": "keep_new",
+                "cleanup": "none",
+                "cursor_key": cursor_key,
+                "wait": True,
+                "wait_timeout_sec": 300,
+                "items": [
+                    {
+                        "source_uri": uri_a,
+                        "filename": "a.md",
+                        "content_b64": b64(a1),
+                        "mime": "text/markdown",
+                    },
+                    {
+                        "source_uri": uri_b,
+                        "filename": "b.md",
+                        "content_b64": b64(b1),
+                        "mime": "text/markdown",
+                    },
+                ],
+            },
+        )
+        r1.raise_for_status()
+        body1 = r1.json()
+        assert body1["added"] == 2, body1
+        assert body1["failed"] == 0, body1
+        assert body1["cursor_value"]
+
+        r2 = client.post(
+            "/v1/ingest/sync",
+            json={
+                "conflict_policy": "keep_new",
+                "cleanup": "none",
+                "cursor_key": cursor_key,
+                "wait": True,
+                "wait_timeout_sec": 300,
+                "items": [
+                    {
+                        "source_uri": uri_a,
+                        "filename": "a.md",
+                        "content_b64": b64(a1),
+                        "mime": "text/markdown",
+                    },
+                    {
+                        "source_uri": uri_b,
+                        "filename": "b.md",
+                        "content_b64": b64(b1),
+                        "mime": "text/markdown",
+                    },
+                ],
+            },
+        )
+        r2.raise_for_status()
+        body2 = r2.json()
+        assert body2["skipped"] == 2, body2
+
+        r3 = client.post(
+            "/v1/ingest/sync",
+            json={
+                "conflict_policy": "keep_new",
+                "cleanup": "full",
+                "source_uri_prefix": prefix,
+                "cursor_key": cursor_key,
+                "wait": True,
+                "wait_timeout_sec": 300,
+                "items": [
+                    {
+                        "source_uri": uri_a,
+                        "filename": "a.md",
+                        "content_b64": b64(a2),
+                        "mime": "text/markdown",
+                    },
+                ],
+            },
+        )
+        r3.raise_for_status()
+        body3 = r3.json()
+        assert body3["updated"] == 1, body3
+        assert body3["deleted"] == 1, body3
+        assert body3["failed"] == 0, body3
+
+        cursor = client.get(f"/v1/ingest/cursors/{cursor_key}")
+        cursor.raise_for_status()
+        assert cursor.json()["cursor_value"] == body3["cursor_value"]
+        return (
+            f"add={body1['added']} skip={body2['skipped']} "
+            f"upd={body3['updated']} del={body3['deleted']}"
+        )
+
     cases = [
         ("health/live", t_live),
         ("health (deps)", t_health),
@@ -376,6 +531,8 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         ("corrupt PDF", t_corrupt_pdf),
         ("filename conflict", t_conflict),
         ("conflict resolve", t_resolve_conflict),
+        ("stable URI keep_new", t_stable_uri_keep_new),
+        ("sync batch skip/update/cleanup", t_sync_batch_skip_update_cleanup),
         ("ingest txt", t_ingest_txt),
         ("ingest markdown", t_ingest_md),
         ("ingest csv", t_ingest_csv),
@@ -486,6 +643,7 @@ def write_reports(report: TestReport, out_dir: Path | None = None) -> tuple[Path
         "| 健康检查 | live / deps |",
         "| API 契约 | capabilities（多 MIME） |",
         "| PDF 主路径 | 入库 / ready / chunks / artifacts / 去重 / 损坏 / 冲突 |",
+        "| 增量同步 | 稳定 URI keep_new / sync SKIP·UPDATE·cleanup / cursor |",
         "| 多格式 | txt / md / csv / json / html |",
         "| 错误路径 | 空文本 EMPTY_CONTENT、不支持 MIME、图片无 OCR |",
         "| OCR API | ocr-regions 列表 |",

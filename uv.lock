@@ -270,6 +270,18 @@ wheels = [
 ]
 
 [[package]]
+name = "apscheduler"
+version = "3.11.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "tzlocal" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8c/6b/eeff360196bb20b312c9e762a820fd1b2c6d809466c755ef57863478e454/apscheduler-3.11.3.tar.gz", hash = "sha256:cd2fcc9330039a81a5893472ad49facf23a6d5604cbe1d918c835c6de7834d5a", size = 110312, upload-time = "2026-06-28T19:39:22.493Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/42/c9/8638db32514dbb9157b3d82680c6faea89283523edf9ed2415ea3884f2ae/apscheduler-3.11.3-py3-none-any.whl", hash = "sha256:bbeb2ec02d23d3c06a6c07ed7f0f3939ada6680eb121fae809a69bb42c537a30", size = 66024, upload-time = "2026-06-28T19:39:20.982Z" },
+]
+
+[[package]]
 name = "argon2-cffi"
 version = "25.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4561,6 +4573,7 @@ dependencies = [
     { name = "aio-pika" },
     { name = "aiomysql" },
     { name = "beautifulsoup4" },
+    { name = "apscheduler" },
     { name = "cryptography" },
     { name = "ddgs" },
     { name = "fastapi" },
@@ -4612,6 +4625,7 @@ requires-dist = [
     { name = "aio-pika", specifier = ">=9.4" },
     { name = "aiomysql", specifier = ">=0.2" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
+    { name = "apscheduler", specifier = ">=3.10" },
     { name = "cryptography", specifier = ">=42" },
     { name = "ddgs", specifier = ">=9.0.0" },
     { name = "fastapi", specifier = ">=0.110" },
