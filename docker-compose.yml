@@ -194,9 +194,8 @@ services:
     image: ${TRUSTGUARD_IMAGE_PREFIX:-trustguard-}rag-service
     command: ["python", "-m", "app.workers.main"]
     environment:
-      # Keep the historical unreviewed rag.ingest backlog paused. Only crawler
-      # runs and explicitly approved crawler documents are consumed.
-      RAG_WORKER_CONSUME_QUEUES: rag.crawl,rag.ingest.reviewed,rag.cleanup,rag.resolve
+      # Consume both ordinary ingest commands and review-approved crawler work.
+      RAG_WORKER_CONSUME_QUEUES: rag.crawl,rag.ingest,rag.ingest.reviewed,rag.cleanup,rag.resolve
       RAG_MYSQL_HOST: mysql
       RAG_MYSQL_PORT: "3306"
       RAG_MYSQL_USER: ${RAG_MYSQL_USER:-trustguard}

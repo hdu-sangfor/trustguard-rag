@@ -149,6 +149,20 @@ async def create_crawl_job(body: CrawlJobCreateRequest) -> CrawlJobResponse:
     if not settings.crawler_enabled:
         raise HTTPException(status_code=503, detail="Crawler is disabled")
     config = body.model_dump()
+    configured_defaults = {
+        "max_results_per_keyword": settings.crawler_max_results_per_keyword,
+        "max_pages_per_site": settings.crawler_max_pages_per_site,
+        "max_total_pages": settings.crawler_max_total_pages,
+        "max_chars": settings.crawler_max_chars,
+        "min_content_chars": settings.crawler_min_content_chars,
+        "timeout_seconds": settings.crawler_timeout_seconds,
+        "fetch_delay_seconds": settings.crawler_fetch_delay_seconds,
+        "max_retries": settings.crawler_max_retries,
+        "retry_base_seconds": settings.crawler_retry_base_seconds,
+    }
+    for key, value in configured_defaults.items():
+        if config.get(key) is None:
+            config[key] = value
     for key in ("preset_ids", "urls", "keywords", "site_urls", "structured_sources"):
         config[key] = list(dict.fromkeys(value.strip() for value in config[key] if value.strip()))
     try:

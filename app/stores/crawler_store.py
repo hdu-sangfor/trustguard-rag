@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.crawler import CRAWL_TERMINAL_STATUSES, CrawlJobStatus
@@ -24,6 +24,65 @@ def _utcnow() -> datetime:
 
 def _url_hash(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+def _refresh_review_counts(progress: dict[str, Any]) -> None:
+    items = list(progress.get("review_items") or [])
+    pending = sum(
+        item.get("status") in {"pending", "processing", "rejecting"}
+        for item in items
+    )
+    progress["pending_review"] = pending
+    progress["review_status"] = "pending" if pending else "completed"
+
+
+def _merge_runner_review_progress(
+    current: dict[str, Any], incoming: dict[str, Any]
+) -> dict[str, Any]:
+    """Preserve review decisions made while a runner appends new staged items."""
+    current_items = {
+        str(item.get("id") or ""): dict(item)
+        for item in current.get("review_items") or []
+        if item.get("id")
+    }
+    if not current_items:
+        return incoming
+    merged_items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_item in incoming.get("review_items") or []:
+        item = dict(raw_item)
+        item_id = str(item.get("id") or "")
+        if item_id in current_items:
+            item.update(current_items[item_id])
+        merged_items.append(item)
+        seen.add(item_id)
+    merged_items.extend(
+        item for item_id, item in current_items.items() if item_id not in seen
+    )
+    incoming["review_items"] = merged_items
+    incoming["queued_for_ingest"] = max(
+        int(current.get("queued_for_ingest", 0)),
+        int(incoming.get("queued_for_ingest", 0)),
+    )
+    _refresh_review_counts(incoming)
+    return incoming
+
+
+def _review_claim_expired(
+    item: dict[str, Any],
+    *,
+    stale_before: datetime,
+) -> bool:
+    raw_value = str(item.get("review_claimed_at") or "").strip()
+    if not raw_value:
+        return True
+    try:
+        claimed_at = datetime.fromisoformat(raw_value)
+    except ValueError:
+        return True
+    if claimed_at.tzinfo is not None:
+        claimed_at = claimed_at.astimezone(timezone.utc).replace(tzinfo=None)
+    return claimed_at <= stale_before
 
 
 class CrawlerStore:
@@ -115,10 +174,34 @@ class CrawlerStore:
             await session.commit()
             return True
 
-    async def control_state(self, job_id: str) -> str | None:
+    async def heartbeat(self, job_id: str, expected_attempt: int) -> bool:
+        """Renew a running crawler claim, fenced by its attempt generation."""
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(
+                update(CrawlJobRow)
+                .where(
+                    CrawlJobRow.id == job_id,
+                    CrawlJobRow.status == CrawlJobStatus.RUNNING,
+                    CrawlJobRow.attempt == expected_attempt,
+                )
+                .values(updated_at=_utcnow())
+            )
+            await session.commit()
+            return bool(result.rowcount)
+
+    async def control_state(
+        self,
+        job_id: str,
+        *,
+        expected_attempt: int | None = None,
+    ) -> str | None:
         row = await self.get(job_id)
         if row is None:
             return "cancel"
+        if expected_attempt is not None and (
+            row.attempt != expected_attempt or row.status != CrawlJobStatus.RUNNING
+        ):
+            return "lost"
         if row.cancel_requested or row.status == CrawlJobStatus.CANCELLED:
             return "cancel"
         if row.pause_requested or row.status == CrawlJobStatus.PAUSED:
@@ -131,13 +214,24 @@ class CrawlerStore:
         *,
         progress: dict[str, Any] | None = None,
         ingest_job_id: str | None = None,
-    ) -> None:
+        expected_attempt: int | None = None,
+    ) -> bool:
         async with AsyncSession(get_engine()) as session:
             row = await session.get(CrawlJobRow, job_id, with_for_update=True)
             if row is None:
-                return
+                return False
+            if expected_attempt is not None and (
+                row.attempt != expected_attempt
+                or row.status != CrawlJobStatus.RUNNING
+            ):
+                return False
             if progress is not None:
-                row.progress_json = progress
+                incoming = dict(progress)
+                if expected_attempt is not None:
+                    incoming = _merge_runner_review_progress(
+                        dict(row.progress_json or {}), incoming
+                    )
+                row.progress_json = incoming
             if ingest_job_id:
                 ids = list(row.ingest_job_ids_json or [])
                 if ingest_job_id not in ids:
@@ -145,6 +239,115 @@ class CrawlerStore:
                 row.ingest_job_ids_json = ids
             row.updated_at = _utcnow()
             await session.commit()
+            return True
+
+    async def claim_review_items(
+        self,
+        job_id: str,
+        *,
+        action: str,
+        item_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        """Atomically claim pending review items for one approve/reject action."""
+        async with AsyncSession(get_engine()) as session:
+            row = await session.get(CrawlJobRow, job_id, with_for_update=True)
+            if row is None:
+                raise LookupError("Crawler job not found")
+            progress = dict(row.progress_json or {})
+            items = [dict(item) for item in progress.get("review_items") or []]
+            index = {str(item.get("id") or ""): item for item in items}
+            unknown = set(item_ids) - set(index)
+            if unknown:
+                raise LookupError("Review item not found")
+            claimed: list[dict[str, Any]] = []
+            claimed_status = "processing" if action == "approve" else "rejecting"
+            now = _utcnow()
+            stale_before = now - timedelta(
+                seconds=get_settings().crawler_review_claim_seconds
+            )
+            for item_id in dict.fromkeys(item_ids):
+                item = index[item_id]
+                status = str(item.get("status") or "")
+                claimable = status == "pending" or (
+                    status in {"processing", "rejecting"}
+                    and _review_claim_expired(item, stale_before=stale_before)
+                )
+                if not claimable:
+                    continue
+                item["status"] = claimed_status
+                item["review_claim_token"] = str(uuid4())
+                item["review_claimed_at"] = now.isoformat()
+                claimed.append(dict(item))
+            progress["review_items"] = items
+            _refresh_review_counts(progress)
+            row.progress_json = progress
+            row.updated_at = _utcnow()
+            await session.commit()
+            return claimed
+
+    async def update_review_item(
+        self,
+        job_id: str,
+        item_id: str,
+        *,
+        expected_statuses: set[str],
+        values: dict[str, Any],
+        ingest_job_id: str | None = None,
+        increment_queued: bool = False,
+        expected_claim_token: str | None = None,
+    ) -> bool:
+        """Update one review item without replacing concurrent item changes."""
+        async with AsyncSession(get_engine()) as session:
+            row = await session.get(CrawlJobRow, job_id, with_for_update=True)
+            if row is None:
+                raise LookupError("Crawler job not found")
+            progress = dict(row.progress_json or {})
+            items = [dict(item) for item in progress.get("review_items") or []]
+            item = next(
+                (candidate for candidate in items if candidate.get("id") == item_id),
+                None,
+            )
+            if item is None:
+                raise LookupError("Review item not found")
+            if str(item.get("status") or "") not in expected_statuses:
+                return False
+            if expected_claim_token is not None and (
+                item.get("review_claim_token") != expected_claim_token
+            ):
+                return False
+            item.update(values)
+            if increment_queued:
+                progress["queued_for_ingest"] = int(
+                    progress.get("queued_for_ingest", 0)
+                ) + 1
+            progress["review_items"] = items
+            if ingest_job_id:
+                ingest_ids = list(row.ingest_job_ids_json or [])
+                if ingest_job_id not in ingest_ids:
+                    ingest_ids.append(ingest_job_id)
+                row.ingest_job_ids_json = ingest_ids
+            _refresh_review_counts(progress)
+            row.progress_json = progress
+            row.updated_at = _utcnow()
+            await session.commit()
+            return True
+
+    async def patch_review_progress(
+        self,
+        job_id: str,
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        async with AsyncSession(get_engine()) as session:
+            row = await session.get(CrawlJobRow, job_id, with_for_update=True)
+            if row is None:
+                raise LookupError("Crawler job not found")
+            progress = dict(row.progress_json or {})
+            progress.update(values)
+            _refresh_review_counts(progress)
+            row.progress_json = progress
+            row.updated_at = _utcnow()
+            await session.commit()
+            return progress
 
     async def finish(
         self,
@@ -153,11 +356,17 @@ class CrawlerStore:
         *,
         progress: dict[str, Any] | None = None,
         error_message: str | None = None,
-    ) -> None:
+        expected_attempt: int | None = None,
+    ) -> bool:
         async with AsyncSession(get_engine()) as session:
             row = await session.get(CrawlJobRow, job_id, with_for_update=True)
             if row is None:
-                return
+                return False
+            if expected_attempt is not None and (
+                row.attempt != expected_attempt
+                or row.status != CrawlJobStatus.RUNNING
+            ):
+                return False
             row.status = status
             if progress is not None:
                 row.progress_json = progress
@@ -165,6 +374,7 @@ class CrawlerStore:
             row.finished_at = None if status == CrawlJobStatus.PAUSED else _utcnow()
             row.updated_at = _utcnow()
             await session.commit()
+            return True
 
     async def request_pause(self, job_id: str) -> CrawlJobRow:
         async with AsyncSession(get_engine(), expire_on_commit=False) as session:
@@ -246,8 +456,17 @@ class CrawlerStore:
         content_hash: str | None = None,
         ingest_job_id: str | None = None,
         error: str | None = None,
-    ) -> None:
+    ) -> bool:
         async with AsyncSession(get_engine()) as session:
+            knowledge_base = (
+                await session.execute(
+                    select(KnowledgeBaseRow)
+                    .where(KnowledgeBaseRow.id == knowledge_base_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if knowledge_base is None:
+                return False
             key = {"knowledge_base_id": knowledge_base_id, "url_hash": _url_hash(url)}
             row = await session.get(CrawlUrlRecordRow, key, with_for_update=True)
             if row is None:
@@ -261,6 +480,7 @@ class CrawlerStore:
             row.last_crawled_at = _utcnow()
             row.updated_at = _utcnow()
             await session.commit()
+            return True
 
     async def recover_stale_jobs(self) -> list[OutboxEvent]:
         """重新排队长时间没有进度更新的运行中任务。"""

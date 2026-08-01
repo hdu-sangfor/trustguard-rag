@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -97,6 +98,7 @@ async def run_agent_review(
     *,
     criteria: str,
     llm: LLMClient | None = None,
+    control: Callable[[], Awaitable[str | None]] | None = None,
 ) -> dict[str, int]:
     """Review pending items; failures and uncertainty fall back to humans."""
     store = CrawlerStore()
@@ -111,6 +113,8 @@ async def run_agent_review(
     ]
 
     for item_id in item_ids:
+        if control and await control() in {"pause", "cancel", "lost"}:
+            break
         row = await store.get(job_id)
         if row is None:
             raise LookupError("Crawler job not found")
@@ -127,13 +131,22 @@ async def run_agent_review(
                 content=content,
                 llm=llm,
             )
-            item["reviewer"] = "agent"
-            item["review_reason"] = decision.reason
-            item["review_confidence"] = decision.confidence
-            item["review_model"] = decision.model
-            item["agent_decision"] = decision.decision
-            progress["review_items"] = items
-            await store.update_progress(job_id, progress=progress)
+            if control and await control() in {"pause", "cancel", "lost"}:
+                break
+            annotated = await store.update_review_item(
+                job_id,
+                item_id,
+                expected_statuses={"pending"},
+                values={
+                    "reviewer": "agent",
+                    "review_reason": decision.reason,
+                    "review_confidence": decision.confidence,
+                    "review_model": decision.model,
+                    "agent_decision": decision.decision,
+                },
+            )
+            if not annotated:
+                continue
             if decision.decision in {"approve", "reject"}:
                 await apply_review(job_id, action=decision.decision, item_ids=[item_id])
                 summary["approved" if decision.decision == "approve" else "rejected"] += 1
@@ -141,23 +154,23 @@ async def run_agent_review(
                 summary["manual_review"] += 1
         except Exception as error:  # fail closed and preserve staging for a human
             logger.warning("Agent review failed for item %s: %s", item_id, error)
-            item["reviewer"] = "agent"
-            item["review_reason"] = "Agent 审核失败，已自动转人工复核"
-            item["review_error"] = str(error)[:500]
-            progress["review_items"] = items
-            await store.update_progress(job_id, progress=progress)
+            await store.update_review_item(
+                job_id,
+                item_id,
+                expected_statuses={"pending"},
+                values={
+                    "reviewer": "agent",
+                    "review_reason": "Agent 审核失败，已自动转人工复核",
+                    "review_error": str(error)[:500],
+                },
+            )
             summary["failed"] += 1
 
-    row = await store.get(job_id)
-    if row is not None:
-        progress = dict(row.progress_json or {})
-        pending = sum(
-            item.get("status") in {"pending", "processing"}
-            for item in progress.get("review_items") or []
-        )
-        progress["review_mode"] = "agent"
-        progress["agent_review_summary"] = summary
-        progress["pending_review"] = pending
-        progress["review_status"] = "pending" if pending else "completed"
-        await store.update_progress(job_id, progress=progress)
+    await store.patch_review_progress(
+        job_id,
+        {
+            "review_mode": "agent",
+            "agent_review_summary": summary,
+        },
+    )
     return summary

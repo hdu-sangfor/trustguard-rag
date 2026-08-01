@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 import trafilatura
 
 from app.core.crawler.safety import UnsafeUrlError, validate_public_url
+from app.core.crawler.transport import SafeAsyncHTTPTransport
 
 _SPACE = re.compile(r"[ \t]+")
 _BLANK_LINES = re.compile(r"\n{3,}")
@@ -21,6 +22,7 @@ _TRACKING_QUERY_PREFIXES = ("utm_",)
 _TRACKING_QUERY_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
 _RETRYABLE_STATUS_CODES = {429, 502, 503, 504}
 _MAX_RETRY_DELAY_SECONDS = 60.0
+_MAX_RESPONSE_BYTES = 5_000_000
 
 
 @dataclass(slots=True)
@@ -125,9 +127,26 @@ class CrawlEngine:
         validator: Callable[..., Awaitable[str]] = validate_public_url,
         searcher: Callable[[str, int], Awaitable[list[str]]] | None = None,
     ) -> None:
-        self._client_factory = client_factory or httpx.AsyncClient
+        self._client_factory = client_factory
         self._validator = validator
         self._searcher = searcher or self._search_duckduckgo
+
+    def _client(
+        self,
+        request: CrawlRequest,
+        **kwargs,
+    ) -> httpx.AsyncClient:
+        if self._client_factory is not None:
+            return self._client_factory(**kwargs)
+        limits = kwargs.pop("limits", httpx.Limits())
+        return httpx.AsyncClient(
+            **kwargs,
+            trust_env=False,
+            transport=SafeAsyncHTTPTransport(
+                allow_private=request.allow_private_urls,
+                limits=limits,
+            ),
+        )
 
     async def crawl(
         self,
@@ -147,7 +166,8 @@ class CrawlEngine:
             "Accept": "text/html,application/xhtml+xml",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
-        async with self._client_factory(
+        async with self._client(
+            request,
             timeout=request.timeout_seconds,
             follow_redirects=False,
             limits=limits,
@@ -159,7 +179,7 @@ class CrawlEngine:
                     or network_attempts >= request.max_total_pages
                 ):
                     break
-                if control and await control() in {"pause", "cancel"}:
+                if control and await control() in {"pause", "cancel", "lost"}:
                     break
                 normalized = normalize_url(raw_url)
                 if not normalized or normalized in seen:
@@ -174,6 +194,8 @@ class CrawlEngine:
                     if on_error:
                         await on_error(normalized, error)
                     continue
+                if control and await control() in {"pause", "cancel", "lost"}:
+                    break
                 emitted += 1
                 yield page
                 if request.fetch_delay_seconds > 0:
@@ -223,7 +245,8 @@ class CrawlEngine:
     ) -> list[str]:
         current = normalize_url(site_url)
         headers = {"User-Agent": request.user_agent}
-        async with self._client_factory(
+        async with self._client(
+            request,
             timeout=request.timeout_seconds,
             follow_redirects=False,
             headers=headers,
@@ -241,7 +264,7 @@ class CrawlEngine:
                     current = normalize_url(urljoin(current, location))
                     continue
                 response.raise_for_status()
-                if len(response.content) > 5_000_000:
+                if len(response.content) > _MAX_RESPONSE_BYTES:
                     raise ValueError("Site index response exceeds 5 MB")
                 break
             else:
@@ -272,7 +295,7 @@ class CrawlEngine:
                 current = normalize_url(urljoin(current, location))
                 continue
             response.raise_for_status()
-            if len(response.content) > 5_000_000:
+            if len(response.content) > _MAX_RESPONSE_BYTES:
                 raise ValueError("Page response exceeds 5 MB")
             content_type = response.headers.get("content-type", "").lower()
             if content_type and not any(
@@ -290,7 +313,7 @@ class CrawlEngine:
     ) -> httpx.Response:
         for attempt in range(request.max_retries + 1):
             try:
-                response = await client.get(url)
+                response = await self._get_limited_response(client, url)
             except httpx.TransportError:
                 if attempt >= request.max_retries:
                     raise
@@ -303,6 +326,46 @@ class CrawlEngine:
                 return response
             await asyncio.sleep(self._retry_delay(request, attempt, response=response))
         raise RuntimeError("Crawler retry loop exited unexpectedly")
+
+    @staticmethod
+    async def _get_limited_response(
+        client: httpx.AsyncClient,
+        url: str,
+    ) -> httpx.Response:
+        """Read at most the configured page limit instead of buffering blindly."""
+        stream = getattr(client, "stream", None)
+        if stream is None:  # lightweight test clients
+            response = await client.get(url)
+            if len(response.content) > _MAX_RESPONSE_BYTES:
+                raise ValueError("Page response exceeds 5 MB")
+            return response
+
+        async with stream("GET", url) as response:
+            content_length = response.headers.get("content-length")
+            if content_length:
+                try:
+                    declared_length = int(content_length)
+                except ValueError:
+                    pass
+                else:
+                    if declared_length > _MAX_RESPONSE_BYTES:
+                        raise ValueError("Page response exceeds 5 MB")
+            content = bytearray()
+            async for chunk in response.aiter_bytes():
+                content.extend(chunk)
+                if len(content) > _MAX_RESPONSE_BYTES:
+                    raise ValueError("Page response exceeds 5 MB")
+            try:
+                request = response.request
+            except RuntimeError:
+                request = httpx.Request("GET", url)
+            return httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                content=bytes(content),
+                request=request,
+                extensions=response.extensions,
+            )
 
     @staticmethod
     def _retry_delay(

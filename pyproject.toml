@@ -15,7 +15,7 @@ dependencies = [
     "redis>=5.0",
     "aio-pika>=9.4",
     "minio>=7.2",
-    "httpx>=0.27",
+    "httpx==0.28.1",
     "cryptography>=42",
     "pymupdf>=1.24.0",
     "python-multipart>=0.0.9",

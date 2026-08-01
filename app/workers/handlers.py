@@ -28,6 +28,7 @@ from app.stores.knowledge_base_store import KnowledgeBaseStore
 from app.stores.outbox_store import OutboxStore
 from app.workers.messages import (
     CLEANUP_DOCUMENT,
+    CLEANUP_JOB_STAGING,
     INGEST_DOCUMENT,
     REVIEWED_INGEST_DOCUMENT,
     RESOLVE_CONFLICT,
@@ -172,11 +173,57 @@ async def _handle_crawler(command: CommandMessage) -> None:
     crawl_job_id = str(
         command.payload.get("crawl_job_id") or command.aggregate_id
     )
-    if not await CrawlerStore().claim(crawl_job_id):
+    store = CrawlerStore()
+    if not await store.claim(crawl_job_id):
+        return
+    job = await store.get(crawl_job_id)
+    if job is None:
         return
     from app.core.crawler.runner import get_crawler_runner
 
-    await get_crawler_runner().run(crawl_job_id)
+    work = asyncio.create_task(
+        get_crawler_runner().run(crawl_job_id)
+    )
+    lost = asyncio.Event()
+
+    async def renew() -> None:
+        settings = get_settings()
+        interval = max(
+            min(
+                settings.worker_heartbeat_seconds,
+                settings.crawler_stale_seconds / 3,
+            ),
+            0.1,
+        )
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                if not await store.heartbeat(crawl_job_id, job.attempt):
+                    lost.set()
+                    work.cancel()
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            lost.set()
+            work.cancel()
+            raise
+
+    heartbeat = asyncio.create_task(renew())
+    try:
+        await work
+    except asyncio.CancelledError:
+        if not lost.is_set():
+            raise
+    finally:
+        heartbeat.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat
+
+
+async def _handle_job_staging_cleanup(command: CommandMessage) -> None:
+    job_id = str(command.payload.get("job_id") or command.aggregate_id)
+    get_blob_store().delete_job_staging(job_id)
 
 
 async def dispatch_command(command: CommandMessage) -> None:
@@ -186,6 +233,8 @@ async def dispatch_command(command: CommandMessage) -> None:
         await _handle_resolve(command)
     elif command.event_type == CLEANUP_DOCUMENT:
         await _handle_cleanup(command)
+    elif command.event_type == CLEANUP_JOB_STAGING:
+        await _handle_job_staging_cleanup(command)
     elif command.event_type == RUN_CRAWLER:
         await _handle_crawler(command)
     else:

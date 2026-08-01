@@ -1168,7 +1168,7 @@ async def test_structured_resume_scans_original_limit_and_skips_processed_urls(
 
 
 @pytest.mark.asyncio
-async def test_rejected_url_is_treated_as_already_processed() -> None:
+async def test_rejected_url_is_treated_as_already_processed(test_engine) -> None:
     knowledge_base_id = (await KnowledgeBaseStore().get_default()).id
     store = CrawlerStore()
     url = "https://example.com/rejected-on-resume"

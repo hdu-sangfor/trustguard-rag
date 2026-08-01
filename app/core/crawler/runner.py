@@ -58,9 +58,19 @@ class CrawlerRunner:
         self._structured = structured_registry or default_structured_registry()
         self._jobs = job_store or JobStore()
 
-    async def run(self, crawl_job_id: str) -> None:
+    async def run(
+        self,
+        crawl_job_id: str,
+        *,
+        expected_attempt: int | None = None,
+    ) -> None:
         job = await self._store.get(crawl_job_id)
         if job is None:
+            return
+        expected_attempt = (
+            job.attempt if expected_attempt is None else expected_attempt
+        )
+        if job.status != CrawlJobStatus.RUNNING or job.attempt != expected_attempt:
             return
         settings = get_settings()
         config = dict(job.config_json or {})
@@ -80,7 +90,11 @@ class CrawlerRunner:
                 config.get("max_pages_per_site") or settings.crawler_max_pages_per_site
             ),
             max_total_pages=int(config.get("max_total_pages") or settings.crawler_max_total_pages),
-            max_chars=int(config.get("max_chars") or settings.crawler_max_chars),
+            max_chars=int(
+                config.get("max_chars")
+                if config.get("max_chars") is not None
+                else settings.crawler_max_chars
+            ),
             timeout_seconds=float(
                 config.get("timeout_seconds") or settings.crawler_timeout_seconds
             ),
@@ -118,7 +132,10 @@ class CrawlerRunner:
         )
 
         async def control() -> str | None:
-            return await self._store.control_state(crawl_job_id)
+            return await self._store.control_state(
+                crawl_job_id,
+                expected_attempt=expected_attempt,
+            )
 
         category_routes: dict[str, str] = dict(
             progress.get("category_routes") or {}
@@ -151,7 +168,11 @@ class CrawlerRunner:
                         raise
             category_routes[category] = existing.id
             progress["category_routes"] = dict(category_routes)
-            await self._store.update_progress(crawl_job_id, progress=progress)
+            await self._store.update_progress(
+                crawl_job_id,
+                progress=progress,
+                expected_attempt=expected_attempt,
+            )
             return existing.id
 
         async def target_knowledge_base_id(page: CrawlPage) -> str:
@@ -173,7 +194,11 @@ class CrawlerRunner:
             )
             if skipped:
                 progress["skipped"] = int(progress.get("skipped", 0)) + 1
-                await self._store.update_progress(crawl_job_id, progress=progress)
+                await self._store.update_progress(
+                    crawl_job_id,
+                    progress=progress,
+                    expected_attempt=expected_attempt,
+                )
             return skipped
 
         async def on_error(url: str, error: Exception) -> None:
@@ -188,13 +213,19 @@ class CrawlerRunner:
                 status="failed",
                 error=str(error),
             )
-            await self._store.update_progress(crawl_job_id, progress=progress)
+            await self._store.update_progress(
+                crawl_job_id,
+                progress=progress,
+                expected_attempt=expected_attempt,
+            )
 
         async def queue_page(
             page: CrawlPage,
             *,
             knowledge_base_id: str | None = None,
         ) -> None:
+            if await control() in {"pause", "cancel", "lost"}:
+                return
             knowledge_base_id = knowledge_base_id or job.knowledge_base_id
             classification_metadata = {
                 "domain_category": config.get("domain_category"),
@@ -232,7 +263,11 @@ class CrawlerRunner:
                     content_hash=page.content_hash,
                     error=outcome.rejected_reason,
                 )
-                await self._store.update_progress(crawl_job_id, progress=progress)
+                await self._store.update_progress(
+                    crawl_job_id,
+                    progress=progress,
+                    expected_attempt=expected_attempt,
+                )
                 return
             page = outcome.page
             if page is None:
@@ -260,19 +295,28 @@ class CrawlerRunner:
                 progress["queued_for_ingest"] = int(progress.get("queued_for_ingest", 0)) + 1
                 record_status = "queued_for_ingest"
                 record_job_id = ingest_job_id
-            await self._store.record_url(
+            url_recorded = await self._store.record_url(
                 knowledge_base_id=knowledge_base_id,
                 url=page.url,
                 status=record_status,
                 content_hash=page.content_hash,
                 ingest_job_id=record_job_id,
             )
-            await self._store.update_progress(crawl_job_id, progress=progress)
+            progress_recorded = await self._store.update_progress(
+                crawl_job_id,
+                progress=progress,
+                expected_attempt=expected_attempt,
+            )
+            if not url_recorded or not progress_recorded:
+                if require_review:
+                    get_blob_store().delete_job_staging(record_job_id)
+                return
             if not require_review:
                 await self._store.update_progress(
                     crawl_job_id,
                     progress=progress,
                     ingest_job_id=record_job_id,
+                    expected_attempt=expected_attempt,
                 )
 
         try:
@@ -288,7 +332,7 @@ class CrawlerRunner:
             for source_id in request.structured_sources:
                 if int(progress.get("fetched", 0)) >= request.max_total_pages:
                     break
-                if await control() in {"pause", "cancel"}:
+                if await control() in {"pause", "cancel", "lost"}:
                     break
                 adapter = self._structured.get(source_id)
                 options = request.source_options.get(source_id) or {}
@@ -318,7 +362,7 @@ class CrawlerRunner:
                         retry_base_seconds=request.retry_base_seconds,
                         on_error=on_error,
                     ):
-                        if await control() in {"pause", "cancel"}:
+                        if await control() in {"pause", "cancel", "lost"}:
                             break
                         target_id = await target_knowledge_base_id(page)
                         if not request.force and await should_skip(
@@ -359,23 +403,49 @@ class CrawlerRunner:
                 CrawlJobStatus.FAILED,
                 progress=progress,
                 error_message=str(error),
+                expected_attempt=expected_attempt,
             )
             raise
 
         state = await control()
         progress["current_url"] = None
-        if state not in {"cancel", "pause"} and require_review and review_mode == "agent":
+        if (
+            state not in {"cancel", "pause", "lost"}
+            and require_review
+            and review_mode == "agent"
+        ):
             from app.core.crawler.agent_review import run_agent_review
 
-            await self._store.update_progress(crawl_job_id, progress=progress)
-            await run_agent_review(crawl_job_id, criteria=review_criteria)
+            await self._store.update_progress(
+                crawl_job_id,
+                progress=progress,
+                expected_attempt=expected_attempt,
+            )
+            await run_agent_review(
+                crawl_job_id,
+                criteria=review_criteria,
+                control=control,
+            )
             refreshed = await self._store.get(crawl_job_id)
             if refreshed is not None:
                 progress = dict(refreshed.progress_json or progress)
+            state = await control()
+        if state == "lost":
+            return
         if state == "cancel":
-            await self._store.finish(crawl_job_id, CrawlJobStatus.CANCELLED, progress=progress)
+            await self._store.finish(
+                crawl_job_id,
+                CrawlJobStatus.CANCELLED,
+                progress=progress,
+                expected_attempt=expected_attempt,
+            )
         elif state == "pause":
-            await self._store.finish(crawl_job_id, CrawlJobStatus.PAUSED, progress=progress)
+            await self._store.finish(
+                crawl_job_id,
+                CrawlJobStatus.PAUSED,
+                progress=progress,
+                expected_attempt=expected_attempt,
+            )
         elif (
             int(progress.get("queued_for_ingest", 0)) == 0
             and int(progress.get("pending_review", 0)) == 0
@@ -386,9 +456,15 @@ class CrawlerRunner:
                 CrawlJobStatus.FAILED,
                 progress=progress,
                 error_message="All discovered pages failed to fetch or extract",
+                expected_attempt=expected_attempt,
             )
         else:
-            await self._store.finish(crawl_job_id, CrawlJobStatus.SUCCEEDED, progress=progress)
+            await self._store.finish(
+                crawl_job_id,
+                CrawlJobStatus.SUCCEEDED,
+                progress=progress,
+                expected_attempt=expected_attempt,
+            )
 
     async def _stage_review(
         self,

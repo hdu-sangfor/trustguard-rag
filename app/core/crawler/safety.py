@@ -13,7 +13,7 @@ class UnsafeUrlError(ValueError):
 
 
 def _is_public_address(value: str) -> bool:
-    address = ipaddress.ip_address(value)
+    address = ipaddress.ip_address(value.split("%", 1)[0])
     return not (
         address.is_private
         or address.is_loopback
@@ -39,27 +39,46 @@ async def validate_public_url(url: str, *, allow_private: bool = False) -> str:
     except ValueError as error:
         raise UnsafeUrlError("URL contains an invalid port") from error
 
-    if allow_private:
-        return candidate
+    await resolve_host_addresses(
+        parsed.hostname,
+        port,
+        allow_private=allow_private,
+    )
+    return candidate
 
+
+async def resolve_host_addresses(
+    hostname: str,
+    port: int,
+    *,
+    allow_private: bool = False,
+) -> tuple[str, ...]:
+    """Resolve once and return the exact addresses approved for connection."""
     try:
-        literal = ipaddress.ip_address(parsed.hostname)
+        literal = ipaddress.ip_address(hostname)
     except ValueError:
         try:
             infos = await asyncio.to_thread(
                 socket.getaddrinfo,
-                parsed.hostname,
+                hostname,
                 port,
                 type=socket.SOCK_STREAM,
             )
         except OSError as error:
-            raise UnsafeUrlError(f"Unable to resolve target hostname: {error}") from error
-        addresses = {item[4][0].split("%", 1)[0] for item in infos}
-        if not addresses:
-            raise UnsafeUrlError("Target hostname did not resolve to an address")
-        if any(not _is_public_address(address) for address in addresses):
-            raise UnsafeUrlError("Private or special-purpose target addresses are not allowed")
+            raise UnsafeUrlError(
+                f"Unable to resolve target hostname: {error}"
+            ) from error
+        addresses = tuple(
+            dict.fromkeys(item[4][0] for item in infos)
+        )
     else:
-        if not _is_public_address(str(literal)):
-            raise UnsafeUrlError("Private or special-purpose target addresses are not allowed")
-    return candidate
+        addresses = (str(literal),)
+    if not addresses:
+        raise UnsafeUrlError("Target hostname did not resolve to an address")
+    if not allow_private and any(
+        not _is_public_address(address) for address in addresses
+    ):
+        raise UnsafeUrlError(
+            "Private or special-purpose target addresses are not allowed"
+        )
+    return addresses

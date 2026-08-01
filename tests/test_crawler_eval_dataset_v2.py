@@ -7,8 +7,20 @@ import re
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 
 DATASET_ROOT = Path(__file__).resolve().parents[1] / "evaluation" / "crawler"
+DATASET_FILES = (
+    "stats.json",
+    "crawler-eval.jsonl",
+    "corpus-manifest.json",
+    "excluded-sources.json",
+)
+pytestmark = pytest.mark.skipif(
+    any(not (DATASET_ROOT / "datasets" / name).is_file() for name in DATASET_FILES),
+    reason="crawler V2 evaluation datasets are local generated artifacts",
+)
 SECURITY_ID = re.compile(
     r"(?<![A-Z0-9])(?:CVE-\d{4}-\d{4,}|CWE-\d+|CAPEC-\d+)(?!\d)",
     re.IGNORECASE,

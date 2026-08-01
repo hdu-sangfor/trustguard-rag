@@ -101,8 +101,8 @@ async def delete_knowledge_base(knowledge_base_id: str) -> Response:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    if deleted:
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
     for event in events:
         await dispatch_eager(event)
+    if deleted:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     return Response(status_code=status.HTTP_202_ACCEPTED)

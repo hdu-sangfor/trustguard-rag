@@ -15,6 +15,7 @@ from app.core.embedding.profiles import (
     get_embedding_profile,
 )
 from app.core.ingest.errors import CANCELLED
+from app.domain.crawler import CRAWL_TERMINAL_STATUSES, CrawlJobStatus
 from app.domain import (
     DELETABLE_DOCUMENT_STATUSES,
     RESUMABLE_JOB_STATUSES,
@@ -24,9 +25,15 @@ from app.domain import (
     IngestStep,
 )
 from app.stores.db import get_engine
-from app.stores.models import DocumentRow, IngestJobRow, KnowledgeBaseRow
+from app.stores.models import (
+    CrawlJobRow,
+    CrawlUrlRecordRow,
+    DocumentRow,
+    IngestJobRow,
+    KnowledgeBaseRow,
+)
 from app.stores.outbox_store import OutboxEvent, add_outbox_event, event_from_row
-from app.workers.messages import CLEANUP_DOCUMENT
+from app.workers.messages import CLEANUP_DOCUMENT, CLEANUP_JOB_STAGING
 
 DEFAULT_KNOWLEDGE_BASE_ID = str(uuid5(NAMESPACE_URL, "trustguard:knowledge-base:default"))
 
@@ -256,8 +263,7 @@ class KnowledgeBaseStore:
     ) -> tuple[bool, list[OutboxEvent]]:
         """删除空知识库，或原子地为其全部文档创建清理任务。
 
-        返回 ``(True, [])`` 表示知识库已立即删除；返回 ``(False, events)``
-        表示文档进入删除流程，最后一个文档清理完成后再删除知识库。
+        返回删除结果和可靠投递的文档、Crawler 暂存清理事件。
         """
         async with AsyncSession(get_engine(), expire_on_commit=False) as session:
             row = (
@@ -271,6 +277,68 @@ class KnowledgeBaseStore:
                 raise LookupError("Knowledge base not found")
             if row.is_default or row.is_system:
                 raise ValueError("System knowledge base cannot be deleted")
+
+            review_item_ids: list[str] = []
+            crawler_rows = list(
+                (
+                    await session.execute(
+                        select(CrawlJobRow).with_for_update()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            now = _utcnow()
+            for crawler in crawler_rows:
+                if (
+                    crawler.knowledge_base_id == knowledge_base_id
+                    and crawler.status not in CRAWL_TERMINAL_STATUSES
+                ):
+                    crawler.status = CrawlJobStatus.CANCELLED
+                    crawler.cancel_requested = True
+                    crawler.pause_requested = False
+                    crawler.finished_at = now
+                progress = dict(crawler.progress_json or {})
+                items = [dict(item) for item in progress.get("review_items") or []]
+                changed = False
+                for item in items:
+                    if (
+                        str(item.get("knowledge_base_id") or "")
+                        != knowledge_base_id
+                        or item.get("status") in {"approved", "rejected"}
+                    ):
+                        continue
+                    item_id = str(item.get("id") or "")
+                    if item_id:
+                        review_item_ids.append(item_id)
+                    item["status"] = "rejected"
+                    item["reviewer"] = "system"
+                    item["review_reason"] = (
+                        "Knowledge base was deleted before review completed"
+                    )
+                    item["review_claim_token"] = None
+                    item["review_claimed_at"] = None
+                    changed = True
+                if changed:
+                    progress["review_items"] = items
+                    pending = sum(
+                        item.get("status")
+                        in {"pending", "processing", "rejecting"}
+                        for item in items
+                    )
+                    progress["pending_review"] = pending
+                    progress["review_status"] = (
+                        "pending" if pending else "completed"
+                    )
+                    crawler.progress_json = progress
+                if changed or crawler.knowledge_base_id == knowledge_base_id:
+                    crawler.updated_at = now
+
+            await session.execute(
+                delete(CrawlUrlRecordRow).where(
+                    CrawlUrlRecordRow.knowledge_base_id == knowledge_base_id
+                )
+            )
 
             active_jobs = list(
                 (
@@ -286,7 +354,6 @@ class KnowledgeBaseStore:
                 .scalars()
                 .all()
             )
-            now = _utcnow()
             for job in active_jobs:
                 job.status = IngestJobStatus.CANCELLED
                 job.current_step = IngestStep.CANCELLED
@@ -300,6 +367,19 @@ class KnowledgeBaseStore:
                 job.lease_expires_at = None
                 job.heartbeat_at = None
                 job.knowledge_base_id = None
+
+            events: list[OutboxEvent] = []
+            staging_ids = dict.fromkeys(
+                [*review_item_ids, *(job.id for job in active_jobs)]
+            )
+            for staging_id in staging_ids:
+                event_row = add_outbox_event(
+                    session,
+                    event_type=CLEANUP_JOB_STAGING,
+                    aggregate_id=staging_id,
+                    payload={"job_id": staging_id},
+                )
+                events.append(event_from_row(event_row))
 
             documents = list(
                 (
@@ -332,9 +412,8 @@ class KnowledgeBaseStore:
                 except IntegrityError as error:
                     await session.rollback()
                     raise ValueError("Knowledge base is still in use") from error
-                return True, []
+                return True, events
 
-            events: list[OutboxEvent] = []
             had_ready_document = False
             for document in documents:
                 had_ready_document = (
