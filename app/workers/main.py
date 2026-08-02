@@ -12,6 +12,10 @@ from app.stores.outbox_store import ensure_outbox_schema
 from app.workers.consumer import run_consumers
 from app.workers.publisher import run_outbox_publisher
 from app.workers.recovery import recover_once, run_recovery_loop
+from app.workers.review_retention import (
+    cleanup_rejected_review_content_once,
+    run_review_content_cleanup_loop,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +27,13 @@ async def run() -> None:
     recovered = await DocumentStore().enqueue_pending_cleanups()
     logger.info("queued %s pending Saga cleanup command(s)", len(recovered))
     await recover_once()
+    await cleanup_rejected_review_content_once()
     try:
         await asyncio.gather(
             run_outbox_publisher(),
             run_consumers(),
             run_recovery_loop(),
+            run_review_content_cleanup_loop(),
         )
     finally:
         for closer in (db.close, qdrant_store.close, opensearch_store.close, redis_cache.close):

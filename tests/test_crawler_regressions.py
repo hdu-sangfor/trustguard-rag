@@ -8,19 +8,22 @@ from pathlib import Path
 
 import httpx
 import pytest
+from minio.error import S3Error
 from sqlalchemy import update
 
 from app.core.crawler.engine import CrawlEngine, CrawlPage, CrawlRequest
 from app.core.embedding.profiles import get_embedding_profile
-from app.core.crawler.review import apply_review, get_review
+from app.core.crawler.review import apply_review, get_review, get_review_content
 from app.core.crawler.runner import CrawlerRunner
 from app.core.crawler.transport import SafeNetworkBackend
 from app.domain.crawler import CrawlJobStatus
 from app.settings import get_settings
 from app.stores.blob_store import get_blob_store
 from app.stores.crawler_store import CrawlerStore
+from app.stores.job_store import JobStore
 from app.stores.knowledge_base_store import KnowledgeBaseStore
 from app.stores.models import CrawlJobRow
+from app.workers.review_retention import cleanup_rejected_review_content_once
 
 
 def test_compose_worker_consumes_ordinary_ingest_queue() -> None:
@@ -42,6 +45,208 @@ def test_committed_crawler_report_preserves_v2_quality_evidence() -> None:
     assert "语料：扫描 122 个源文件，入库 102 篇" in report
     assert "查询：133 道；可回答 108，不可回答 25" in report
     assert "数据指纹：`f3f03a943dd5449e95d3fa28f36809b4c5dfc1071d86471fdf2994681ef8b3f7`" in report
+
+
+@pytest.mark.asyncio
+async def test_missing_minio_review_content_returns_not_found(
+    test_engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = CrawlerStore()
+    knowledge_base_id = (await KnowledgeBaseStore().get_default()).id
+    row, _ = await store.create_job(
+        knowledge_base_id=knowledge_base_id,
+        config={"urls": ["https://example.com/missing-review"]},
+    )
+    progress = dict(row.progress_json or {})
+    progress.update(
+        {
+            "review_items": [
+                {
+                    "id": "missing-minio-review",
+                    "status": "pending",
+                    "knowledge_base_id": knowledge_base_id,
+                    "source_uri": "https://example.com/missing-review",
+                }
+            ],
+            "pending_review": 1,
+            "review_status": "pending",
+        }
+    )
+    await store.update_progress(row.id, progress=progress)
+
+    class MissingBlobStore:
+        def read_job_upload(self, job_id: str) -> bytes:
+            raise S3Error(
+                None,
+                "NoSuchKey",
+                "The specified key does not exist.",
+                "staging/jobs/missing-minio-review/upload",
+                "request-id",
+                "host-id",
+            )
+
+    monkeypatch.setattr(
+        "app.core.crawler.review.get_blob_store",
+        lambda: MissingBlobStore(),
+    )
+
+    with pytest.raises(LookupError, match="Review content is no longer available"):
+        await get_review_content(row.id, "missing-minio-review")
+
+
+@pytest.mark.asyncio
+async def test_agent_rejection_is_retained_and_can_be_manually_approved(
+    test_engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = CrawlerStore()
+    knowledge_base_id = (await KnowledgeBaseStore().get_default()).id
+    row, _ = await store.create_job(
+        knowledge_base_id=knowledge_base_id,
+        config={"urls": ["https://example.com/agent-rejected"]},
+    )
+    item_id = "agent-rejected-review"
+    get_blob_store().put_job_upload(item_id, b"retained Agent rejection")
+    progress = dict(row.progress_json or {})
+    progress.update(
+        {
+            "review_items": [
+                {
+                    "id": item_id,
+                    "status": "pending",
+                    "knowledge_base_id": knowledge_base_id,
+                    "source_uri": "https://example.com/agent-rejected",
+                    "source_type": "url",
+                    "content_hash": "d" * 64,
+                    "reviewer": "agent",
+                    "agent_decision": "reject",
+                    "review_reason": "缺少可核验的修复信息",
+                }
+            ],
+            "pending_review": 1,
+            "review_status": "pending",
+        }
+    )
+    await store.update_progress(row.id, progress=progress)
+
+    rejected = await apply_review(row.id, action="reject", item_ids=[item_id])
+
+    rejected_item = rejected["items"][0]
+    assert rejected_item["status"] == "rejected"
+    assert rejected_item["review_content_available"] is True
+    expires_at = datetime.fromisoformat(rejected_item["review_content_expires_at"])
+    assert timedelta(days=29) < expires_at - datetime.now(timezone.utc) <= timedelta(
+        days=30
+    )
+    retained = await get_review_content(row.id, item_id)
+    assert retained["content"] == "retained Agent rejection"
+
+    async def do_not_dispatch(_event) -> None:
+        return None
+
+    monkeypatch.setattr("app.core.crawler.review.dispatch_eager", do_not_dispatch)
+    approved = await apply_review(
+        row.id,
+        action="approve",
+        item_ids=[item_id],
+        reviewer="alice",
+    )
+
+    approved_item = approved["items"][0]
+    assert approved_item["status"] == "approved"
+    assert approved_item["manual_reviewer"] == "alice"
+    assert approved_item["manual_reviewed_at"]
+    assert approved_item["review_content_expires_at"] is None
+    assert await JobStore().get(item_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_human_rejection_still_deletes_review_content(test_engine) -> None:
+    store = CrawlerStore()
+    knowledge_base_id = (await KnowledgeBaseStore().get_default()).id
+    row, _ = await store.create_job(
+        knowledge_base_id=knowledge_base_id,
+        config={"urls": ["https://example.com/human-rejected"]},
+    )
+    item_id = "human-rejected-review"
+    get_blob_store().put_job_upload(item_id, b"human rejected content")
+    progress = dict(row.progress_json or {})
+    progress.update(
+        {
+            "review_items": [
+                {
+                    "id": item_id,
+                    "status": "pending",
+                    "knowledge_base_id": knowledge_base_id,
+                    "source_uri": "https://example.com/human-rejected",
+                    "source_type": "url",
+                }
+            ],
+            "pending_review": 1,
+            "review_status": "pending",
+        }
+    )
+    await store.update_progress(row.id, progress=progress)
+
+    rejected = await apply_review(
+        row.id,
+        action="reject",
+        item_ids=[item_id],
+        reviewer="alice",
+    )
+
+    assert rejected["items"][0]["review_content_available"] is False
+    assert rejected["items"][0]["manual_reviewer"] == "alice"
+    with pytest.raises(FileNotFoundError):
+        get_blob_store().read_job_upload(item_id)
+
+
+@pytest.mark.asyncio
+async def test_expired_agent_rejection_is_cleaned_and_cannot_be_reviewed(
+    test_engine,
+) -> None:
+    store = CrawlerStore()
+    knowledge_base_id = (await KnowledgeBaseStore().get_default()).id
+    row, _ = await store.create_job(
+        knowledge_base_id=knowledge_base_id,
+        config={"urls": ["https://example.com/expired-rejection"]},
+    )
+    item_id = "expired-agent-rejection"
+    get_blob_store().put_job_upload(item_id, b"expired content")
+    progress = dict(row.progress_json or {})
+    progress.update(
+        {
+            "review_items": [
+                {
+                    "id": item_id,
+                    "status": "rejected",
+                    "knowledge_base_id": knowledge_base_id,
+                    "source_uri": "https://example.com/expired-rejection",
+                    "source_type": "url",
+                    "reviewer": "agent",
+                    "agent_decision": "reject",
+                    "review_content_available": True,
+                    "review_content_expires_at": (
+                        datetime.now(timezone.utc) - timedelta(minutes=1)
+                    ).isoformat(),
+                }
+            ],
+            "pending_review": 0,
+            "review_status": "completed",
+        }
+    )
+    await store.update_progress(row.id, progress=progress)
+
+    assert await cleanup_rejected_review_content_once() == 1
+
+    review = await get_review(row.id)
+    assert review["items"][0]["review_content_available"] is False
+    assert review["items"][0]["review_content_expired_at"]
+    with pytest.raises(FileNotFoundError):
+        get_blob_store().read_job_upload(item_id)
+    with pytest.raises(LookupError, match="retention period has expired"):
+        await get_review_content(row.id, item_id)
 
 
 @pytest.mark.asyncio
@@ -270,7 +475,9 @@ async def test_delete_knowledge_base_cleans_crawler_review_state(
         config={"urls": ["https://example.com/delete-review"]},
     )
     item_id = "delete-review-item"
+    retained_item_id = "delete-retained-review-item"
     get_blob_store().put_job_upload(item_id, b"review content")
+    get_blob_store().put_job_upload(retained_item_id, b"retained review content")
     progress = dict(row.progress_json or {})
     progress.update(
         {
@@ -280,6 +487,18 @@ async def test_delete_knowledge_base_cleans_crawler_review_state(
                     "status": "pending",
                     "knowledge_base_id": knowledge_base.id,
                     "source_uri": "https://example.com/delete-review",
+                },
+                {
+                    "id": retained_item_id,
+                    "status": "rejected",
+                    "knowledge_base_id": knowledge_base.id,
+                    "source_uri": "https://example.com/delete-retained-review",
+                    "reviewer": "agent",
+                    "agent_decision": "reject",
+                    "review_content_available": True,
+                    "review_content_expires_at": (
+                        datetime.now(timezone.utc) + timedelta(days=30)
+                    ).isoformat(),
                 }
             ],
             "pending_review": 1,
@@ -299,9 +518,12 @@ async def test_delete_knowledge_base_cleans_crawler_review_state(
     crawler = await store.get(row.id)
     assert crawler is not None and crawler.status == CrawlJobStatus.CANCELLED
     review = await get_review(row.id)
-    assert review["rejected"] == 1
+    assert review["rejected"] == 2
+    assert not any(item["review_content_available"] for item in review["items"])
     with pytest.raises(FileNotFoundError):
         get_blob_store().read_job_upload(item_id)
+    with pytest.raises(FileNotFoundError):
+        get_blob_store().read_job_upload(retained_item_id)
     assert not await store.is_url_crawled(
         knowledge_base.id,
         "https://example.com/delete-review",

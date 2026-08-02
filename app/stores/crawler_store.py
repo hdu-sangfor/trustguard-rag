@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -83,6 +84,26 @@ def _review_claim_expired(
     if claimed_at.tzinfo is not None:
         claimed_at = claimed_at.astimezone(timezone.utc).replace(tzinfo=None)
     return claimed_at <= stale_before
+
+
+def _review_timestamp(value: Any) -> datetime | None:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw_value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewContentCleanupClaim:
+    crawl_job_id: str
+    item_id: str
+    claim_token: str
 
 
 class CrawlerStore:
@@ -247,6 +268,7 @@ class CrawlerStore:
         *,
         action: str,
         item_ids: list[str],
+        allow_rejected_approval: bool = False,
     ) -> list[dict[str, Any]]:
         """Atomically claim pending review items for one approve/reject action."""
         async with AsyncSession(get_engine()) as session:
@@ -268,12 +290,29 @@ class CrawlerStore:
             for item_id in dict.fromkeys(item_ids):
                 item = index[item_id]
                 status = str(item.get("status") or "")
-                claimable = status == "pending" or (
+                expires_at = _review_timestamp(item.get("review_content_expires_at"))
+                rejected_approval = (
+                    action == "approve"
+                    and allow_rejected_approval
+                    and status == "rejected"
+                    and item.get("reviewer") == "agent"
+                    and item.get("agent_decision") == "reject"
+                    and bool(item.get("review_content_available"))
+                    and expires_at is not None
+                    and expires_at > now
+                )
+                claimable = status == "pending" or rejected_approval or (
                     status in {"processing", "rejecting"}
                     and _review_claim_expired(item, stale_before=stale_before)
                 )
                 if not claimable:
                     continue
+                previous_status = str(item.get("review_previous_status") or "")
+                item["review_previous_status"] = (
+                    previous_status
+                    if previous_status in {"pending", "rejected"}
+                    else status if status in {"pending", "rejected"} else "pending"
+                )
                 item["status"] = claimed_status
                 item["review_claim_token"] = str(uuid4())
                 item["review_claimed_at"] = now.isoformat()
@@ -284,6 +323,145 @@ class CrawlerStore:
             row.updated_at = _utcnow()
             await session.commit()
             return claimed
+
+    async def claim_expired_review_content(
+        self,
+        *,
+        limit: int = 200,
+    ) -> list[ReviewContentCleanupClaim]:
+        """Fence expired Agent-rejected staging objects before deleting them."""
+        now = _utcnow()
+        stale_before = now - timedelta(
+            seconds=get_settings().crawler_review_claim_seconds
+        )
+        claims: list[ReviewContentCleanupClaim] = []
+        async with AsyncSession(get_engine()) as session:
+            result = await session.execute(
+                select(CrawlJobRow)
+                .where(CrawlJobRow.progress_json.is_not(None))
+                .order_by(CrawlJobRow.updated_at.asc(), CrawlJobRow.id.asc())
+                .with_for_update(skip_locked=True)
+            )
+            for row in result.scalars():
+                progress = dict(row.progress_json or {})
+                items = [dict(item) for item in progress.get("review_items") or []]
+                changed = False
+                for item in items:
+                    if len(claims) >= max(1, limit):
+                        break
+                    if (
+                        item.get("status") != "rejected"
+                        or item.get("reviewer") != "agent"
+                        or item.get("agent_decision") != "reject"
+                    ):
+                        continue
+                    expires_at = _review_timestamp(
+                        item.get("review_content_expires_at")
+                    )
+                    cleanup_pending = bool(
+                        item.get("review_content_cleanup_pending")
+                    )
+                    if not cleanup_pending and (
+                        not item.get("review_content_available")
+                        or expires_at is None
+                        or expires_at > now
+                    ):
+                        continue
+                    claimed_at = _review_timestamp(
+                        item.get("review_content_cleanup_claimed_at")
+                    )
+                    if (
+                        item.get("review_content_cleanup_claim_token")
+                        and claimed_at is not None
+                        and claimed_at > stale_before
+                    ):
+                        continue
+                    item_id = str(item.get("id") or "")
+                    if not item_id:
+                        continue
+                    token = str(uuid4())
+                    item["review_content_available"] = False
+                    item["review_content_cleanup_pending"] = True
+                    item["review_content_cleanup_claim_token"] = token
+                    item["review_content_cleanup_claimed_at"] = now.isoformat()
+                    claims.append(
+                        ReviewContentCleanupClaim(
+                            crawl_job_id=row.id,
+                            item_id=item_id,
+                            claim_token=token,
+                        )
+                    )
+                    changed = True
+                if changed:
+                    progress["review_items"] = items
+                    row.progress_json = progress
+                    row.updated_at = now
+                if len(claims) >= max(1, limit):
+                    break
+            await session.commit()
+        return claims
+
+    async def finalize_review_content_cleanup(
+        self,
+        claim: ReviewContentCleanupClaim,
+    ) -> bool:
+        return await self._update_review_content_cleanup_claim(
+            claim,
+            values={
+                "review_content_cleanup_pending": False,
+                "review_content_cleanup_claim_token": None,
+                "review_content_cleanup_claimed_at": None,
+                "review_content_expired_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+    async def release_review_content_cleanup(
+        self,
+        claim: ReviewContentCleanupClaim,
+    ) -> bool:
+        return await self._update_review_content_cleanup_claim(
+            claim,
+            values={
+                "review_content_cleanup_claim_token": None,
+                "review_content_cleanup_claimed_at": None,
+            },
+        )
+
+    async def _update_review_content_cleanup_claim(
+        self,
+        claim: ReviewContentCleanupClaim,
+        *,
+        values: dict[str, Any],
+    ) -> bool:
+        async with AsyncSession(get_engine()) as session:
+            row = await session.get(
+                CrawlJobRow,
+                claim.crawl_job_id,
+                with_for_update=True,
+            )
+            if row is None:
+                return False
+            progress = dict(row.progress_json or {})
+            items = [dict(item) for item in progress.get("review_items") or []]
+            item = next(
+                (
+                    candidate
+                    for candidate in items
+                    if candidate.get("id") == claim.item_id
+                ),
+                None,
+            )
+            if item is None or (
+                item.get("review_content_cleanup_claim_token")
+                != claim.claim_token
+            ):
+                return False
+            item.update(values)
+            progress["review_items"] = items
+            row.progress_json = progress
+            row.updated_at = _utcnow()
+            await session.commit()
+            return True
 
     async def update_review_item(
         self,

@@ -95,6 +95,8 @@ class Settings(BaseSettings):
     crawler_retry_base_seconds: float = 1.0
     crawler_stale_seconds: int = 600
     crawler_review_claim_seconds: int = 600
+    crawler_agent_rejection_retention_days: int = 30
+    crawler_review_cleanup_scan_seconds: float = 3600.0
     crawler_legacy_corpus_root: str = "../trustguard-crawler/knowledge_bases"
     crawler_user_agent: str = (
         "TrustGuardCrawler/1.0 (+https://github.com/hdu-sangfor/trustguard-rag)"
@@ -293,6 +295,14 @@ class Settings(BaseSettings):
             raise ValueError("RAG_CRAWLER_STALE_SECONDS 必须大于 0")
         if self.crawler_review_claim_seconds <= 0:
             raise ValueError("RAG_CRAWLER_REVIEW_CLAIM_SECONDS 必须大于 0")
+        if self.crawler_agent_rejection_retention_days <= 0:
+            raise ValueError(
+                "RAG_CRAWLER_AGENT_REJECTION_RETENTION_DAYS 必须大于 0"
+            )
+        if self.crawler_review_cleanup_scan_seconds <= 0:
+            raise ValueError(
+                "RAG_CRAWLER_REVIEW_CLEANUP_SCAN_SECONDS 必须大于 0"
+            )
         crawler_bounds = (
             ("RAG_CRAWLER_MAX_RESULTS_PER_KEYWORD", self.crawler_max_results_per_keyword, 1, 20),
             ("RAG_CRAWLER_MAX_PAGES_PER_SITE", self.crawler_max_pages_per_site, 1, 50),

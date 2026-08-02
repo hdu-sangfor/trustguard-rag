@@ -167,6 +167,7 @@ class CrawlerPresetListResponse(BaseModel):
 class CrawlReviewActionRequest(BaseModel):
     action: Literal["approve", "reject"]
     item_ids: list[str] = Field(min_length=1, max_length=200)
+    reviewer: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class CrawlReviewItemResponse(BaseModel):
@@ -184,6 +185,13 @@ class CrawlReviewItemResponse(BaseModel):
     reviewer: str | None = None
     review_reason: str | None = None
     review_confidence: float | None = None
+    agent_decision: str | None = None
+    manual_reviewer: str | None = None
+    manual_reviewed_at: str | None = None
+    rejected_at: str | None = None
+    review_content_expires_at: str | None = None
+    review_content_expired_at: str | None = None
+    review_content_available: bool = True
 
 
 class CrawlReviewResponse(BaseModel):

@@ -302,13 +302,24 @@ class KnowledgeBaseStore:
                 items = [dict(item) for item in progress.get("review_items") or []]
                 changed = False
                 for item in items:
-                    if (
-                        str(item.get("knowledge_base_id") or "")
-                        != knowledge_base_id
-                        or item.get("status") in {"approved", "rejected"}
-                    ):
+                    if str(item.get("knowledge_base_id") or "") != knowledge_base_id:
                         continue
                     item_id = str(item.get("id") or "")
+                    if (
+                        item.get("status") == "rejected"
+                        and item.get("review_content_available")
+                    ):
+                        if item_id:
+                            review_item_ids.append(item_id)
+                        item["review_content_available"] = False
+                        item["review_content_cleanup_pending"] = False
+                        item["review_content_cleanup_claim_token"] = None
+                        item["review_content_cleanup_claimed_at"] = None
+                        item["review_content_expired_at"] = now.isoformat()
+                        changed = True
+                        continue
+                    if item.get("status") in {"approved", "rejected"}:
+                        continue
                     if item_id:
                         review_item_ids.append(item_id)
                     item["status"] = "rejected"

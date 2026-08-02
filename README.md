@@ -184,6 +184,10 @@ CWE 单条记录的失败会写入任务进度，但不会终止其他入口。�
 的稳定前缀，并跳过已经入库或已经被清洗器拒绝的 URL，避免漏掉断点之后的记录。可配置的上限、超时和重试参数
 参见 `.env.example`。
 
+Agent 自动驳回的清洗正文默认保留 30 天，期间可由人工查看并改判为通过；人工驳回仍会
+立即删除暂存正文。Worker 按 `RAG_CRAWLER_REVIEW_CLEANUP_SCAN_SECONDS` 定期清理到期
+内容，保留天数可通过 `RAG_CRAWLER_AGENT_REJECTION_RETENTION_DAYS` 调整。
+
 ## 端口（182xx）
 
 | 服务 | 端口 |

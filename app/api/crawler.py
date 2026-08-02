@@ -286,6 +286,7 @@ async def review_crawler_job(
             job_id,
             action=body.action,
             item_ids=body.item_ids,
+            reviewer=body.reviewer,
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error

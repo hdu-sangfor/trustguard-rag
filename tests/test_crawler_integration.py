@@ -24,6 +24,7 @@ from app.core.crawler.structured import (
 )
 from app.domain import IngestJobStatus
 from app.domain.crawler import CrawlJobStatus
+from app.stores.blob_store import get_blob_store
 from app.stores.crawler_store import CrawlerStore
 from app.stores.document_store import DocumentStore
 from app.stores.job_store import JobStore
@@ -895,6 +896,10 @@ async def test_agent_crawler_requires_review_before_ingest(
         IngestJobStatus.SUCCEEDED,
         IngestJobStatus.DEDUPLICATED,
     }
+    with pytest.raises(FileNotFoundError):
+        get_blob_store().read_job_upload(item_id)
+    committed_content = await get_review_content(row.id, item_id)
+    assert "explicitly approves" in committed_content["content"]
 
 
 @pytest.mark.asyncio
