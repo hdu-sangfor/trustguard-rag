@@ -80,6 +80,9 @@ services:
       RAG_INTERNAL_SERVICE_TOKEN: ${RAG_INTERNAL_SERVICE_TOKEN:-}
       RAG_RESOURCE_REF_SECRET: ${RAG_RESOURCE_REF_SECRET:-}
       RAG_MCP_SCOPE_MAPPING_JSON: '${RAG_MCP_SCOPE_MAPPING_JSON:-{}}'
+      RAG_EXPERIENCE_ENABLED: ${RAG_EXPERIENCE_ENABLED:-true}
+      RAG_EXPERIENCE_AUTH_ENABLED: ${RAG_EXPERIENCE_AUTH_ENABLED:-true}
+      RAG_EXPERIENCE_TOKENS_JSON: '${RAG_EXPERIENCE_TOKENS_JSON:-{"exp-write-token":["rag.experience.write"],"exp-feedback-token":["rag.experience.feedback"],"exp-admin-token":["rag.experience.write","rag.experience.feedback","rag.experience.admin"]}}'
       RAG_QDRANT_HOST: qdrant
       RAG_QDRANT_PORT: "6333"
       RAG_OPENSEARCH_HOST: opensearch

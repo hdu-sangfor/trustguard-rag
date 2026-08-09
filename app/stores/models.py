@@ -320,3 +320,121 @@ class OcrRegionRow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
     )
+
+
+class ExperienceItemRow(Base):
+    """Audited Experience authority record (not a document ingest artifact)."""
+
+    __tablename__ = "experience_items"
+    __table_args__ = (
+        Index(
+            "uq_experience_source_external",
+            "source_system",
+            "external_id",
+            unique=True,
+        ),
+        Index("idx_experience_status", "status"),
+        Index("idx_experience_workflow", "workflow_type", "knowledge_scope"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    external_id: Mapped[str] = mapped_column(String(128))
+    source_system: Mapped[str] = mapped_column(String(64))
+    source_revision: Mapped[int] = mapped_column(Integer)
+    knowledge_base_id: Mapped[str] = mapped_column(String(36))
+    knowledge_scope: Mapped[str] = mapped_column(String(64))
+    workflow_type: Mapped[str] = mapped_column(String(64))
+    experience_type: Mapped[str] = mapped_column(String(64))
+    workspace_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    visibility: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32), default="candidate")
+    index_status: Mapped[str] = mapped_column(String(32), default="not_indexed")
+    conditions_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    action_summary: Mapped[str] = mapped_column(Text)
+    outcome_summary: Mapped[str] = mapped_column(Text)
+    skill_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    phase: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    evidence_refs_json: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    search_text: Mapped[str] = mapped_column(Text, default="")
+    usage_count: Mapped[int] = mapped_column(Integer, default=0)
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ExperienceFeedbackEventRow(Base):
+    """Idempotent feedback events; does not change Experience status in Slice A."""
+
+    __tablename__ = "experience_feedback_events"
+    __table_args__ = (
+        Index("uq_experience_feedback_event_id", "event_id", unique=True),
+        Index("idx_experience_feedback_item", "experience_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(128))
+    experience_id: Mapped[str] = mapped_column(String(36))
+    task_id: Mapped[str] = mapped_column(String(128))
+    workflow_type: Mapped[str] = mapped_column(String(64))
+    outcome: Mapped[str] = mapped_column(String(32))
+    evidence_level: Mapped[str] = mapped_column(String(32))
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    occurred_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    actor_service_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+
+
+class ExperienceStatusHistoryRow(Base):
+    """Audited Experience status transitions."""
+
+    __tablename__ = "experience_status_history"
+    __table_args__ = (Index("idx_experience_status_history_item", "experience_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    experience_id: Mapped[str] = mapped_column(String(36))
+    from_status: Mapped[str] = mapped_column(String(32))
+    to_status: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    actor_service_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+
+
+class ExperienceIdempotencyRow(Base):
+    """Optional Idempotency-Key short-window dedupe for upsert/feedback."""
+
+    __tablename__ = "experience_idempotency_keys"
+    __table_args__ = (
+        Index(
+            "uq_experience_idempotency",
+            "actor_service_id",
+            "idempotency_key",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    actor_service_id: Mapped[str] = mapped_column(String(128))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    operation: Mapped[str] = mapped_column(String(64))
+    response_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))

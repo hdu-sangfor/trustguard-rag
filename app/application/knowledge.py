@@ -20,7 +20,7 @@ from app.application.resource_refs import (
     ResourceRefClaims,
     ResourceRefCodec,
 )
-from app.application.scopes import ScopeRegistry
+from app.application.scopes import ScopeRegistry, resolve_scope_definition
 from app.core.retrieval.request_context import resolve_search_execution
 from app.core.retrieval.search import SearchUnavailableError, get_hybrid_search
 from app.domain import CoverageStatus, RetrievalMode, SearchStatus
@@ -191,7 +191,9 @@ class KnowledgeApplicationService:
         settings = get_settings()
         registry = scopes or ScopeRegistry.from_json(settings.mcp_scope_mapping_json)
         try:
-            definition = registry.require(request.scope)
+            definition = await resolve_scope_definition(
+                request.scope, registry=registry
+            )
         except LookupError as error:
             raise KnowledgeSearchError(
                 "The requested knowledge scope is not configured",
@@ -220,6 +222,21 @@ class KnowledgeApplicationService:
             else request.mode
         )
         per_kb_limit = max(request.limit, definition.per_knowledge_base_limit)
+        from app.stores.experience_store import (
+            PENETRATION_EXPERIENCE_KB_ID,
+            PENETRATION_EXPERIENCE_KB_NAME,
+        )
+
+        experience_kb_ids: set[str] = {PENETRATION_EXPERIENCE_KB_ID}
+        try:
+            exp_kb = await get_knowledge_base_store().get_by_name(
+                PENETRATION_EXPERIENCE_KB_NAME
+            )
+            if exp_kb is not None:
+                experience_kb_ids.add(exp_kb.id)
+        except Exception:  # noqa: BLE001
+            pass
+
         search_results = await asyncio.gather(
             *(
                 self.search(
@@ -232,6 +249,9 @@ class KnowledgeApplicationService:
                         enable_vector=True,
                         enable_keyword=True,
                         enable_rerank=True,
+                        # Experience text is keyword-heavy; pseudo/local embeddings can
+                        # otherwise clear keyword hits via low_vector_score abstention.
+                        enable_abstention=knowledge_base_id not in experience_kb_ids,
                     ),
                     request_id=request_id,
                     access_context=access_context,

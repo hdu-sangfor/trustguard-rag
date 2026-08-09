@@ -265,6 +265,15 @@ class Settings(BaseSettings):
     # --- 健康检查 ---
     health_check_timeout_seconds: float = 3.0
 
+    # --- Experience write authority (Slice A) ---
+    experience_enabled: bool = True
+    experience_auth_enabled: bool = True
+    # JSON object: {"token-value": ["rag.experience.write", "rag.experience.feedback", ...]}
+    experience_tokens_json: str = "{}"
+    experience_consumer_enabled: bool = False
+    experience_auto_promotion_enabled: bool = False
+    experience_idempotency_ttl_seconds: int = 86_400
+
     # --- 增量同步（Sync Bridge） ---
     # RAG_SYNC_ROOTS: JSON {"crawler":"/sync"} 或 crawler=/sync,other=/data
     sync_roots: str = ""

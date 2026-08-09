@@ -19,6 +19,7 @@ from app.api import (
     answer,
     crawler,
     documents,
+    experiences,
     health,
     ingest,
     internal,
@@ -40,6 +41,10 @@ from app.settings import get_settings
 from app.security.service_auth import require_gateway_service
 from app.stores import db, opensearch_store, qdrant_store, redis_cache
 from app.stores.outbox_store import ensure_outbox_schema
+from app.stores.experience_store import (
+    ensure_experience_schema,
+    ensure_penetration_experience_knowledge_base,
+)
 from app.stores.knowledge_base_migration import (
     backfill_qdrant_knowledge_base_payloads,
     enforce_knowledge_base_integrity,
@@ -123,6 +128,15 @@ async def lifespan(app: FastAPI):
     await ensure_outbox_schema()
     await ensure_ocr_schema()
     await ensure_knowledge_base_schema()
+    await ensure_experience_schema()
+    if s.experience_enabled:
+        try:
+            await ensure_penetration_experience_knowledge_base()
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "ensure_penetration_experience_knowledge_base failed",
+                exc_info=True,
+            )
     migrated_documents = await migrate_legacy_knowledge_bases()
     migrated_jobs = await migrate_legacy_job_knowledge_bases()
     await enforce_knowledge_base_integrity()
@@ -231,6 +245,7 @@ def create_app() -> FastAPI:
     app.include_router(search.router, dependencies=gateway_dependencies)
     app.include_router(answer.router, dependencies=gateway_dependencies)
     app.include_router(ocr_review.router, dependencies=gateway_dependencies)
+    app.include_router(experiences.router)
 
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     app.mount("/assets", StaticFiles(directory=frontend_dir / "assets"), name="assets")
