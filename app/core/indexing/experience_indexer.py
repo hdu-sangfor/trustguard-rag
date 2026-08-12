@@ -45,6 +45,7 @@ def _chunk_payload(row: ExperienceItemRow, *, embedding_model: str, embedding_di
         "experience_type": row.experience_type,
         "status": row.status,
         "knowledge_base_id": row.knowledge_base_id,
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
     }
     return {
         "id": chunk_id,
@@ -103,12 +104,15 @@ class ExperienceIndexer:
             )
         except Exception:
             logger.exception("experience dual index failed for %s", row.id)
-            await self.delete_proven(row.id)
+            try:
+                await self.delete_proven(row.id)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "experience index compensation failed for %s",
+                    row.id,
+                    exc_info=True,
+                )
             raise
-
-        async with AsyncSession(get_engine()) as session:
-            await increment_content_revision(session, row.knowledge_base_id)
-            await session.commit()
 
     async def _upsert_mysql_projection(
         self,
@@ -127,6 +131,7 @@ class ExperienceIndexer:
                 "workflow_type": row.workflow_type,
                 "visibility": row.visibility,
                 "workspace_id": row.workspace_id,
+                "expires_at": row.expires_at.isoformat() if row.expires_at else None,
             }
             if existing is None:
                 session.add(
@@ -158,16 +163,19 @@ class ExperienceIndexer:
                 existing.updated_at = _utcnow()
             await session.execute(delete(ChunkRow).where(ChunkRow.document_id == row.id))
             session.add(ChunkStore._row_from_chunk(chunk))
+            await increment_content_revision(session, row.knowledge_base_id)
             await session.commit()
 
-    async def delete_proven(self, experience_id: str) -> None:
+    async def delete_proven(self, experience_id: str) -> bool:
         profile = get_embedding_profile("configured")
         settings = profile_settings(profile)
         qdrant = get_qdrant_indexer(settings, profile=profile)
         opensearch = get_opensearch_indexer()
+        removed = True
         try:
             await qdrant.delete_document(experience_id)
         except Exception:  # noqa: BLE001
+            removed = False
             logger.warning(
                 "failed to delete experience qdrant points for %s",
                 experience_id,
@@ -176,6 +184,7 @@ class ExperienceIndexer:
         try:
             await opensearch.delete_for_document(experience_id)
         except Exception:  # noqa: BLE001
+            removed = False
             logger.warning(
                 "failed to delete experience opensearch docs for %s",
                 experience_id,
@@ -185,8 +194,10 @@ class ExperienceIndexer:
             await session.execute(delete(ChunkRow).where(ChunkRow.document_id == experience_id))
             doc = await session.get(DocumentRow, experience_id)
             if doc is not None:
+                await increment_content_revision(session, doc.knowledge_base_id)
                 await session.delete(doc)
             await session.commit()
+        return removed
 
 
 def get_experience_indexer() -> ExperienceIndexer:

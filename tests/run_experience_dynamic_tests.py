@@ -19,13 +19,15 @@ from pathlib import Path
 
 import httpx
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 DEFAULT_BASE = "http://127.0.0.1:18200"
 # Local embedding cold-start on full compose can exceed 2 minutes on first query.
 TIMEOUT = 300.0
 
-WRITE_TOKEN = os.environ.get("EXP_WRITE_TOKEN", "exp-write-token")
-FEEDBACK_TOKEN = os.environ.get("EXP_FEEDBACK_TOKEN", "exp-feedback-token")
-ADMIN_TOKEN = os.environ.get("EXP_ADMIN_TOKEN", "exp-admin-token")
+GATEWAY_TOKEN = os.environ.get("RAG_GATEWAY_SERVICE_TOKEN", "gateway-token")
 
 
 @dataclass
@@ -110,7 +112,7 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
     def t_upsert_candidate():
         r = client.put(
             f"/v1/experiences/{external_id}",
-            headers=_auth(WRITE_TOKEN),
+            headers=_auth(GATEWAY_TOKEN),
             json=_upsert(
                 external_id,
                 action_summary=f"Validate {unique_phrase} before exploit attempts",
@@ -127,6 +129,7 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
     def t_candidate_not_in_search():
         r = client.post(
             "/v1/search/scope",
+            headers=_auth(GATEWAY_TOKEN),
             json={
                 "schema_version": "trustguard-knowledge-search-request-v1",
                 "query": unique_phrase,
@@ -141,19 +144,10 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         assert all(unique_phrase not in (h.get("snippet") or "") for h in hits)
         return f"hits={len(hits)}"
 
-    def t_write_cannot_promote():
-        r = client.patch(
-            f"/v1/experiences/{state['id']}/status",
-            headers=_auth(WRITE_TOKEN),
-            json={"status": "proven", "reason": "self"},
-        )
-        assert r.status_code == 403, r.text
-        return "403"
-
     def t_admin_promote():
         r = client.patch(
             f"/v1/experiences/{state['id']}/status",
-            headers=_auth(ADMIN_TOKEN),
+            headers=_auth(GATEWAY_TOKEN),
             json={"status": "proven", "reason": "dynamic review"},
         )
         assert r.status_code == 200, r.text
@@ -165,19 +159,21 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
     def t_rollback_rejected():
         r = client.patch(
             f"/v1/experiences/{state['id']}/status",
-            headers=_auth(ADMIN_TOKEN),
+            headers=_auth(GATEWAY_TOKEN),
             json={"status": "pending", "reason": "rollback attempt"},
         )
         assert r.status_code == 409, r.text
         assert r.json()["code"] == "EXPERIENCE_CONFLICT"
         got = client.get(
             f"/v1/experiences/{state['id']}",
-            headers=_auth(ADMIN_TOKEN),
+            headers=_auth(GATEWAY_TOKEN),
         )
         assert got.json()["status"] == "proven"
         return "rollback_rejected"
 
     def t_dual_index_present():
+        if report.mode == "in-process":
+            return "mock qdrant+opensearch (covered through scoped search)"
         experience_id = state["id"]
         # OpenSearch document must exist.
         os_host = os.environ.get("RAG_OPENSEARCH_HOST", "127.0.0.1")
@@ -238,6 +234,7 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         while time.time() < deadline:
             r = client.post(
                 "/v1/search/scope",
+                headers=_auth(GATEWAY_TOKEN),
                 json={
                     "schema_version": "trustguard-knowledge-search-request-v1",
                     "query": unique_phrase,
@@ -267,7 +264,7 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         updated_phrase = f"{unique_phrase}-rev2"
         r = client.put(
             f"/v1/experiences/{external_id}",
-            headers=_auth(WRITE_TOKEN),
+            headers=_auth(GATEWAY_TOKEN),
             json=_upsert(
                 external_id,
                 revision=2,
@@ -283,6 +280,7 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         while time.time() < deadline:
             s = client.post(
                 "/v1/search/scope",
+                headers=_auth(GATEWAY_TOKEN),
                 json={
                     "schema_version": "trustguard-knowledge-search-request-v1",
                     "query": updated_phrase,
@@ -301,7 +299,7 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
     def t_stale_revision():
         r = client.put(
             f"/v1/experiences/{external_id}",
-            headers=_auth(WRITE_TOKEN),
+            headers=_auth(GATEWAY_TOKEN),
             json=_upsert(external_id, revision=1),
         )
         assert r.status_code == 409, r.text
@@ -312,7 +310,7 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         eid = f"{external_id}-at"
         r = client.put(
             f"/v1/experiences/{eid}",
-            headers=_auth(WRITE_TOKEN),
+            headers=_auth(GATEWAY_TOKEN),
             json=_upsert(
                 eid,
                 knowledge_scope="alert-triage",
@@ -338,7 +336,7 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         }
         first = client.post(
             f"/v1/experiences/{state['id']}/feedback",
-            headers=_auth(FEEDBACK_TOKEN),
+            headers=_auth(GATEWAY_TOKEN),
             json=body,
         )
         assert first.status_code == 200, first.text
@@ -346,14 +344,14 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         assert first.json()["experience_status"] == "proven"
         second = client.post(
             f"/v1/experiences/{state['id']}/feedback",
-            headers=_auth(FEEDBACK_TOKEN),
+            headers=_auth(GATEWAY_TOKEN),
             json=body,
         )
         assert second.status_code == 200, second.text
         assert second.json()["duplicated"] is True
         got = client.get(
             f"/v1/experiences/{state['id']}",
-            headers=_auth(ADMIN_TOKEN),
+            headers=_auth(GATEWAY_TOKEN),
         )
         assert got.json()["status"] == "proven"
         assert got.json()["success_count"] == 1
@@ -362,7 +360,7 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
     def t_deprecate_unsearchable():
         r = client.patch(
             f"/v1/experiences/{state['id']}/status",
-            headers=_auth(ADMIN_TOKEN),
+            headers=_auth(GATEWAY_TOKEN),
             json={"status": "deprecated", "reason": "outdated"},
         )
         assert r.status_code == 200, r.text
@@ -373,6 +371,7 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         while time.time() < deadline:
             s = client.post(
                 "/v1/search/scope",
+                headers=_auth(GATEWAY_TOKEN),
                 json={
                     "schema_version": "trustguard-knowledge-search-request-v1",
                     "query": phrase,
@@ -394,6 +393,9 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
             time.sleep(0.5)
         else:
             raise AssertionError("deprecated experience still searchable")
+
+        if report.mode == "in-process":
+            return "removed from mock search indexes"
 
         experience_id = state["id"]
         os_host = os.environ.get("RAG_OPENSEARCH_HOST", "127.0.0.1")
@@ -446,7 +448,6 @@ def execute_suite(client: httpx.Client, report: TestReport) -> None:
         ("auth_missing_token", t_missing_token),
         ("upsert_candidate", t_upsert_candidate),
         ("candidate_not_in_search", t_candidate_not_in_search),
-        ("write_cannot_promote", t_write_cannot_promote),
         ("admin_promote_indexed", t_admin_promote),
         ("rollback_http_rejected", t_rollback_rejected),
         ("dual_index_present", t_dual_index_present),
@@ -473,31 +474,19 @@ def run_live(base_url: str) -> TestReport:
 
 
 def run_in_process() -> TestReport:
-    os.environ.setdefault("RAG_EXPERIENCE_ENABLED", "true")
-    os.environ.setdefault("RAG_EXPERIENCE_AUTH_ENABLED", "true")
-    os.environ.setdefault(
-        "RAG_EXPERIENCE_TOKENS_JSON",
-        json.dumps(
-            {
-                WRITE_TOKEN: ["rag.experience.write"],
-                FEEDBACK_TOKEN: ["rag.experience.feedback"],
-                ADMIN_TOKEN: [
-                    "rag.experience.write",
-                    "rag.experience.feedback",
-                    "rag.experience.admin",
-                ],
-            }
-        ),
-    )
-    os.environ.setdefault("RAG_QDRANT_MOCK", "true")
-    os.environ.setdefault("RAG_SEARCH_OPENSEARCH_MOCK", "true")
-    os.environ.setdefault("RAG_EMBEDDING_PROVIDER", "pseudo")
-    os.environ.setdefault("RAG_GATEWAY_AUTH_ENABLED", "false")
-    os.environ.setdefault("RAG_PDF_PARSER", "local")
-    os.environ.setdefault("RAG_MINIO_ENABLED", "false")
-    os.environ.setdefault("RAG_WORKER_EAGER", "true")
+    os.environ["RAG_EXPERIENCE_ENABLED"] = "true"
+    os.environ["RAG_QDRANT_MOCK"] = "true"
+    os.environ["RAG_SEARCH_OPENSEARCH_MOCK"] = "true"
+    os.environ["RAG_EMBEDDING_PROVIDER"] = "pseudo"
+    os.environ["RAG_RERANK_PROVIDER"] = "none"
+    os.environ["RAG_QUERY_PLANNER_LLM_ENABLED"] = "false"
+    os.environ["RAG_GATEWAY_AUTH_ENABLED"] = "true"
+    os.environ["RAG_GATEWAY_SERVICE_TOKEN"] = GATEWAY_TOKEN
+    os.environ["RAG_PDF_PARSER"] = "local"
+    os.environ["RAG_MINIO_ENABLED"] = "false"
+    os.environ["RAG_WORKER_EAGER"] = "true"
 
-    from httpx import ASGITransport
+    from fastapi.testclient import TestClient
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from app.main import create_app
@@ -525,8 +514,7 @@ def run_in_process() -> TestReport:
     asyncio.run(_prepare())
     db._engine = engine  # type: ignore[attr-defined]
     app = create_app()
-    transport = ASGITransport(app=app)
-    with httpx.Client(transport=transport, base_url="http://test", timeout=TIMEOUT) as client:
+    with TestClient(app, base_url="http://test") as client:
         execute_suite(client, report)
     asyncio.run(engine.dispose())
     db._engine = None  # type: ignore[attr-defined]

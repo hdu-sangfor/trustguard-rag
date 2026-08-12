@@ -13,6 +13,11 @@ from app.application.knowledge import (
 from app.schemas.knowledge import KnowledgeSearchRequest, KnowledgeSearchResponse
 from app.schemas.search import SearchRequest, SearchResponse
 from app.security.service_auth import require_gateway_service
+from app.stores.experience_store import (
+    PENETRATION_EXPERIENCE_KB_ID,
+    PENETRATION_EXPERIENCE_KB_NAME,
+)
+from app.stores.knowledge_base_store import get_knowledge_base_store
 
 router = APIRouter(prefix="/v1/search", tags=["search"])
 
@@ -26,6 +31,15 @@ async def search(
         Depends(require_gateway_service),
     ],
 ) -> SearchResponse:
+    knowledge_base = await get_knowledge_base_store().get(request.knowledge_base_id)
+    if knowledge_base is not None and (
+        knowledge_base.id == PENETRATION_EXPERIENCE_KB_ID
+        or knowledge_base.name == PENETRATION_EXPERIENCE_KB_NAME
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Experience knowledge must be queried through an authorized scope",
+        )
     try:
         return await get_knowledge_application_service().search(
             request,

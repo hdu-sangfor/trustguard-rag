@@ -69,7 +69,7 @@ docker compose up -d --build
 uv sync
 docker compose up -d mysql qdrant opensearch redis rabbitmq minio
 uv run uvicorn app.main:app --reload --port 18200
-# 配好 RAG_MCP_SCOPE_MAPPING_JSON 后，可独立启动只读 MCP Gateway
+# 通过 /v1/knowledge-scopes 配好 Scope 后，可独立启动只读 MCP Gateway
 RAG_MCP_ENABLED=true uv run uvicorn app.mcp_server.main:app --port 18201
 # 另开终端启动可靠任务 Worker
 uv run python -m app.workers.main
@@ -342,14 +342,20 @@ curl -X POST http://localhost:18200/v1/search \
 
 MCP Gateway 与 REST Core 使用同一镜像、独立进程和端口。它只提供
 `knowledge_search` Tool 与一个不透明 Resource Ref Template，不开放上传、删除、回答生成或
-经验写入。先把逻辑 Scope 映射到一个或多个知识库：
+经验写入。先通过 RAG Core 管理 API 将逻辑 Scope 映射到一个或多个知识库。映射和检索策略
+保存在 MySQL，不再把可变业务策略编码进环境变量：
 
-```dotenv
-RAG_MCP_ENABLED=true
-RAG_INTERNAL_SERVICE_TOKEN=replace-with-a-long-random-service-token
-RAG_RESOURCE_REF_SECRET=replace-with-another-random-secret-at-least-32-characters
-RAG_MCP_SCOPE_MAPPING_JSON={"compliance":{"knowledge_base_ids":["<kb-id-1>","<kb-id-2>"],"default_mode":"comprehensive","per_knowledge_base_limit":20,"allowed_content_types":["legal_article","security_guide"],"allowed_workflow_types":["compliance"]}}
+```bash
+curl -X PUT http://localhost:18200/v1/knowledge-scopes/compliance \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <RAG_GATEWAY_SERVICE_TOKEN>' \
+  -d '{"knowledge_base_ids":["<kb-id-1>","<kb-id-2>"],"default_mode":"comprehensive","per_knowledge_base_limit":20,"allowed_content_types":["legal_article","security_guide"],"allowed_workflow_types":["compliance"]}'
 ```
+
+开发环境关闭 Gateway 鉴权时可省略 `Authorization`。`penetration-experience` 是系统绑定，
+启用 Experience 后会自动加入 `penetration` Scope；管理 API 只能增删人工绑定，不能误删系统绑定。
+Experience REST 与其他业务 REST 使用同一个 Agent Gateway 服务身份，不配置独立 Token 表。
+浏览器用户的 `ADMIN/OPERATOR` 权限由 Agent Gateway 校验；RAG 服务必须只暴露在内部网络。
 
 Compose 会在 `http://localhost:18201/mcp` 启动无状态 Streamable HTTP Server：
 

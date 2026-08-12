@@ -24,6 +24,7 @@ from app.api import (
     ingest,
     internal,
     knowledge_bases,
+    knowledge_scopes,
     ocr_review,
     search,
     sources,
@@ -37,6 +38,7 @@ from app.api.errors import (
 )
 from app.core.indexing.opensearch_backfill import backfill_ready_documents
 from app.core.ingest.scheduler import shutdown_sync_scheduler, start_sync_scheduler
+from app.application.experience import get_experience_service
 from app.settings import get_settings
 from app.security.service_auth import require_gateway_service
 from app.stores import db, opensearch_store, qdrant_store, redis_cache
@@ -119,6 +121,21 @@ async def ensure_ocr_schema() -> None:
         logger.warning("ensure_ocr_schema failed", exc_info=True)
 
 
+async def run_experience_index_recovery() -> None:
+    """Continuously compensate authority rows whose search projection is pending."""
+    settings = get_settings()
+    while True:
+        try:
+            recovered = await get_experience_service().recover_pending_indexes()
+            if recovered:
+                logger.info("recovered pending experience indexes: %s", recovered)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.warning("experience index recovery failed", exc_info=True)
+        await asyncio.sleep(settings.experience_index_retry_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动时配置日志，关闭时释放共享客户端。"""
@@ -157,12 +174,20 @@ async def lifespan(app: FastAPI):
             run_opensearch_backfill(),
             name="opensearch-startup-backfill",
         )
+    experience_recovery_task: asyncio.Task[None] | None = None
+    if s.experience_enabled:
+        experience_recovery_task = asyncio.create_task(
+            run_experience_index_recovery(),
+            name="experience-index-recovery",
+        )
     start_sync_scheduler()
     yield
     shutdown_sync_scheduler()
     tasks = [knowledge_base_backfill_task]
     if backfill_task is not None:
         tasks.append(backfill_task)
+    if experience_recovery_task is not None:
+        tasks.append(experience_recovery_task)
     for task in tasks:
         if task.done():
             continue
@@ -240,6 +265,7 @@ def create_app() -> FastAPI:
     app.include_router(crawler.router, dependencies=gateway_dependencies)
     app.include_router(sync.router, dependencies=gateway_dependencies)
     app.include_router(knowledge_bases.router, dependencies=gateway_dependencies)
+    app.include_router(knowledge_scopes.router, dependencies=gateway_dependencies)
     app.include_router(documents.router, dependencies=gateway_dependencies)
     app.include_router(sources.router, dependencies=gateway_dependencies)
     app.include_router(search.router, dependencies=gateway_dependencies)

@@ -63,16 +63,21 @@ alert-triage
   → shared-experience
 ```
 
-客户端只传逻辑 Scope，不能传任意知识库 ID。Scope 到知识库的映射及 Workspace
-过滤由服务端根据已验证身份强制执行。
+客户端只传逻辑 Scope，不能传任意知识库 ID。Scope 到知识库的映射持久化在 RAG
+数据库中，通过受 Gateway 身份保护的管理接口维护；Workspace 过滤由服务端根据已验证
+身份强制执行。Experience 自动创建的知识库绑定由 RAG 标记为系统绑定，不能被普通配置覆盖。
 
 ### 鉴权
 
 - MCP 使用 OAuth 2.0 Client Credentials 和短期 Access Token。
 - MCP 读权限：`rag.search`、`rag.resource.read`。
-- 后续经验写权限：`rag.experience.write`、`rag.experience.feedback`。
-- 经验管理权限：`rag.experience.admin`，不得授予 Workflow LLM。
 - Token Claim 是授权权威；Workspace、Project、Task 等 Header 只用于路由和审计。
+- 业务 REST（包括 Experience 和 Scope 管理）统一接受 Agent Gateway 的
+  `RAG_GATEWAY_SERVICE_TOKEN`，不再维护第二套 Experience 静态令牌表。
+- 浏览器登录 JWT 仅在 Agent Gateway 校验，不转发给 RAG。Agent Gateway 以角色授权：
+  Scope 只读允许 `VIEWER`，Scope 变更和 Experience 操作只允许 `ADMIN/OPERATOR`。
+- Workflow LLM 不持有 Gateway 服务令牌；生产经验写入通过 Outbox/Consumer 或受控 Gateway
+  调用完成，不能直接提升经验状态。
 
 ### 版本和兼容性
 

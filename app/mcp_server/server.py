@@ -16,7 +16,6 @@ from pydantic import AnyHttpUrl, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 
-from app.application.scopes import ScopeRegistry
 from app.mcp_server.auth import (
     JwtTokenVerifier,
     ScopeAuthorizationError,
@@ -43,7 +42,6 @@ def _build_mcp_server(
     backend: RagBackend | None = None,
 ) -> tuple[FastMCP, RagBackend]:
     active_settings = settings or get_settings()
-    scopes = ScopeRegistry.from_json(active_settings.mcp_scope_mapping_json)
     backend_was_injected = backend is not None
     active_backend = backend or RestRagBackend(
         base_url=active_settings.mcp_backend_url,
@@ -234,7 +232,6 @@ def _build_mcp_server(
         )
         ready = (
             active_settings.mcp_enabled
-            and bool(scopes)
             and backend_ready
             and resource_auth_ready
         )
@@ -242,7 +239,7 @@ def _build_mcp_server(
             {
                 "status": "ok" if ready else "not_ready",
                 "service": "trustguard-rag-mcp",
-                "configured_scopes": list(scopes.configured_scopes),
+                "scope_configuration": "rag-core-database",
                 "backend": "up" if backend_ready else "down",
                 "resource_auth": (
                     "configured" if resource_auth_ready else "not_configured"

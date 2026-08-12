@@ -1,8 +1,7 @@
-"""解析并约束逻辑知识 Scope 到物理知识库的映射。"""
+"""Resolve logical Knowledge Scopes from persisted policy."""
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 
 from app.domain import RetrievalMode
@@ -11,24 +10,22 @@ from app.settings import get_settings
 
 
 class ScopeRegistry:
+    """In-memory registry used only for isolated application-service tests."""
+
     def __init__(self, definitions: Mapping[str, ScopeDefinition]) -> None:
         self._definitions = dict(definitions)
 
     @classmethod
-    def from_json(cls, value: str) -> ScopeRegistry:
-        try:
-            payload = json.loads(value or "{}")
-        except json.JSONDecodeError as error:
-            raise ValueError("RAG_MCP_SCOPE_MAPPING_JSON must contain valid JSON") from error
-        if not isinstance(payload, dict):
-            raise ValueError("RAG_MCP_SCOPE_MAPPING_JSON must be a JSON object")
-
+    def from_definitions(
+        cls,
+        payload: Mapping[str, ScopeDefinition | Mapping[str, object]],
+    ) -> ScopeRegistry:
         definitions: dict[str, ScopeDefinition] = {}
         for raw_scope, raw_definition in payload.items():
             try:
                 scope = KnowledgeScope(str(raw_scope)).value
             except ValueError as error:
-                raise ValueError(f"Unsupported MCP knowledge scope: {raw_scope}") from error
+                raise ValueError(f"Unsupported knowledge scope: {raw_scope}") from error
             definitions[scope] = ScopeDefinition.model_validate(raw_definition)
         return cls(definitions)
 
@@ -54,38 +51,39 @@ async def resolve_scope_definition(
     *,
     registry: ScopeRegistry | None = None,
 ) -> ScopeDefinition:
-    """Resolve scope mapping and merge the penetration Experience KB when enabled."""
+    """Resolve a Scope from the database and synchronize system-owned bindings."""
     from app.stores.experience_store import (
         PENETRATION_EXPERIENCE_KB_ID,
         ensure_penetration_experience_knowledge_base,
     )
 
+    from app.stores.knowledge_scope_store import get_knowledge_scope_store
+
     settings = get_settings()
-    active = registry or ScopeRegistry.from_json(settings.mcp_scope_mapping_json)
     scope_value = str(scope)
-    definition = active.get(scope_value)
+    definition = registry.get(scope_value) if registry is not None else None
 
     if settings.experience_enabled and scope_value == KnowledgeScope.PENETRATION.value:
         kb = await ensure_penetration_experience_knowledge_base()
         experience_kb_id = kb.id or PENETRATION_EXPERIENCE_KB_ID
-        if definition is None:
-            return ScopeDefinition(
-                knowledge_base_ids=[experience_kb_id],
-                default_mode=RetrievalMode.AUTO,
-                allowed_workflow_types=["penetration"],
-            )
-        ids = list(definition.knowledge_base_ids)
-        if experience_kb_id not in ids:
-            ids.append(experience_kb_id)
-        workflows = list(definition.allowed_workflow_types)
-        if "penetration" not in workflows:
-            workflows.append("penetration")
-        return definition.model_copy(
-            update={
-                "knowledge_base_ids": ids,
-                "allowed_workflow_types": workflows,
-            }
+        if registry is not None:
+            if definition is None:
+                return ScopeDefinition(
+                    knowledge_base_ids=[experience_kb_id],
+                    default_mode=RetrievalMode.AUTO,
+                    allowed_workflow_types=["penetration"],
+                )
+            ids = list(definition.knowledge_base_ids)
+            if experience_kb_id not in ids:
+                ids.append(experience_kb_id)
+            return definition.model_copy(update={"knowledge_base_ids": ids})
+
+    if registry is None:
+        stored = await get_knowledge_scope_store().get(
+            scope_value,
+            include_experience=settings.experience_enabled,
         )
+        definition = stored.definition if stored is not None else None
 
     if definition is None:
         raise LookupError(f"Unknown or unconfigured knowledge scope: {scope}")

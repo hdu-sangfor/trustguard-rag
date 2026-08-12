@@ -11,6 +11,7 @@ from app.schemas.ingest import ConflictResolveRequest, IngestJobCreateResponse, 
 from app.stores.blob_store import get_blob_store
 from app.stores.job_store import get_job_store
 from app.stores.knowledge_base_store import get_knowledge_base_store
+from app.stores.experience_store import is_experience_knowledge_base
 from app.workers.eager import dispatch_eager
 
 router = APIRouter(prefix="/v1/ingest", tags=["ingest"])
@@ -72,6 +73,11 @@ async def create_ingest_job(
             knowledge_base = await kb_store.ensure_profile_knowledge_base(embedding_profile)
         else:
             knowledge_base = await kb_store.get_default()
+        if is_experience_knowledge_base(
+            knowledge_base_id=knowledge_base.id,
+            name=knowledge_base.name,
+        ):
+            raise ValueError("Experience knowledge base only accepts Experience APIs")
         profile = get_embedding_profile(knowledge_base.embedding_profile)
         if embedding_profile and embedding_profile != profile.id:
             raise ValueError("Embedding profile is fixed by the selected knowledge base")

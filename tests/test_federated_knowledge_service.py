@@ -154,9 +154,15 @@ def _search_response(
 
 
 def _scope_registry(*, allowed_content_types: bool = True) -> ScopeRegistry:
-    allowed = ',"allowed_content_types":["legal_article"]' if allowed_content_types else ""
-    return ScopeRegistry.from_json(
-        f'{{"compliance":{{"knowledge_base_ids":["kb-a","kb-b"]{allowed}}}}}'
+    return ScopeRegistry.from_definitions(
+        {
+            "compliance": {
+                "knowledge_base_ids": ["kb-a", "kb-b"],
+                "allowed_content_types": (
+                    ["legal_article"] if allowed_content_types else []
+                ),
+            }
+        }
     )
 
 
@@ -465,9 +471,13 @@ async def test_scope_search_enforces_workspace_and_workflow_visibility() -> None
         ),
     }
     service.source_types[("kb-a", "workspace-experience")] = KnowledgeSourceType.EXPERIENCE
-    scopes = ScopeRegistry.from_json(
-        '{"compliance":{"knowledge_base_ids":["kb-a","kb-b"],'
-        '"allowed_workflow_types":["penetration"]}}'
+    scopes = ScopeRegistry.from_definitions(
+        {
+            "compliance": {
+                "knowledge_base_ids": ["kb-a", "kb-b"],
+                "allowed_workflow_types": ["penetration"],
+            }
+        }
     )
 
     allowed = await service.search_scope(

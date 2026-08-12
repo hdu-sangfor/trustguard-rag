@@ -7,6 +7,7 @@ import hashlib
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -189,10 +190,9 @@ class KnowledgeApplicationService:
             ) from error
 
         settings = get_settings()
-        registry = scopes or ScopeRegistry.from_json(settings.mcp_scope_mapping_json)
         try:
             definition = await resolve_scope_definition(
-                request.scope, registry=registry
+                request.scope, registry=scopes
             )
         except LookupError as error:
             raise KnowledgeSearchError(
@@ -347,9 +347,8 @@ class KnowledgeApplicationService:
                 code="AUTH_FORBIDDEN",
             ) from error
         settings = get_settings()
-        registry = scopes or ScopeRegistry.from_json(settings.mcp_scope_mapping_json)
         try:
-            definition = registry.require(scope)
+            definition = await resolve_scope_definition(scope, registry=scopes)
         except LookupError as error:
             raise KnowledgeSearchError(
                 "The requested knowledge scope is not configured",
@@ -740,6 +739,16 @@ def _is_source_authorized(
     definition: ScopeDefinition | None,
 ) -> bool:
     metadata = source.metadata
+    expires_at = _optional_string(metadata.get("expires_at"))
+    if expires_at:
+        try:
+            expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            if expiry <= datetime.now(timezone.utc):
+                return False
+        except ValueError:
+            return False
     visibility = _visibility(metadata.get("visibility"))
     if visibility == KnowledgeVisibility.WORKSPACE:
         workspace_id = _optional_string(metadata.get("workspace_id"))

@@ -60,6 +60,49 @@ class KnowledgeBaseRow(Base):
     )
 
 
+class KnowledgeScopeRow(Base):
+    """Persisted policy for one logical knowledge scope."""
+
+    __tablename__ = "knowledge_scopes"
+
+    scope: Mapped[str] = mapped_column(String(64), primary_key=True)
+    default_mode: Mapped[str] = mapped_column(String(32), default="auto")
+    per_knowledge_base_limit: Mapped[int] = mapped_column(Integer, default=20)
+    allowed_content_types: Mapped[list[str]] = mapped_column(JSON, default=list)
+    allowed_workflow_types: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class KnowledgeScopeBindingRow(Base):
+    """Ordered logical-scope to physical-knowledge-base binding."""
+
+    __tablename__ = "knowledge_scope_bindings"
+    __table_args__ = (
+        Index("idx_knowledge_scope_binding_kb", "knowledge_base_id"),
+    )
+
+    scope: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("knowledge_scopes.scope", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    knowledge_base_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    binding_type: Mapped[str] = mapped_column(String(32), default="manual")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+
+
 class MigrationStateRow(Base):
     """记录可重入后台迁移的状态，供 readiness 和运维排障使用。"""
 

@@ -77,6 +77,11 @@ async def _get_document_or_404(document_id: str):
     doc = await get_document_store().get(document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+    if doc.source_type == "experience":
+        raise HTTPException(
+            status_code=403,
+            detail="Experience projections are managed through Experience APIs",
+        )
     return doc
 
 
@@ -95,6 +100,7 @@ async def list_documents(
         status=status_filter,
         query=query.strip() if query and query.strip() else None,
         knowledge_base_id=knowledge_base_id,
+        exclude_source_types=frozenset({"experience"}),
     )
     return DocumentListResponse(
         items=[_document_response(row) for row in rows],

@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from app.application.experience import ExperienceError, get_experience_service
+from app.domain.experience import ExperienceStatus
 from app.schemas.experience import (
     ExperienceFeedbackRequest,
     ExperienceFeedbackResponse,
@@ -15,12 +16,8 @@ from app.schemas.experience import (
     ExperienceStatusPatchRequest,
     ExperienceUpsertRequest,
 )
-from app.security.experience_auth import (
-    ExperienceAccessContext,
-    ExperiencePermission,
-    require_any_experience_permission,
-    require_experience_permission,
-)
+from app.application.access import KnowledgeAccessContext
+from app.security.service_auth import require_gateway_service
 from app.settings import get_settings
 
 router = APIRouter(prefix="/v1/experiences", tags=["experiences"])
@@ -54,10 +51,13 @@ async def upsert_experience(
     external_id: str,
     body: ExperienceUpsertRequest,
     access: Annotated[
-        ExperienceAccessContext,
-        Depends(require_experience_permission(ExperiencePermission.WRITE)),
+        KnowledgeAccessContext,
+        Depends(require_gateway_service),
     ],
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key", min_length=1, max_length=128),
+    ] = None,
 ) -> ExperienceResponse:
     _ensure_enabled()
     try:
@@ -76,14 +76,14 @@ async def upsert_experience(
 async def get_experience(
     experience_id: str,
     access: Annotated[
-        ExperienceAccessContext,
-        Depends(require_any_experience_permission()),
+        KnowledgeAccessContext,
+        Depends(require_gateway_service),
     ],
 ) -> ExperienceResponse:
     _ensure_enabled()
     _ = access
     try:
-        return await get_experience_service().get(experience_id)
+        return await get_experience_service().get(experience_id, access=access)
     except ExperienceError as error:
         _raise(error)
         raise  # pragma: no cover
@@ -92,10 +92,10 @@ async def get_experience(
 @router.get("", response_model=ExperienceListResponse)
 async def list_experiences(
     access: Annotated[
-        ExperienceAccessContext,
-        Depends(require_any_experience_permission()),
+        KnowledgeAccessContext,
+        Depends(require_gateway_service),
     ],
-    status: Annotated[str | None, Query()] = None,
+    status: Annotated[ExperienceStatus | None, Query()] = None,
     workflow_type: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -103,7 +103,8 @@ async def list_experiences(
     _ensure_enabled()
     _ = access
     return await get_experience_service().list_experiences(
-        status=status,
+        access=access,
+        status=status.value if status else None,
         workflow_type=workflow_type,
         limit=limit,
         offset=offset,
@@ -115,8 +116,8 @@ async def patch_experience_status(
     experience_id: str,
     body: ExperienceStatusPatchRequest,
     access: Annotated[
-        ExperienceAccessContext,
-        Depends(require_experience_permission(ExperiencePermission.ADMIN)),
+        KnowledgeAccessContext,
+        Depends(require_gateway_service),
     ],
 ) -> ExperienceResponse:
     _ensure_enabled()
@@ -134,10 +135,13 @@ async def post_experience_feedback(
     experience_id: str,
     body: ExperienceFeedbackRequest,
     access: Annotated[
-        ExperienceAccessContext,
-        Depends(require_experience_permission(ExperiencePermission.FEEDBACK)),
+        KnowledgeAccessContext,
+        Depends(require_gateway_service),
     ],
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key", min_length=1, max_length=128),
+    ] = None,
 ) -> ExperienceFeedbackResponse:
     _ensure_enabled()
     try:
