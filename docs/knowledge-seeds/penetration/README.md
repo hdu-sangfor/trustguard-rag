@@ -34,15 +34,16 @@ Markdown 文件上传到 `POST /v1/ingest/jobs`。每个入库任务成功后，
 }
 ```
 
-知识库 ID 是部署数据，不写入 Git。将本地 ID 放在被忽略的 `.env.local` 中：
+知识库 ID 是部署数据，不写入 Git。导入后通过管理 API 持久化 Scope 绑定：
 
-```dotenv
-RAG_MCP_SCOPE_MAPPING_JSON={"penetration":{"knowledge_base_ids":["<knowledge-base-id>"],"default_mode":"comprehensive"}}
-RAG_INTERNAL_SERVICE_TOKEN=<local-random-service-token>
-RAG_RESOURCE_REF_SECRET=<local-random-resource-ref-secret>
+```bash
+curl -X PUT http://localhost:18200/v1/knowledge-scopes/penetration \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <RAG_GATEWAY_SERVICE_TOKEN>' \
+  -d '{"knowledge_base_ids":["<knowledge-base-id>"],"default_mode":"comprehensive","allowed_workflow_types":["penetration"]}'
 ```
 
-本地启动时在基础 `.env` 之后加载覆盖文件：
+本地密钥仍可放在被忽略的 `.env.local`，启动时在基础 `.env` 之后加载：
 
 ```powershell
 docker compose --env-file .env --env-file .env.local up -d --build rag-service rag-mcp

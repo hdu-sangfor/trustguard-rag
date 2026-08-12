@@ -28,6 +28,8 @@ from app.schemas.crawler import (
 )
 from app.settings import get_settings
 from app.stores.crawler_store import CrawlerStore
+from app.stores.experience_store import is_experience_knowledge_base
+from app.stores.knowledge_base_store import get_knowledge_base_store
 from app.workers.eager import dispatch_eager
 
 router = APIRouter(prefix="/v1/crawler", tags=["crawler"])
@@ -148,6 +150,15 @@ async def create_crawl_job(body: CrawlJobCreateRequest) -> CrawlJobResponse:
     settings = get_settings()
     if not settings.crawler_enabled:
         raise HTTPException(status_code=503, detail="Crawler is disabled")
+    knowledge_base = await get_knowledge_base_store().get(body.knowledge_base_id)
+    if knowledge_base is not None and is_experience_knowledge_base(
+        knowledge_base_id=knowledge_base.id,
+        name=knowledge_base.name,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Experience knowledge base only accepts Experience APIs",
+        )
     config = body.model_dump()
     configured_defaults = {
         "max_results_per_keyword": settings.crawler_max_results_per_keyword,

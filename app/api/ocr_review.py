@@ -61,6 +61,8 @@ async def list_document_ocr_regions(
     doc = await get_document_store().get(document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="document not found")
+    if doc.source_type == "experience":
+        raise HTTPException(status_code=403, detail="experience projection is not an OCR document")
     status_enum = None
     if status:
         try:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from uuid import uuid4
 
 import pytest
@@ -11,12 +10,14 @@ from sqlalchemy import inspect, text
 from app.application.resource_refs import ResourceRefClaims, ResourceRefCodec
 from app.core.embedding.profiles import get_embedding_profile
 from app.domain import DocumentStatus, IngestJobStatus
+from app.schemas.knowledge_scope import KnowledgeScopeUpdate
 from app.settings import get_settings
 from app.stores.chunk_store import ChunkStore
 from app.stores.document_store import DocumentStore
 from app.stores.job_store import JobLease, JobStore
 from app.stores.knowledge_base_migration import ensure_knowledge_base_schema
 from app.stores.knowledge_base_store import KnowledgeBaseStore
+from app.stores.knowledge_scope_store import KnowledgeScopeStore
 
 
 @pytest.mark.asyncio
@@ -198,9 +199,9 @@ async def test_internal_resource_ref_is_source_bound_and_scope_safe(
     secret = "phase21-resource-ref-secret-with-at-least-32-characters"
     monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "phase21-resource-token")
     monkeypatch.setenv("RAG_RESOURCE_REF_SECRET", secret)
-    monkeypatch.setenv(
-        "RAG_MCP_SCOPE_MAPPING_JSON",
-        json.dumps({"compliance": {"knowledge_base_ids": [first.id, second.id]}}),
+    await KnowledgeScopeStore().replace_manual(
+        "compliance",
+        KnowledgeScopeUpdate(knowledge_base_ids=[first.id, second.id]),
     )
     get_settings.cache_clear()
     codec = ResourceRefCodec(secret)

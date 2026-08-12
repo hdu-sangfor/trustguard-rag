@@ -688,15 +688,11 @@ Streamable HTTP 服务必须：
 - 对外 REST 若允许检索私有内容，必须执行与 MCP 相同的 Token Claim 和 ABAC，不能通过直接传递 `knowledge_base_id` 绕过 Scope；
 - 开发环境允许关闭鉴权，生产环境必须 fail-fast，不能静默以无鉴权模式启动。
 
-经验写入链路使用独立服务身份和最小权限：
-
-```text
-rag.experience.write
-rag.experience.feedback
-rag.experience.admin
-```
-
-MCP Access Token 按客户端实际用途最小化授予 `rag.search` 和/或 `rag.resource.read`，不能复用为经验写入凭证。`rag.experience.admin` 仅授予审核或策略服务，不授予 Workflow LLM。
+MCP Access Token 按客户端实际用途最小化授予 `rag.search` 和/或
+`rag.resource.read`，不能复用为业务 REST 凭证。Experience 与 Scope 管理 REST 复用
+Agent Gateway 的服务身份；终端用户权限由 Agent 登录 JWT 和 `ADMIN/OPERATOR/VIEWER`
+角色决定，RAG 不维护第二套 Experience 静态令牌表。Workflow LLM 不持有 Gateway
+服务令牌，也不能直接提升经验状态。
 
 MCP Transport 规范明确要求 Streamable HTTP 校验 Origin，并建议所有连接使用正确鉴权：
 
@@ -1119,8 +1115,11 @@ GET   /v1/experiences
 
 ```json
 {
+  "schema_version": "trustguard-experience-upsert-v1",
+  "external_id": "task-123:http-fingerprint:3",
   "source_system": "trustguard-agent",
   "source_revision": 3,
+  "knowledge_scope": "penetration",
   "workflow_type": "penetration",
   "experience_type": "skill_outcome",
   "workspace_id": "ws-...",
@@ -1131,18 +1130,19 @@ GET   /v1/experiences
   },
   "action_summary": "先通过响应特征确认 RememberMe，再执行无害验证。",
   "outcome_summary": "在目标环境中减少了误报。",
-  "effectiveness": "candidate",
-  "source_task_id": "task-..."
+  "source_task_id": "task-...",
+  "evidence_refs": []
 }
 ```
 
 要求：
 
-- 写入使用 Service Token 和 `Idempotency-Key`；
+- 直连 REST 由 Agent Gateway 注入统一 Service Token，并透传 `Idempotency-Key`；
 - 数据库唯一约束为 `(source_system, external_id)`；
 - `source_revision` 只允许新版本覆盖旧版本，迟到事件不能回滚内容；
 - Feedback 事件必须有唯一 `event_id`，重复投递不重复计数；
-- 状态修改使用 `rag.experience.admin`，普通 Workflow 只能提交候选和反馈；
+- Gateway 只允许 `ADMIN/OPERATOR` 执行 Experience 操作并记录审计；普通 Workflow
+  通过 Outbox/Consumer 提交候选和反馈，不能持有服务令牌或直接修改状态；
 - 写入响应表示“权威数据已持久化”，索引状态单独返回，不伪装为同步完成。
 
 ### 12.4 生产写入链路
@@ -1243,9 +1243,9 @@ Agent 当前 Qdrant Experience Store 不立即删除：
 - [x] 在 Knowledge Application Service 强制实施单租户 Workspace、visibility 和 Workflow ABAC；
 - [x] 外部 REST 只接受 Gateway 服务身份；MCP 内部接口只接受逻辑 Scope，不接受任意物理知识库 ID；
 - [x] 增加 Origin 和 Host Allowlist；
-- [ ] 管理接口与检索接口分权；
-- [ ] 增加 `rag.experience.write/feedback/admin` 并使用独立服务身份；
-- [ ] 增加审计日志。
+- [x] Agent Gateway 对管理接口与检索接口实施角色分权；
+- [x] Experience REST 复用 Gateway 服务身份，移除独立静态令牌映射；
+- [x] Agent Gateway 对 Scope 和 Experience 变更记录审计。
 
 ### 13.3 MCP Server
 
@@ -1852,8 +1852,8 @@ Phase 2 实现说明：
   后发生无意升级；
 - `app/mcp_server/` 提供独立 Uvicorn 入口，采用
   `stateless_http=true`、`json_response=true` 和 `/mcp` 单端点；
-- `RAG_MCP_SCOPE_MAPPING_JSON` 只接受冻结契约中的逻辑 Scope，可将一个 Scope 映射到
-  多个知识库并限制内容类型；
+- 初版通过环境变量配置逻辑 Scope；该过渡方案已经迁移到 RAG 数据库，可将一个 Scope
+  映射到多个知识库并限制内容类型；
 - Phase 2 初版由 `knowledge_search` 在 Gateway 内并发调用各知识库；Phase 2.1 已将该
   联邦行为迁移到 Knowledge Application Service，MCP Search 仅保留一次内部调用；
 - 多库版本使用排序后的 `knowledge_base_id:content_revision` 计算 SHA-256；Resource Ref
@@ -1931,9 +1931,23 @@ Phase 2 实现说明：
 - 删除旧 Chunk Resource Template、Scope revision 遍历回读及其 Backend/Gateway 分支；
 - 删除 `/v1/internal/knowledge/search`、裸 Chunk 读取和独立 content revision 内部接口，MCP 只能按逻辑 Scope 搜索；
 - `resource_ref/source_revision/content_hash` 改为 v1 必填字段，并从北向 Hit/Resource 删除裸 Chunk ID；
-- `RAG_MCP_SCOPE_MAPPING_JSON` 只接受完整 `ScopeDefinition`，不再接受数组简写；
+- Scope 配置已从环境变量迁移到 `knowledge_scopes` / `knowledge_scope_bindings`，通过
+  `/v1/knowledge-scopes` 管理，不再解析 JSON 环境变量；
 - 删除 `app.mcp_server.models/scopes` 兼容导出，调用方直接依赖应用层和 Schema 层；
 - MCP Tool 直接返回 Pydantic Structured Content，不再手工构造兼容返回体。
+
+第五批改造（2026-08-12）已完成：
+
+- Scope 策略和多知识库绑定持久化到 RAG 数据库，新增受 Gateway 身份保护的查询、替换和
+  清理接口；Experience 知识库使用不可被普通配置覆盖的系统绑定；
+- 删除 `RAG_MCP_SCOPE_MAPPING_JSON`、`RAG_EXPERIENCE_TOKENS_JSON` 和独立 Experience
+  鉴权开关，避免在 `.env` 中维护结构化授权数据和长期令牌集合；
+- Experience REST 与其他 RAG 业务 REST 统一使用 `RAG_GATEWAY_SERVICE_TOKEN`；浏览器
+  登录令牌只在 Agent Gateway 校验且不会向上游透传；
+- Agent Gateway 新增 Scope 与 Experience 代理，读 Scope 允许 `VIEWER`，变更 Scope 和
+  Experience 操作只允许 `ADMIN/OPERATOR`，所有变更写入审计日志；
+- MCP JWT 继续只用于 MCP Search/Resource，并由外部身份服务按 JWKS 配置签发和验证，
+  不与 Gateway 服务身份混用。
 
 完成条件：
 

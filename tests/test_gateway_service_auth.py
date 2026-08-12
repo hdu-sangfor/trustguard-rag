@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import httpx
 import pytest
 
@@ -14,8 +12,10 @@ from app.application.access import (
     mcp_access_context,
 )
 from app.core.embedding.profiles import get_embedding_profile
+from app.schemas.knowledge_scope import KnowledgeScopeUpdate
 from app.settings import get_settings
 from app.stores.knowledge_base_store import KnowledgeBaseStore
+from app.stores.knowledge_scope_store import KnowledgeScopeStore
 
 
 @pytest.mark.asyncio
@@ -75,9 +75,9 @@ async def test_public_search_cannot_bypass_gateway_identity(
     monkeypatch.setenv("RAG_GATEWAY_AUTH_ENABLED", "true")
     monkeypatch.setenv("RAG_GATEWAY_SERVICE_TOKEN", "gateway-service-secret")
     monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "mcp-service-secret")
-    monkeypatch.setenv(
-        "RAG_MCP_SCOPE_MAPPING_JSON",
-        json.dumps({"compliance": {"knowledge_base_ids": [knowledge_base.id]}}),
+    await KnowledgeScopeStore().replace_manual(
+        "compliance",
+        KnowledgeScopeUpdate(knowledge_base_ids=[knowledge_base.id]),
     )
     get_settings.cache_clear()
     payload = {

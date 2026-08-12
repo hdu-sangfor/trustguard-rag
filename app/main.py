@@ -19,10 +19,12 @@ from app.api import (
     answer,
     crawler,
     documents,
+    experiences,
     health,
     ingest,
     internal,
     knowledge_bases,
+    knowledge_scopes,
     ocr_review,
     search,
     sources,
@@ -36,10 +38,15 @@ from app.api.errors import (
 )
 from app.core.indexing.opensearch_backfill import backfill_ready_documents
 from app.core.ingest.scheduler import shutdown_sync_scheduler, start_sync_scheduler
+from app.application.experience import get_experience_service
 from app.settings import get_settings
 from app.security.service_auth import require_gateway_service
 from app.stores import db, opensearch_store, qdrant_store, redis_cache
 from app.stores.outbox_store import ensure_outbox_schema
+from app.stores.experience_store import (
+    ensure_experience_schema,
+    ensure_penetration_experience_knowledge_base,
+)
 from app.stores.knowledge_base_migration import (
     backfill_qdrant_knowledge_base_payloads,
     enforce_knowledge_base_integrity,
@@ -114,6 +121,21 @@ async def ensure_ocr_schema() -> None:
         logger.warning("ensure_ocr_schema failed", exc_info=True)
 
 
+async def run_experience_index_recovery() -> None:
+    """Continuously compensate authority rows whose search projection is pending."""
+    settings = get_settings()
+    while True:
+        try:
+            recovered = await get_experience_service().recover_pending_indexes()
+            if recovered:
+                logger.info("recovered pending experience indexes: %s", recovered)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.warning("experience index recovery failed", exc_info=True)
+        await asyncio.sleep(settings.experience_index_retry_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动时配置日志，关闭时释放共享客户端。"""
@@ -123,6 +145,15 @@ async def lifespan(app: FastAPI):
     await ensure_outbox_schema()
     await ensure_ocr_schema()
     await ensure_knowledge_base_schema()
+    await ensure_experience_schema()
+    if s.experience_enabled:
+        try:
+            await ensure_penetration_experience_knowledge_base()
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "ensure_penetration_experience_knowledge_base failed",
+                exc_info=True,
+            )
     migrated_documents = await migrate_legacy_knowledge_bases()
     migrated_jobs = await migrate_legacy_job_knowledge_bases()
     await enforce_knowledge_base_integrity()
@@ -143,12 +174,20 @@ async def lifespan(app: FastAPI):
             run_opensearch_backfill(),
             name="opensearch-startup-backfill",
         )
+    experience_recovery_task: asyncio.Task[None] | None = None
+    if s.experience_enabled:
+        experience_recovery_task = asyncio.create_task(
+            run_experience_index_recovery(),
+            name="experience-index-recovery",
+        )
     start_sync_scheduler()
     yield
     shutdown_sync_scheduler()
     tasks = [knowledge_base_backfill_task]
     if backfill_task is not None:
         tasks.append(backfill_task)
+    if experience_recovery_task is not None:
+        tasks.append(experience_recovery_task)
     for task in tasks:
         if task.done():
             continue
@@ -226,11 +265,13 @@ def create_app() -> FastAPI:
     app.include_router(crawler.router, dependencies=gateway_dependencies)
     app.include_router(sync.router, dependencies=gateway_dependencies)
     app.include_router(knowledge_bases.router, dependencies=gateway_dependencies)
+    app.include_router(knowledge_scopes.router, dependencies=gateway_dependencies)
     app.include_router(documents.router, dependencies=gateway_dependencies)
     app.include_router(sources.router, dependencies=gateway_dependencies)
     app.include_router(search.router, dependencies=gateway_dependencies)
     app.include_router(answer.router, dependencies=gateway_dependencies)
     app.include_router(ocr_review.router, dependencies=gateway_dependencies)
+    app.include_router(experiences.router)
 
     frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
     app.mount("/assets", StaticFiles(directory=frontend_dir / "assets"), name="assets")

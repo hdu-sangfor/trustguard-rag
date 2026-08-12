@@ -12,9 +12,11 @@ from starlette.requests import Request
 from app.core.embedding.profiles import get_embedding_profile
 from app.main import create_app
 from app.mcp_server.backend import BackendError, RestRagBackend
+from app.schemas.knowledge_scope import KnowledgeScopeUpdate
 from app.security.service_auth import require_internal_service
 from app.settings import Settings, get_settings
 from app.stores.knowledge_base_store import KnowledgeBaseStore
+from app.stores.knowledge_scope_store import KnowledgeScopeStore
 
 
 class _SearchEngine:
@@ -99,9 +101,9 @@ async def test_internal_scope_search_runs_federation_in_application_service(
         lambda: engine,
     )
     monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "phase22-service-secret")
-    monkeypatch.setenv(
-        "RAG_MCP_SCOPE_MAPPING_JSON",
-        json.dumps({"compliance": {"knowledge_base_ids": [first.id, second.id]}}),
+    await KnowledgeScopeStore().replace_manual(
+        "compliance",
+        KnowledgeScopeUpdate(knowledge_base_ids=[first.id, second.id]),
     )
     get_settings.cache_clear()
 
@@ -339,7 +341,10 @@ async def test_mcp_rest_backend_fails_closed_without_internal_identity() -> None
 def test_production_requires_internal_identity_and_mcp_auth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("RAG_INTERNAL_SERVICE_TOKEN", raising=False)
+    # Override any developer .env values so this boundary test is deterministic.
+    monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "")
+    monkeypatch.setenv("RAG_RESOURCE_REF_SECRET", "")
+    monkeypatch.setenv("RAG_EXPERIENCE_ENABLED", "false")
     monkeypatch.setenv("RAG_APP_ENV", "prod")
     monkeypatch.setenv("RAG_QDRANT_MOCK", "false")
     monkeypatch.setenv("RAG_SEARCH_OPENSEARCH_MOCK", "false")
@@ -374,7 +379,7 @@ def test_production_requires_internal_identity_and_mcp_auth(
     get_settings.cache_clear()
     create_app()
 
-    monkeypatch.delenv("RAG_INTERNAL_SERVICE_TOKEN", raising=False)
+    monkeypatch.setenv("RAG_INTERNAL_SERVICE_TOKEN", "")
     with pytest.raises(ValueError, match="RAG_INTERNAL_SERVICE_TOKEN"):
         Settings(
             _env_file=None,

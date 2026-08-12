@@ -12,6 +12,7 @@ from app.schemas.knowledge_base import (
     KnowledgeBaseUpdate,
 )
 from app.stores.knowledge_base_store import get_knowledge_base_store
+from app.stores.experience_store import is_experience_knowledge_base
 from app.workers.eager import dispatch_eager
 
 router = APIRouter(prefix="/v1/knowledge-bases", tags=["knowledge-bases"])
@@ -75,6 +76,12 @@ async def update_knowledge_base(
 ) -> KnowledgeBaseResponse:
     if not request.model_fields_set:
         raise HTTPException(status_code=400, detail="At least one editable field is required")
+    current = await get_knowledge_base_store().get(knowledge_base_id)
+    if current is not None and is_experience_knowledge_base(
+        knowledge_base_id=current.id,
+        name=current.name,
+    ):
+        raise HTTPException(status_code=409, detail="System knowledge base cannot be edited")
     try:
         row = await get_knowledge_base_store().update(
             knowledge_base_id, request.model_dump(exclude_unset=True)

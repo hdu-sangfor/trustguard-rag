@@ -98,6 +98,7 @@ class DocumentStore:
         status: DocumentStatus | None = None,
         query: str | None = None,
         knowledge_base_id: str | None = None,
+        exclude_source_types: frozenset[str] | None = None,
     ) -> tuple[list[DocumentRow], int]:
         """分页列出文档，并可按状态和常用文本字段筛选。"""
         filters = []
@@ -105,6 +106,8 @@ class DocumentStore:
             filters.append(DocumentRow.status == status)
         if knowledge_base_id:
             filters.append(DocumentRow.knowledge_base_id == knowledge_base_id)
+        if exclude_source_types:
+            filters.append(DocumentRow.source_type.not_in(exclude_source_types))
         if query:
             pattern = f"%{query.strip()}%"
             filters.append(

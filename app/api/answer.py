@@ -17,6 +17,11 @@ from app.core.retrieval.request_context import resolve_search_execution
 from app.core.retrieval.search import SearchUnavailableError
 from app.schemas.answer import AnswerRequest, AnswerResponse
 from app.security.service_auth import require_gateway_service
+from app.stores.experience_store import (
+    PENETRATION_EXPERIENCE_KB_ID,
+    PENETRATION_EXPERIENCE_KB_NAME,
+)
+from app.stores.knowledge_base_store import get_knowledge_base_store
 
 router = APIRouter(prefix="/v1/answer", tags=["answer"])
 
@@ -30,6 +35,15 @@ async def answer(
     ],
 ) -> AnswerResponse:
     """检索知识库，并生成带可验证引用的单轮回答。"""
+    knowledge_base = await get_knowledge_base_store().get(request.knowledge_base_id)
+    if knowledge_base is not None and (
+        knowledge_base.id == PENETRATION_EXPERIENCE_KB_ID
+        or knowledge_base.name == PENETRATION_EXPERIENCE_KB_NAME
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Experience knowledge must be queried through an authorized scope",
+        )
     try:
         access_context.require(
             KnowledgePermission.ANSWER,

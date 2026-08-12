@@ -241,7 +241,6 @@ async def test_official_mcp_client_lists_and_calls_read_only_contract() -> None:
     settings = Settings(
         _env_file=None,
         mcp_enabled=True,
-        mcp_scope_mapping_json=('{"compliance":{"knowledge_base_ids":["kb-a"]}}'),
         mcp_allowed_hosts="test",
     )
     app = create_mcp_app(settings, backend=backend)
@@ -303,7 +302,6 @@ async def test_default_mcp_hosts_allow_agent_compose_bridge() -> None:
     settings = Settings(
         _env_file=None,
         mcp_enabled=True,
-        mcp_scope_mapping_json=('{"compliance":{"knowledge_base_ids":["kb-a"]}}'),
     )
     app = create_mcp_app(settings, backend=_FakeBackend())
 
@@ -430,7 +428,6 @@ async def test_mcp_http_boundary_authenticates_without_aggregating_operation_sco
         mcp_auth_issuer="https://auth.test",
         mcp_auth_jwks_url="https://auth.test/.well-known/jwks.json",
         mcp_resource_server_url="http://test/mcp",
-        mcp_scope_mapping_json=('{"compliance":{"knowledge_base_ids":["kb-a"]}}'),
         mcp_allowed_hosts="test",
     )
     app = create_mcp_app(settings, backend=_FakeBackend())
@@ -464,13 +461,17 @@ async def test_mcp_http_boundary_authenticates_without_aggregating_operation_sco
     assert search_only.status_code == 200
 
 
-def test_scope_mapping_rejects_unknown_alias_and_empty_mapping() -> None:
-    with pytest.raises(ValueError, match="Unsupported MCP knowledge scope"):
-        ScopeRegistry.from_json('{"arbitrary":{"knowledge_base_ids":["kb-a"]}}')
+def test_scope_registry_rejects_unknown_alias_and_empty_mapping() -> None:
+    with pytest.raises(ValueError, match="Unsupported knowledge scope"):
+        ScopeRegistry.from_definitions(
+            {"arbitrary": {"knowledge_base_ids": ["kb-a"]}}
+        )
     with pytest.raises(ValueError, match="knowledge_base_ids"):
-        ScopeRegistry.from_json('{"compliance":{"knowledge_base_ids":[]}}')
+        ScopeRegistry.from_definitions(
+            {"compliance": {"knowledge_base_ids": []}}
+        )
     with pytest.raises(ValueError, match="valid dictionary"):
-        ScopeRegistry.from_json('{"compliance":["kb-a"]}')
+        ScopeRegistry.from_definitions({"compliance": ["kb-a"]})
 
 
 def test_mcp_auth_configuration_requires_issuer_and_jwks() -> None:

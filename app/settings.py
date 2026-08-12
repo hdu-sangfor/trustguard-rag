@@ -54,7 +54,6 @@ class Settings(BaseSettings):
     mcp_host: str = "0.0.0.0"
     mcp_port: int = 18201
     mcp_backend_url: str = "http://127.0.0.1:18200"
-    mcp_scope_mapping_json: str = "{}"
     mcp_request_timeout_seconds: float = 10.0
     mcp_rrf_k: int = 60
     mcp_snippet_max_chars: int = 4000
@@ -265,6 +264,13 @@ class Settings(BaseSettings):
     # --- 健康检查 ---
     health_check_timeout_seconds: float = 3.0
 
+    # --- Experience write authority (Slice A) ---
+    experience_enabled: bool = True
+    experience_consumer_enabled: bool = False
+    experience_auto_promotion_enabled: bool = False
+    experience_idempotency_ttl_seconds: int = 86_400
+    experience_index_retry_seconds: float = 30.0
+
     # --- 增量同步（Sync Bridge） ---
     # RAG_SYNC_ROOTS: JSON {"crawler":"/sync"} 或 crawler=/sync,other=/data
     sync_roots: str = ""
@@ -285,6 +291,10 @@ class Settings(BaseSettings):
         """校验生产检索后端和分块窗口配置。"""
         if self.pdf_parser.strip().lower() not in {"local", "mineru"}:
             raise ValueError("RAG_PDF_PARSER 必须是 local 或 mineru")
+        if self.experience_idempotency_ttl_seconds <= 0:
+            raise ValueError("RAG_EXPERIENCE_IDEMPOTENCY_TTL_SECONDS 必须大于 0")
+        if self.experience_index_retry_seconds <= 0:
+            raise ValueError("RAG_EXPERIENCE_INDEX_RETRY_SECONDS 必须大于 0")
         if self.chunk_target_tokens <= 0:
             raise ValueError("RAG_CHUNK_TARGET_TOKENS 必须大于 0")
         if not 0 <= self.chunk_overlap_tokens < self.chunk_target_tokens:

@@ -380,8 +380,14 @@ class PseudoKeywordRetriever:
         }
 
 
+_pseudo_keyword_retriever: PseudoKeywordRetriever | None = None
+
+
 def get_keyword_retriever() -> KeywordRetriever | MockKeywordRetriever | PseudoKeywordRetriever:
+    global _pseudo_keyword_retriever
     settings = get_settings()
     if settings.search_opensearch_mock:
-        return PseudoKeywordRetriever()
+        if _pseudo_keyword_retriever is None:
+            _pseudo_keyword_retriever = PseudoKeywordRetriever()
+        return _pseudo_keyword_retriever
     return KeywordRetriever()
