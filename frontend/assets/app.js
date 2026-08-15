@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { file: null, jobs: JSON.parse(localStorage.getItem("tg-jobs") || "[]"), timers: new Map(), crawlerJobs: [], crawlerTimers: new Map(), crawlerPresets: [], crawlerPresetMode: null, selectedCrawlerPresetId: null, knowledgeBasesPromise: null, documents: [], knowledgeBases: [], embeddingProfiles: [], documentOffset: 0, documentLimit: 10, documentTotal: 0 };
+const state = { file: null, jobs: JSON.parse(localStorage.getItem("tg-jobs") || "[]"), timers: new Map(), crawlerJobs: [], crawlerTimers: new Map(), crawlerPresets: [], crawlerSources: [], crawlerPresetMode: null, selectedCrawlerPresetId: null, knowledgeBasesPromise: null, documents: [], knowledgeBases: [], embeddingProfiles: [], documentOffset: 0, documentLimit: 10, documentTotal: 0 };
 const JobStatus = Object.freeze({ QUEUED:"queued", RUNNING:"running", CONFLICT:"conflict", RESOLVING:"resolving", INGEST_RETRYING:"ingest_retrying", RESOLVE_RETRYING:"resolve_retrying", SUCCEEDED:"succeeded", DEDUPLICATED:"deduplicated", FAILED:"failed", CANCELLED:"cancelled", DISCARDED:"discarded" });
 const DocumentStatus = Object.freeze({ STAGING:"staging", INDEXING:"indexing", READY:"ready", FAILED:"failed", DELETING:"deleting", SUPERSEDED:"superseded" });
 const IngestStep = Object.freeze({ QUEUED:"queued", RECOVER:"recover", VALIDATE:"validate", EXTRACT:"extract", DEDUP:"dedup", CONFLICT_CHECK:"conflict_check", COMMIT_ARTIFACTS:"commit_artifacts", CHUNK:"chunk", EMBED:"embed", INDEX:"index", OPENSEARCH_INDEX:"opensearch_index", PUBLISH:"publish", RETRY_WAIT:"retry_wait", RESOLVE:"resolve", RESOLVE_SUPERSEDE:"resolve_supersede", SUPERSEDE_CLEANUP:"supersede_cleanup", RESOLVE_PUBLISH:"resolve_publish", RESOLVE_DISCARD:"resolve_discard", CANCELLED:"cancelled", FAILED:"failed" });
@@ -186,6 +186,36 @@ async function monitorKnowledgeBaseDeletion(id,name,remaining=90){
 const crawlStatusLabel={queued:"排队中",running:"采集中",paused:"已暂停",succeeded:"已完成",failed:"失败",cancelled:"已停止"};
 const crawlTerminal=new Set(["succeeded","cancelled"]);
 function lines(selector){return $(selector).value.split(/\r?\n/).map(value=>value.trim()).filter(Boolean);}
+function crawlerSourceForPreset(presetId){return state.crawlerSources.find(source=>(source.preset_ids||[]).includes(presetId));}
+function formatScheduleInterval(minutes){
+  if(!minutes)return "";
+  if(minutes%10080===0)return `每 ${minutes/10080} 周`;
+  if(minutes%1440===0)return `每 ${minutes/1440} 天`;
+  if(minutes%60===0)return `每 ${minutes/60} 小时`;
+  return `每 ${minutes} 分钟`;
+}
+function setCrawlerScheduleInterval(minutes){
+  if(!minutes)return;
+  const unit=minutes%1440===0?1440:minutes%60===0?60:1;
+  $("#crawler-schedule-unit").value=String(unit);
+  $("#crawler-schedule-value").value=String(minutes/unit);
+}
+function crawlerScheduleMinutes(){return Number($("#crawler-schedule-value").value)*Number($("#crawler-schedule-unit").value);}
+function syncCrawlerScheduleControls(){
+  const enabled=$("#crawler-schedule-enabled").checked,fields=$("#crawler-schedule-fields"),unit=Number($("#crawler-schedule-unit").value),value=$("#crawler-schedule-value"),button=$("#crawler-submit");
+  fields.hidden=!enabled;
+  value.min=unit===1?"5":"1";
+  if(Number(value.value)<Number(value.min))value.value=value.min;
+  const minutes=crawlerScheduleMinutes();
+  $("#crawler-schedule-hint").textContent=`保存后立即执行首轮采集，之后${formatScheduleInterval(minutes)}自动执行。`;
+  button.firstChild.textContent=enabled?"启动周期采集 ":"启动采集 ";
+}
+function applyCrawlerSourceSchedule(source){
+  const enabled=Boolean(source?.schedule_enabled);
+  $("#crawler-schedule-enabled").checked=enabled;
+  if(source?.schedule_interval_minutes)setCrawlerScheduleInterval(source.schedule_interval_minutes);
+  syncCrawlerScheduleControls();
+}
 function renderCrawlerPresets(){
   const target=$("#crawler-presets");target.innerHTML="";
   const custom=document.createElement("button");
@@ -194,15 +224,15 @@ function renderCrawlerPresets(){
   custom.onclick=selectCustomCrawlerMode;
   target.append(custom);
   state.crawlerPresets.filter(item=>item.kind==="category").forEach(preset=>{
-    const card=document.createElement("button"),count=(preset.site_urls||[]).length+(preset.keywords||[]).length+(preset.structured_sources||[]).length,phases=(preset.phases||[]).join(" → ");
+    const card=document.createElement("button"),count=(preset.site_urls||[]).length+(preset.keywords||[]).length+(preset.structured_sources||[]).length,phases=(preset.phases||[]).join(" → "),source=crawlerSourceForPreset(preset.id),schedule=source?.schedule_enabled?` · ${formatScheduleInterval(source.schedule_interval_minutes)}增量采集`:"";
     card.type="button";card.className="crawler-preset-card";card.dataset.presetId=preset.id;card.setAttribute("aria-pressed",String(state.crawlerPresetMode==="preset"&&state.selectedCrawlerPresetId===preset.id));
-    card.innerHTML=`<span class="crawler-preset-topline"><strong>${escapeHtml(preset.name)}</strong><b>${escapeHtml(preset.priority||"")}</b></span><small>${escapeHtml(preset.description)}</small><span class="crawler-preset-meta">${count} 项采集配置${phases?` · ${escapeHtml(phases)}`:""}</span>`;
+    card.innerHTML=`<span class="crawler-preset-topline"><strong>${escapeHtml(preset.name)}</strong><b>${escapeHtml(preset.priority||"")}</b></span><small>${escapeHtml(preset.description)}</small><span class="crawler-preset-meta">${count} 项采集配置${phases?` · ${escapeHtml(phases)}`:""}${escapeHtml(schedule)}</span>`;
     card.onclick=()=>selectCrawlerPreset(preset);
     target.append(card);
   });
 }
 async function loadCrawlerPresets(){
-  try{const data=await api("/v1/crawler/presets");state.crawlerPresets=data.items||[];renderCrawlerPresets();}
+  try{const [data,registry]=await Promise.all([api("/v1/crawler/presets"),api("/v1/crawler/registry")]);state.crawlerPresets=data.items||[];state.crawlerSources=registry.items||[];renderCrawlerPresets();}
   catch(error){toast(`分类预置加载失败：${error.message}`,true);}
 }
 function applyCrawlerPresetKnowledgeBase(preset=state.crawlerPresets.find(item=>item.id===state.selectedCrawlerPresetId)){
@@ -218,6 +248,7 @@ function selectCrawlerPreset(preset){
   $("#crawler-sites").value=(preset.site_urls||[]).join("\n");
   const count=(preset.keywords||[]).length+(preset.site_urls||[]).length+(preset.structured_sources||[]).length;
   $("#crawler-max-pages").value=String(Math.min(200,Math.max(30,count*10)));
+  applyCrawlerSourceSchedule(crawlerSourceForPreset(preset.id));
   applyCrawlerPresetKnowledgeBase(preset);
   $("#crawler-selected-preset").innerHTML=`<strong>${escapeHtml(preset.name)}</strong><span>${escapeHtml(preset.description)} · 提交后自动创建或复用 ${escapeHtml(preset.category_name||preset.name)}</span>`;
   $("#crawler-form").scrollIntoView({behavior:"smooth",block:"start"});
@@ -229,19 +260,21 @@ function selectCustomCrawlerMode(){
   $("#crawler-keywords").value="";
   $("#crawler-sites").value="";
   $("#crawler-max-pages").value="30";
+  applyCrawlerSourceSchedule(null);
   $("#crawler-selected-preset").innerHTML="<strong>自定义采集</strong><span>不使用分类预置；请选择知识库，并至少填写一个 URL、关键词或站点入口。</span>";
   $("#crawler-form").scrollIntoView({behavior:"smooth",block:"start"});
 }
 function renderCrawlerJobs(){
   const list=$("#crawler-jobs"),empty=$("#crawler-empty");list.innerHTML="";empty.hidden=state.crawlerJobs.length>0;
   state.crawlerJobs.forEach(job=>{
-    const progress=job.progress||{},row=document.createElement("article");row.className="crawler-job";
+    const progress=job.progress||{},row=document.createElement("article"),sourceId=job.config.source_id,managedSource=sourceId?state.crawlerSources.find(source=>source.id===sourceId):null,scheduleActive=Boolean(managedSource?.schedule_enabled),reviewBacklog=Boolean(sourceId&&state.crawlerJobs.some(item=>item.config.source_id===sourceId&&Number(item.progress?.pending_review||0)>0)),scheduleText=sourceId?(scheduleActive?(reviewBacklog?" · 等待人工审核":` · ${formatScheduleInterval(managedSource.schedule_interval_minutes)}周期采集`):" · 周期已关闭"):"";row.className="crawler-job";
     const sourceCount=(job.config.urls||[]).length+(job.config.keywords||[]).length+(job.config.site_urls||[]).length+(job.config.structured_sources||[]).length;
-    row.innerHTML=`<div class="crawler-job-main"><strong>${escapeHtml(crawlStatusLabel[job.status]||job.status)}</strong><small>${escapeHtml(job.id)} · ${sourceCount} 个采集入口 · 尝试 ${job.attempt||0}</small></div><div class="crawler-metrics"><span>已抓取 <b>${progress.fetched||0}</b></span><span>已清洗 <b>${progress.cleaned||0}</b></span><span>已拒绝 <b>${progress.rejected||0}</b></span><span>已入库排队 <b>${progress.queued_for_ingest||0}</b></span><span>跳过 <b>${progress.skipped||0}</b></span><span>失败 <b>${progress.failed||0}</b></span></div><span class="status ${escapeHtml(job.status)}">${escapeHtml(crawlStatusLabel[job.status]||job.status)}</span><div class="crawler-actions"><button class="text-button crawl-refresh" type="button">刷新</button>${job.status==="running"?'<button class="text-button crawl-pause" type="button">暂停</button>':""}${["paused","failed"].includes(job.status)?'<button class="text-button crawl-resume" type="button">继续</button>':""}${!crawlTerminal.has(job.status)?'<button class="text-button danger crawl-stop" type="button">停止</button>':""}</div>${job.error_message?`<p class="crawler-error">${escapeHtml(job.error_message)}</p>`:""}`;
+    row.innerHTML=`<div class="crawler-job-main"><strong>${escapeHtml(crawlStatusLabel[job.status]||job.status)}</strong><small>${escapeHtml(job.id)} · ${sourceCount} 个采集入口 · 尝试 ${job.attempt||0}${escapeHtml(scheduleText)}</small></div><div class="crawler-metrics"><span>已抓取 <b>${progress.fetched||0}</b></span><span>已清洗 <b>${progress.cleaned||0}</b></span><span>已拒绝 <b>${progress.rejected||0}</b></span><span>已入库排队 <b>${progress.queued_for_ingest||0}</b></span><span>跳过 <b>${progress.skipped||0}</b></span><span>失败 <b>${progress.failed||0}</b></span></div><span class="status ${escapeHtml(job.status)}">${escapeHtml(crawlStatusLabel[job.status]||job.status)}</span><div class="crawler-actions"><button class="text-button crawl-refresh" type="button">刷新</button>${job.status==="running"?'<button class="text-button crawl-pause" type="button">暂停</button>':""}${["paused","failed"].includes(job.status)?'<button class="text-button crawl-resume" type="button">继续</button>':""}${scheduleActive?'<button class="text-button danger crawl-stop-schedule" type="button">停止周期</button>':!crawlTerminal.has(job.status)?'<button class="text-button danger crawl-stop" type="button">停止本轮</button>':""}</div>${job.error_message?`<p class="crawler-error">${escapeHtml(job.error_message)}</p>`:""}`;
     row.querySelector(".crawl-refresh").onclick=()=>refreshCrawlerJob(job.id);
     const pause=row.querySelector(".crawl-pause");if(pause)pause.onclick=()=>controlCrawler(job.id,"pause");
     const resume=row.querySelector(".crawl-resume");if(resume)resume.onclick=()=>controlCrawler(job.id,"resume");
     const stop=row.querySelector(".crawl-stop");if(stop)stop.onclick=()=>controlCrawler(job.id,"stop");
+    const stopSchedule=row.querySelector(".crawl-stop-schedule");if(stopSchedule)stopSchedule.onclick=()=>controlCrawler(job.id,"stop",true);
     list.append(row);
   });
 }
@@ -258,17 +291,62 @@ function pollCrawlerJob(id){
   const tick=async()=>{const job=await refreshCrawlerJob(id);if(!job||crawlTerminal.has(job.status)||["paused","failed"].includes(job.status)){state.crawlerTimers.delete(id);return;}state.crawlerTimers.set(id,setTimeout(tick,2000));};
   state.crawlerTimers.set(id,setTimeout(tick,0));
 }
-async function controlCrawler(id,action){
-  try{const job=await api(`/v1/crawler/jobs/${id}/${action}`,{method:"POST"});const index=state.crawlerJobs.findIndex(item=>item.id===id);if(index>=0)state.crawlerJobs[index]=job;renderCrawlerJobs();if(action==="resume")pollCrawlerJob(id);toast({pause:"已请求暂停采集",resume:"已恢复采集",stop:"已请求停止采集"}[action]);}
+async function controlCrawler(id,action,stopSchedule=false){
+  try{const current=state.crawlerJobs.find(item=>item.id===id),suffix=action==="stop"&&stopSchedule?"?stop_schedule=true":"",job=await api(`/v1/crawler/jobs/${id}/${action}${suffix}`,{method:"POST"});const index=state.crawlerJobs.findIndex(item=>item.id===id);if(index>=0)state.crawlerJobs[index]=job;if(stopSchedule&&current?.config?.source_id){const source=state.crawlerSources.find(item=>item.id===current.config.source_id);if(source){source.schedule_enabled=false;source.next_run_at=null;}renderCrawlerPresets();}renderCrawlerJobs();if(action==="resume")pollCrawlerJob(id);toast(stopSchedule?"周期采集已停止，后续轮次不会再创建":{pause:"已请求暂停采集",resume:"已恢复采集",stop:"已请求停止本轮采集"}[action]);}
   catch(error){toast(`采集任务操作失败：${error.message}`,true);}
 }
+function rememberCrawlerSource(source){
+  const index=state.crawlerSources.findIndex(item=>item.id===source.id);
+  if(index>=0)state.crawlerSources[index]=source;else state.crawlerSources.push(source);
+  renderCrawlerPresets();
+}
+function crawlerSourceConfig(payload,source){
+  const config={...(source?.config||{})};
+  for(const key of ["preset_ids","urls","keywords","site_urls","max_total_pages","max_results_per_keyword","max_pages_per_site","min_content_chars","fetch_delay_seconds","max_retries","retry_base_seconds"]){config[key]=payload[key];}
+  config.force=false;
+  return config;
+}
+async function saveCrawlerSchedule(payload,intervalMinutes){
+  const presetId=state.selectedCrawlerPresetId;
+  if(presetId){
+    const preset=state.crawlerPresets.find(item=>item.id===presetId),current=crawlerSourceForPreset(presetId),sourceId=current?.id||`preset:${presetId}`;
+    const body={knowledge_base_id:payload.knowledge_base_id,preset_ids:[presetId],config:crawlerSourceConfig(payload,current),enabled:true,schedule_enabled:true,schedule_interval_minutes:intervalMinutes};
+    const source=current
+      ?await api(`/v1/crawler/registry/${encodeURIComponent(sourceId)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
+      :await api("/v1/crawler/registry",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:sourceId,name:preset?.name||"分类周期采集",description:preset?.description||null,source_kind:"preset",trust_level:"trusted",content_type:preset?.domain_category||"security_knowledge",...body})});
+    rememberCrawlerSource(source);
+    return source;
+  }
+  const now=new Date(),source=await api("/v1/crawler/registry",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({knowledge_base_id:payload.knowledge_base_id,name:`自定义周期采集 · ${now.toLocaleString("zh-CN",{hour12:false})}`,description:"由数据采集表单创建的自定义周期数据源",source_kind:"custom",config:crawlerSourceConfig(payload,null),trust_level:"trusted",content_type:"security_knowledge",enabled:true,schedule_enabled:true,schedule_interval_minutes:intervalMinutes})});
+  rememberCrawlerSource(source);
+  return source;
+}
+async function disableSelectedCrawlerSchedule(){
+  const source=state.selectedCrawlerPresetId?crawlerSourceForPreset(state.selectedCrawlerPresetId):null;
+  if(!source?.schedule_enabled)return;
+  const updated=await api(`/v1/crawler/registry/${encodeURIComponent(source.id)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({schedule_enabled:false})});
+  rememberCrawlerSource(updated);
+}
 async function createCrawlerJob(){
-  const knowledgeBaseId=$("#crawler-knowledge-base").value,presetId=state.selectedCrawlerPresetId,payload={knowledge_base_id:knowledgeBaseId,preset_ids:presetId?[presetId]:[],urls:lines("#crawler-urls"),keywords:lines("#crawler-keywords"),site_urls:lines("#crawler-sites"),max_total_pages:Number($("#crawler-max-pages").value),max_results_per_keyword:Number($("#crawler-max-results").value),max_pages_per_site:Number($("#crawler-site-pages").value),min_content_chars:Number($("#crawler-min-content").value),fetch_delay_seconds:Number($("#crawler-delay").value),max_retries:Number($("#crawler-max-retries").value),retry_base_seconds:Number($("#crawler-retry-base").value),force:$("#crawler-force").checked};
+  const knowledgeBaseId=$("#crawler-knowledge-base").value,presetId=state.selectedCrawlerPresetId,payload={knowledge_base_id:knowledgeBaseId,preset_ids:presetId?[presetId]:[],urls:lines("#crawler-urls"),keywords:lines("#crawler-keywords"),site_urls:lines("#crawler-sites"),max_total_pages:Number($("#crawler-max-pages").value),max_results_per_keyword:Number($("#crawler-max-results").value),max_pages_per_site:Number($("#crawler-site-pages").value),min_content_chars:Number($("#crawler-min-content").value),fetch_delay_seconds:Number($("#crawler-delay").value),max_retries:Number($("#crawler-max-retries").value),retry_base_seconds:Number($("#crawler-retry-base").value),force:$("#crawler-force").checked},scheduleEnabled=$("#crawler-schedule-enabled").checked,intervalMinutes=crawlerScheduleMinutes();
   if(!state.crawlerPresetMode){toast("请选择知识库分类预置或自定义采集",true);return;}
   if(!knowledgeBaseId){toast("请选择目标知识库",true);return;}
   if(state.crawlerPresetMode==="custom"&&![payload.urls,payload.keywords,payload.site_urls].some(items=>items.length)){toast("自定义采集至少需要一个 URL、关键词或站点入口",true);return;}
+  if(scheduleEnabled&&(!Number.isInteger(intervalMinutes)||intervalMinutes<5||intervalMinutes>525600)){toast("采集周期需要在 5 分钟到 365 天之间",true);return;}
   const button=$("#crawler-submit");button.disabled=true;
-  try{const job=await api("/v1/crawler/jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});state.crawlerJobs.unshift(job);renderCrawlerJobs();pollCrawlerJob(job.id);toast("采集任务已提交");}
+  try{
+    let job;
+    if(scheduleEnabled){
+      const source=await saveCrawlerSchedule(payload,intervalMinutes);
+      job=await api(`/v1/crawler/registry/${encodeURIComponent(source.id)}/runs`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({force:payload.force})});
+      toast(`周期采集已开启：${formatScheduleInterval(intervalMinutes)}`);
+    }else{
+      await disableSelectedCrawlerSchedule();
+      job=await api("/v1/crawler/jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+      toast("一次性采集任务已提交");
+    }
+    state.crawlerJobs.unshift(job);renderCrawlerJobs();pollCrawlerJob(job.id);
+  }
   catch(error){toast(`创建采集任务失败：${error.message}`,true);}
   finally{button.disabled=false;}
 }
@@ -492,6 +570,9 @@ $("#search-fusion").onchange=syncSearchOptions;
 $("#search-vector").onchange=syncSearchOptions;
 $("#search-keyword").onchange=syncSearchOptions;
 $("#crawler-form").onsubmit=e=>{e.preventDefault();createCrawlerJob()};
+$("#crawler-schedule-enabled").onchange=syncCrawlerScheduleControls;
+$("#crawler-schedule-value").oninput=syncCrawlerScheduleControls;
+$("#crawler-schedule-unit").onchange=syncCrawlerScheduleControls;
 $("#refresh-crawler").onclick=loadCrawlerJobs;
 setInterval(()=>$("#clock").textContent=new Date().toLocaleString("zh-CN",{hour12:false}),1000);
-syncSearchOptions(); loadCapabilities(); loadKnowledgeBases(); renderJobs(); refreshHealth(); state.jobs.filter(j=>!terminal.has(j.status)).forEach(j=>pollJob(j.id));
+syncSearchOptions(); syncCrawlerScheduleControls(); loadCapabilities(); loadKnowledgeBases(); renderJobs(); refreshHealth(); state.jobs.filter(j=>!terminal.has(j.status)).forEach(j=>pollJob(j.id));

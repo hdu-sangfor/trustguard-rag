@@ -14,7 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.crawler import CRAWL_TERMINAL_STATUSES, CrawlJobStatus
 from app.settings import get_settings
 from app.stores.db import get_engine
-from app.stores.models import CrawlJobRow, CrawlUrlRecordRow, KnowledgeBaseRow
+from app.stores.models import (
+    CrawlJobRow,
+    CrawlerSourceRunRow,
+    CrawlUrlRecordRow,
+    KnowledgeBaseRow,
+)
 from app.stores.outbox_store import OutboxEvent, add_outbox_event, event_from_row
 from app.workers.messages import RUN_CRAWLER
 
@@ -584,6 +589,42 @@ class CrawlerStore:
             row.updated_at = _utcnow()
             await session.commit()
             return row
+
+    async def request_cancel_for_source(self, source_id: str) -> list[CrawlJobRow]:
+        """Cancel every active run belonging to one managed crawler source."""
+        active_statuses = {
+            CrawlJobStatus.QUEUED,
+            CrawlJobStatus.RUNNING,
+            CrawlJobStatus.PAUSED,
+            CrawlJobStatus.FAILED,
+        }
+        async with AsyncSession(get_engine(), expire_on_commit=False) as session:
+            result = await session.execute(
+                select(CrawlJobRow)
+                .join(
+                    CrawlerSourceRunRow,
+                    CrawlerSourceRunRow.crawl_job_id == CrawlJobRow.id,
+                )
+                .where(
+                    CrawlerSourceRunRow.source_id == source_id,
+                    CrawlJobRow.status.in_(active_statuses),
+                )
+                .with_for_update()
+            )
+            rows = list(result.scalars().unique().all())
+            now = _utcnow()
+            for row in rows:
+                row.cancel_requested = True
+                if row.status in {
+                    CrawlJobStatus.QUEUED,
+                    CrawlJobStatus.PAUSED,
+                    CrawlJobStatus.FAILED,
+                }:
+                    row.status = CrawlJobStatus.CANCELLED
+                    row.finished_at = now
+                row.updated_at = now
+            await session.commit()
+            return rows
 
     async def resume(self, job_id: str) -> tuple[CrawlJobRow, OutboxEvent]:
         async with AsyncSession(get_engine(), expire_on_commit=False) as session:

@@ -12,6 +12,7 @@ from minio.error import S3Error
 from app.settings import get_settings
 from app.stores.blob_store import get_blob_store
 from app.stores.crawler_store import CrawlerStore
+from app.stores.crawler_source_store import CrawlerSourceStore
 from app.stores.document_store import get_document_store
 from app.stores.job_store import JobStore
 from app.workers.eager import dispatch_eager
@@ -253,6 +254,12 @@ async def _apply_review(
                         "review_previous_status": None,
                     },
                 )
+                if item.get("source_id"):
+                    await CrawlerSourceStore().note_review(
+                        crawl_job_id=job_id,
+                        action="reject",
+                        version_id=str(item.get("source_version_id") or "") or None,
+                    )
                 continue
 
             ingest_job = await jobs.get(item_id)
@@ -302,6 +309,13 @@ async def _apply_review(
                 ingest_job_id=ingest_job.id,
                 increment_queued=True,
             )
+            if item.get("source_id"):
+                await CrawlerSourceStore().note_review(
+                    crawl_job_id=job_id,
+                    action="approve",
+                    version_id=str(item.get("source_version_id") or "") or None,
+                    ingest_job_id=ingest_job.id,
+                )
         except Exception:
             await store.update_review_item(
                 job_id,

@@ -13,9 +13,11 @@ from app.domain.crawler import CrawlJobStatus
 class CrawlJobCreateRequest(BaseModel):
     knowledge_base_id: str
     preset_ids: list[str] = Field(default_factory=list, max_length=10)
+    source_ids: list[str] = Field(default_factory=list, max_length=20)
     urls: list[str] = Field(default_factory=list, max_length=200)
     keywords: list[str] = Field(default_factory=list, max_length=50)
     site_urls: list[str] = Field(default_factory=list, max_length=50)
+    rss_urls: list[str] = Field(default_factory=list, max_length=50)
     structured_sources: list[str] = Field(default_factory=list, max_length=10)
     source_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
     max_results_per_keyword: int | None = Field(default=None, ge=1, le=20)
@@ -41,10 +43,14 @@ class CrawlJobCreateRequest(BaseModel):
                 self.urls,
                 self.keywords,
                 self.site_urls,
+                self.rss_urls,
                 self.structured_sources,
+                self.source_ids,
             )
         ):
             raise ValueError("At least one web or structured source is required")
+        if len(self.source_ids) > 1:
+            raise ValueError("At most one managed crawler source is allowed per job")
         if len(self.source_options) > 10:
             raise ValueError("At most 10 structured source option groups are allowed")
         for source_id, options in self.source_options.items():
@@ -129,6 +135,132 @@ class StructuredSourceResponse(BaseModel):
 
 class StructuredSourceListResponse(BaseModel):
     items: list[StructuredSourceResponse]
+
+
+CrawlerSourceKind = Literal["url", "site", "rss", "structured", "preset", "custom"]
+
+
+class CrawlerSourceCreateRequest(BaseModel):
+    id: str | None = Field(default=None, min_length=1, max_length=64)
+    knowledge_base_id: str
+    name: str = Field(min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=4000)
+    source_kind: CrawlerSourceKind
+    endpoint: str | None = Field(default=None, max_length=2048)
+    preset_ids: list[str] = Field(default_factory=list, max_length=20)
+    config: dict[str, Any] = Field(default_factory=dict)
+    trust_level: Literal["official", "trusted", "community", "unverified"] = "trusted"
+    content_type: str = Field(default="security_knowledge", min_length=1, max_length=64)
+    usage_restrictions: str | None = Field(default=None, max_length=4000)
+    enabled: bool = True
+    schedule_enabled: bool = False
+    schedule_interval_minutes: int | None = Field(default=None, ge=5, le=525_600)
+    next_run_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "CrawlerSourceCreateRequest":
+        if self.source_kind in {"url", "site", "rss", "structured"} and not (
+            self.endpoint or ""
+        ).strip():
+            raise ValueError(f"{self.source_kind} source requires endpoint")
+        if self.schedule_enabled and self.schedule_interval_minutes is None:
+            raise ValueError("Scheduled source requires schedule_interval_minutes")
+        if self.source_kind == "preset" and not self.preset_ids:
+            raise ValueError("Preset source requires preset_ids")
+        return self
+
+
+class CrawlerSourceUpdateRequest(BaseModel):
+    knowledge_base_id: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=4000)
+    source_kind: CrawlerSourceKind | None = None
+    endpoint: str | None = Field(default=None, max_length=2048)
+    preset_ids: list[str] | None = Field(default=None, max_length=20)
+    config: dict[str, Any] | None = None
+    trust_level: Literal["official", "trusted", "community", "unverified"] | None = None
+    content_type: str | None = Field(default=None, min_length=1, max_length=64)
+    usage_restrictions: str | None = Field(default=None, max_length=4000)
+    enabled: bool | None = None
+    schedule_enabled: bool | None = None
+    schedule_interval_minutes: int | None = Field(default=None, ge=5, le=525_600)
+    next_run_at: datetime | None = None
+
+
+class CrawlerSourceStatsResponse(BaseModel):
+    run_count: int = 0
+    successful_runs: int = 0
+    failed_runs: int = 0
+    success_rate: float | None = None
+    fetched: int = 0
+    duplicates: int = 0
+    not_modified: int = 0
+    failed_items: int = 0
+    duplicate_rate: float | None = None
+    approved: int = 0
+    rejected: int = 0
+    approval_rate: float | None = None
+    resource_count: int = 0
+    active_versions: int = 0
+    freshness_seconds: int | None = None
+    freshness_status: Literal["never", "fresh", "stale"] = "never"
+
+
+class CrawlerSourceResponse(BaseModel):
+    id: str
+    knowledge_base_id: str
+    name: str
+    description: str | None = None
+    source_kind: str
+    endpoint: str | None = None
+    preset_ids: list[str] = Field(default_factory=list)
+    config: dict[str, Any] = Field(default_factory=dict)
+    trust_level: str
+    content_type: str
+    usage_restrictions: str | None = None
+    enabled: bool
+    schedule_enabled: bool
+    schedule_interval_minutes: int | None = None
+    next_run_at: datetime | None = None
+    last_run_at: datetime | None = None
+    last_success_at: datetime | None = None
+    last_job_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    stats: CrawlerSourceStatsResponse | None = None
+
+
+class CrawlerSourceListResponse(BaseModel):
+    items: list[CrawlerSourceResponse]
+    total: int
+
+
+class CrawlerSourceRunRequest(BaseModel):
+    require_review: bool | None = None
+    review_mode: Literal["human", "agent"] | None = None
+    review_criteria: str | None = Field(default=None, max_length=8000)
+    force: bool = False
+
+
+class CrawlerSourceVersionResponse(BaseModel):
+    id: str
+    source_id: str
+    resource_url: str
+    crawl_job_id: str
+    ingest_job_id: str | None = None
+    document_id: str | None = None
+    content_hash: str
+    version: int
+    status: str
+    supersedes_version_id: str | None = None
+    created_at: datetime | None = None
+    activated_at: datetime | None = None
+    superseded_at: datetime | None = None
+
+
+class CrawlerSourceVersionListResponse(BaseModel):
+    items: list[CrawlerSourceVersionResponse]
+    total: int
 
 
 class LegacyCorpusCategoryResponse(BaseModel):

@@ -40,6 +40,17 @@ def offline_chunk_tokenizer(monkeypatch: pytest.MonkeyPatch) -> None:
         "RAG_GATEWAY_SERVICE_TOKEN",
     ):
         monkeypatch.delenv(name, raising=False)
+    # Explicit values take precedence over a developer's local .env. Empty
+    # credentials preserve the production-boundary test's expected baseline.
+    monkeypatch.setenv("RAG_GATEWAY_SERVICE_TOKEN", "")
+    monkeypatch.setenv("RAG_RESOURCE_REF_SECRET", "")
+    monkeypatch.setenv(
+        "RAG_MCP_ALLOWED_HOSTS",
+        (
+            "localhost,localhost:18201,127.0.0.1,127.0.0.1:18201,"
+            "host.docker.internal,host.docker.internal:18201"
+        ),
+    )
     get_settings.cache_clear()
     monkeypatch.setenv("RAG_QUERY_PLANNER_LLM_ENABLED", "false")
     counter = _TestTokenCounter()

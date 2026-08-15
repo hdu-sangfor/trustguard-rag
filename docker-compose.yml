@@ -1,5 +1,5 @@
-# TrustGuard RAG 平台全栈。宿主机端口统一用 182xx 段，便于与 trustguard-agent 并行运行。
-# 启动：docker compose up -d --build   健康检查：curl http://localhost:18200/health
+# TrustGuard RAG 平台全栈。容器内部保留 182xx，宿主机使用动态端口范围以下的 82xx。
+# 启动：docker compose up -d --build   健康检查：curl http://localhost:8200/health
 name: trustguard-rag
 
 x-optional-env-files: &optional-env-files
@@ -29,13 +29,16 @@ services:
         MINERU_MODEL_SOURCE: ${MINERU_MODEL_SOURCE:-modelscope}
         MINERU_MODEL_TYPE: ${MINERU_MODEL_TYPE:-pipeline}
         UBUNTU_APT_MIRROR: ${UBUNTU_APT_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/ubuntu}
-        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
-        PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
+        # MinerU pulls large CUDA wheels whose mirror artifacts must match the
+        # hashes advertised by the package index. Keep this independent from
+        # the general project mirror and prefer canonical PyPI by default.
+        PIP_INDEX_URL: ${MINERU_PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_EXTRA_INDEX_URL: ${MINERU_PIP_EXTRA_INDEX_URL:-}
       extra_hosts: *build-extra-hosts
       network: host
     image: ${MINERU_IMAGE:-trustguard-mineru:latest}
     ports:
-      - "18220:8000"
+      - "${RAG_MINERU_HOST_PORT:-8220}:8000"
     environment:
       MINERU_MODEL_SOURCE: local
       MINERU_API_MAX_CONCURRENT_REQUESTS: ${MINERU_API_MAX_CONCURRENT_REQUESTS:-1}
@@ -68,7 +71,7 @@ services:
       network: host
     image: ${TRUSTGUARD_IMAGE_PREFIX:-trustguard-}rag-service
     ports:
-      - "18200:18200"
+      - "${RAG_API_HOST_PORT:-8200}:18200"
     environment:
       RAG_MYSQL_HOST: mysql
       RAG_MYSQL_PORT: "3306"
@@ -154,7 +157,7 @@ services:
         "18201",
       ]
     ports:
-      - "18201:18201"
+      - "${RAG_MCP_HOST_PORT:-8201}:18201"
     environment:
       RAG_MCP_ENABLED: "true"
       RAG_MCP_BACKEND_URL: http://rag-service:18200
@@ -163,8 +166,8 @@ services:
       RAG_MCP_AUTH_ISSUER: ${RAG_MCP_AUTH_ISSUER:-}
       RAG_MCP_AUTH_AUDIENCE: ${RAG_MCP_AUTH_AUDIENCE:-trustguard-rag-mcp}
       RAG_MCP_AUTH_JWKS_URL: ${RAG_MCP_AUTH_JWKS_URL:-}
-      RAG_MCP_RESOURCE_SERVER_URL: ${RAG_MCP_RESOURCE_SERVER_URL:-http://localhost:18201/mcp}
-      RAG_MCP_ALLOWED_HOSTS: ${RAG_MCP_ALLOWED_HOSTS:-localhost,localhost:18201,127.0.0.1,127.0.0.1:18201,host.docker.internal,host.docker.internal:18201,rag-mcp,rag-mcp:18201}
+      RAG_MCP_RESOURCE_SERVER_URL: ${RAG_MCP_RESOURCE_SERVER_URL:-http://localhost:8201/mcp}
+      RAG_MCP_ALLOWED_HOSTS: ${RAG_MCP_ALLOWED_HOSTS:-localhost,localhost:8201,127.0.0.1,127.0.0.1:8201,host.docker.internal,host.docker.internal:8201,rag-mcp,rag-mcp:18201}
       RAG_MCP_ALLOWED_ORIGINS: ${RAG_MCP_ALLOWED_ORIGINS:-}
     env_file: *optional-env-files
     depends_on:
@@ -257,7 +260,7 @@ services:
       MYSQL_PASSWORD: ${RAG_MYSQL_PASSWORD:-trustguard}
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
     ports:
-      - "18210:3306"
+      - "${RAG_MYSQL_HOST_PORT:-8210}:3306"
     volumes:
       - trustguard_rag_mysql:/var/lib/mysql
       - ./docker/mysql-init.d:/docker-entrypoint-initdb.d:ro
@@ -271,7 +274,7 @@ services:
   redis:
     image: ${REDIS_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/library/redis:7-alpine}
     ports:
-      - "18211:6379"
+      - "${RAG_REDIS_HOST_PORT:-8211}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -281,8 +284,8 @@ services:
   rabbitmq:
     image: ${RABBITMQ_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/library/rabbitmq:3-management-alpine}
     ports:
-      - "18212:5672"
-      - "18213:15672"
+      - "${RAG_RABBITMQ_HOST_PORT:-8212}:5672"
+      - "${RAG_RABBITMQ_MANAGEMENT_HOST_PORT:-8213}:15672"
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 15s
@@ -292,8 +295,8 @@ services:
   qdrant:
     image: ${QDRANT_IMAGE:-${DOCKERHUB_REGISTRY:-docker.io}/qdrant/qdrant:latest}
     ports:
-      - "18214:6333"
-      - "18215:6334"
+      - "${RAG_QDRANT_HTTP_HOST_PORT:-8214}:6333"
+      - "${RAG_QDRANT_GRPC_HOST_PORT:-8215}:6334"
     volumes:
       - trustguard_rag_qdrant:/qdrant/storage
 
@@ -306,7 +309,7 @@ services:
       DISABLE_SECURITY_PLUGIN: "true"
       OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
     ports:
-      - "18216:9200"
+      - "${RAG_OPENSEARCH_HOST_PORT:-8216}:9200"
     volumes:
       - trustguard_rag_opensearch:/usr/share/opensearch/data
     mem_limit: ${OPENSEARCH_MEM_LIMIT:-1g}
@@ -329,8 +332,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "18217:9000"
-      - "18218:9001"
+      - "${RAG_MINIO_API_HOST_PORT:-8217}:9000"
+      - "${RAG_MINIO_CONSOLE_HOST_PORT:-8218}:9001"
     volumes:
       - trustguard_rag_minio:/data
     healthcheck:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import xml.etree.ElementTree as ET
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -30,6 +31,7 @@ class CrawlRequest:
     urls: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     site_urls: list[str] = field(default_factory=list)
+    rss_urls: list[str] = field(default_factory=list)
     structured_sources: list[str] = field(default_factory=list)
     source_options: dict[str, dict[str, object]] = field(default_factory=dict)
     max_results_per_keyword: int = 10
@@ -53,6 +55,22 @@ class CrawlPage:
     content_hash: str
     source_type: str = "url"
     metadata: dict[str, object] = field(default_factory=dict)
+
+
+class CrawlNotModified(Exception):
+    """An HTTP validator matched and the remote resource returned 304."""
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        etag: str | None = None,
+        last_modified: str | None = None,
+    ) -> None:
+        super().__init__(f"Not modified: {url}")
+        self.url = url
+        self.etag = etag
+        self.last_modified = last_modified
 
 
 def normalize_url(url: str) -> str:
@@ -117,6 +135,88 @@ def extract_page(html: str, url: str, *, max_chars: int = 0) -> CrawlPage:
     )
 
 
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+def _feed_text(element: ET.Element, *names: str) -> str:
+    wanted = {name.lower() for name in names}
+    for child in element.iter():
+        if _xml_local_name(str(child.tag)) in wanted:
+            value = "".join(child.itertext()).strip()
+            if value:
+                return value
+    return ""
+
+
+def _feed_link(element: ET.Element, feed_url: str) -> str:
+    for child in element.iter():
+        if _xml_local_name(str(child.tag)) != "link":
+            continue
+        href = str(child.attrib.get("href") or "").strip()
+        rel = str(child.attrib.get("rel") or "alternate").strip().lower()
+        value = href or "".join(child.itertext()).strip()
+        if value and rel in {"", "alternate"}:
+            candidate = normalize_url(urljoin(feed_url, value))
+            if urlsplit(candidate).scheme in {"http", "https"}:
+                return candidate
+    return ""
+
+
+def _parse_feed(
+    xml: str,
+    feed_url: str,
+    *,
+    max_chars: int = 0,
+    limit: int = 100,
+) -> list[CrawlPage]:
+    root = ET.fromstring(xml)
+    entries = [
+        element
+        for element in root.iter()
+        if _xml_local_name(str(element.tag)) in {"item", "entry"}
+    ]
+    pages: list[CrawlPage] = []
+    for index, entry in enumerate(entries[:limit]):
+        title = _clean_text(_feed_text(entry, "title")) or f"Feed item {index + 1}"
+        link = _feed_link(entry, feed_url)
+        identity = _feed_text(entry, "guid", "id")
+        if not link:
+            suffix = hashlib.sha256(
+                (identity or title).encode("utf-8")
+            ).hexdigest()[:20]
+            link = f"{feed_url}#entry-{suffix}"
+        raw_body = _feed_text(entry, "encoded", "content", "description", "summary")
+        body = _clean_text(BeautifulSoup(raw_body, "html.parser").get_text("\n", strip=True))
+        published = _clean_text(_feed_text(entry, "published", "updated", "pubdate", "date"))
+        parts = [f"# {title}", f"> 来源：{link}", f"> Feed：{feed_url}"]
+        if published:
+            parts.append(f"> 发布时间：{published}")
+        if body:
+            parts.append(body)
+        markdown = "\n\n".join(parts).strip()
+        if max_chars > 0 and len(markdown) > max_chars:
+            markdown = markdown[:max_chars].rstrip() + "\n\n…[truncated]"
+        pages.append(
+            CrawlPage(
+                url=link,
+                title=title[:512],
+                markdown=markdown,
+                content_hash=hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
+                source_type="rss",
+                metadata={
+                    "crawler_parser": "rss-atom",
+                    "feed_url": feed_url,
+                    "published_at": published or None,
+                    "feed_entry_id": identity or None,
+                },
+            )
+        )
+    if not pages:
+        raise ValueError("RSS/Atom feed contains no entries")
+    return pages
+
+
 class CrawlEngine:
     """组合搜索、站点发现、URL 安全校验与正文提取。"""
 
@@ -155,6 +255,11 @@ class CrawlEngine:
         should_skip: Callable[[str], Awaitable[bool]] | None = None,
         control: Callable[[], Awaitable[str | None]] | None = None,
         on_error: Callable[[str, Exception], Awaitable[None]] | None = None,
+        conditional_headers: Callable[[str], Awaitable[dict[str, str]]] | None = None,
+        on_http_state: Callable[
+            [str, str | None, str | None, bool], Awaitable[None]
+        ]
+        | None = None,
     ) -> AsyncIterator[CrawlPage]:
         candidates = await self._collect_candidates(request, on_error=on_error)
         seen: set[str] = set()
@@ -173,6 +278,55 @@ class CrawlEngine:
             limits=limits,
             headers=headers,
         ) as client:
+            for raw_feed_url in request.rss_urls:
+                if emitted >= request.max_total_pages:
+                    break
+                if control and await control() in {"pause", "cancel", "lost"}:
+                    break
+                feed_url = normalize_url(raw_feed_url)
+                if not feed_url or feed_url in seen:
+                    continue
+                seen.add(feed_url)
+                request_headers = (
+                    await conditional_headers(feed_url) if conditional_headers else {}
+                )
+                try:
+                    pages, state = await self._fetch_feed(
+                        client,
+                        feed_url,
+                        request,
+                        request_headers=request_headers,
+                    )
+                except CrawlNotModified as result:
+                    if on_http_state:
+                        await on_http_state(
+                            feed_url,
+                            result.etag,
+                            result.last_modified,
+                            True,
+                        )
+                    continue
+                except (httpx.HTTPError, UnsafeUrlError, ValueError, ET.ParseError) as error:
+                    if on_error:
+                        await on_error(feed_url, error)
+                    continue
+                if on_http_state:
+                    await on_http_state(
+                        feed_url,
+                        state.get("etag"),
+                        state.get("last_modified"),
+                        False,
+                    )
+                for page in pages:
+                    if emitted >= request.max_total_pages:
+                        break
+                    if should_skip and not request.force and await should_skip(page.url):
+                        continue
+                    emitted += 1
+                    yield page
+                if request.fetch_delay_seconds > 0:
+                    await asyncio.sleep(request.fetch_delay_seconds)
+
             for raw_url in candidates:
                 if (
                     emitted >= request.max_total_pages
@@ -188,14 +342,38 @@ class CrawlEngine:
                 if should_skip and not request.force and await should_skip(normalized):
                     continue
                 network_attempts += 1
+                request_headers = (
+                    await conditional_headers(normalized) if conditional_headers else {}
+                )
                 try:
-                    page = await self._fetch_page(client, normalized, request)
+                    page = await self._fetch_page(
+                        client,
+                        normalized,
+                        request,
+                        request_headers=request_headers,
+                    )
+                except CrawlNotModified as result:
+                    if on_http_state:
+                        await on_http_state(
+                            normalized,
+                            result.etag,
+                            result.last_modified,
+                            True,
+                        )
+                    continue
                 except (httpx.HTTPError, UnsafeUrlError, ValueError) as error:
                     if on_error:
                         await on_error(normalized, error)
                     continue
                 if control and await control() in {"pause", "cancel", "lost"}:
                     break
+                if on_http_state:
+                    await on_http_state(
+                        normalized,
+                        str(page.metadata.get("http_etag") or "") or None,
+                        str(page.metadata.get("http_last_modified") or "") or None,
+                        False,
+                    )
                 emitted += 1
                 yield page
                 if request.fetch_delay_seconds > 0:
@@ -282,12 +460,28 @@ class CrawlEngine:
         return list(dict.fromkeys(links))[:limit]
 
     async def _fetch_page(
-        self, client: httpx.AsyncClient, url: str, request: CrawlRequest
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        request: CrawlRequest,
+        *,
+        request_headers: dict[str, str] | None = None,
     ) -> CrawlPage:
         current = url
         for _ in range(6):
             await self._validator(current, allow_private=request.allow_private_urls)
-            response = await self._request_with_retry(client, current, request)
+            response = await self._request_with_retry(
+                client,
+                current,
+                request,
+                headers=request_headers,
+            )
+            if response.status_code == 304:
+                raise CrawlNotModified(
+                    current,
+                    etag=response.headers.get("etag"),
+                    last_modified=response.headers.get("last-modified"),
+                )
             if response.is_redirect:
                 location = response.headers.get("location")
                 if not location:
@@ -302,7 +496,63 @@ class CrawlEngine:
                 value in content_type for value in ("text/html", "application/xhtml+xml")
             ):
                 raise ValueError(f"Unsupported page content type: {content_type}")
-            return extract_page(response.text, current, max_chars=request.max_chars)
+            page = extract_page(response.text, current, max_chars=request.max_chars)
+            page.metadata.update(
+                {
+                    "http_etag": response.headers.get("etag"),
+                    "http_last_modified": response.headers.get("last-modified"),
+                    "http_validator_url": url,
+                }
+            )
+            return page
+        raise ValueError("Too many redirects")
+
+    async def _fetch_feed(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        request: CrawlRequest,
+        *,
+        request_headers: dict[str, str] | None = None,
+    ) -> tuple[list[CrawlPage], dict[str, str | None]]:
+        current = url
+        for _ in range(6):
+            await self._validator(current, allow_private=request.allow_private_urls)
+            response = await self._request_with_retry(
+                client,
+                current,
+                request,
+                headers=request_headers,
+            )
+            if response.status_code == 304:
+                raise CrawlNotModified(
+                    current,
+                    etag=response.headers.get("etag"),
+                    last_modified=response.headers.get("last-modified"),
+                )
+            if response.is_redirect:
+                location = response.headers.get("location")
+                if not location:
+                    raise ValueError("Redirect response is missing Location")
+                current = normalize_url(urljoin(current, location))
+                continue
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "").lower()
+            if content_type and not any(
+                value in content_type
+                for value in ("xml", "rss", "atom", "text/plain", "application/octet-stream")
+            ):
+                raise ValueError(f"Unsupported feed content type: {content_type}")
+            pages = _parse_feed(
+                response.text,
+                current,
+                max_chars=request.max_chars,
+                limit=request.max_total_pages,
+            )
+            return pages, {
+                "etag": response.headers.get("etag"),
+                "last_modified": response.headers.get("last-modified"),
+            }
         raise ValueError("Too many redirects")
 
     async def _request_with_retry(
@@ -310,10 +560,12 @@ class CrawlEngine:
         client: httpx.AsyncClient,
         url: str,
         request: CrawlRequest,
+        *,
+        headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         for attempt in range(request.max_retries + 1):
             try:
-                response = await self._get_limited_response(client, url)
+                response = await self._get_limited_response(client, url, headers=headers)
             except httpx.TransportError:
                 if attempt >= request.max_retries:
                     raise
@@ -331,16 +583,18 @@ class CrawlEngine:
     async def _get_limited_response(
         client: httpx.AsyncClient,
         url: str,
+        *,
+        headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         """Read at most the configured page limit instead of buffering blindly."""
         stream = getattr(client, "stream", None)
         if stream is None:  # lightweight test clients
-            response = await client.get(url)
+            response = await client.get(url, headers=headers)
             if len(response.content) > _MAX_RESPONSE_BYTES:
                 raise ValueError("Page response exceeds 5 MB")
             return response
 
-        async with stream("GET", url) as response:
+        async with stream("GET", url, headers=headers) as response:
             content_length = response.headers.get("content-length")
             if content_length:
                 try:

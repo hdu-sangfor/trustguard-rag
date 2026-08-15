@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     crawler_review_claim_seconds: int = 600
     crawler_agent_rejection_retention_days: int = 30
     crawler_review_cleanup_scan_seconds: float = 3600.0
+    crawler_schedule_enabled: bool = True
+    crawler_schedule_scan_seconds: float = 30.0
+    crawler_schedule_batch_size: int = 20
     crawler_legacy_corpus_root: str = "../trustguard-crawler/knowledge_bases"
     crawler_user_agent: str = (
         "TrustGuardCrawler/1.0 (+https://github.com/hdu-sangfor/trustguard-rag)"

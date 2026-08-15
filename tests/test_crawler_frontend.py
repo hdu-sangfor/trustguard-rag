@@ -20,6 +20,12 @@ def test_crawler_page_uses_category_cards_without_source_selectors() -> None:
     assert "9 + CUSTOM" in html
     assert '$("#crawler-keywords").value=' in script
     assert '$("#crawler-sites").value=' in script
+    assert 'id="crawler-schedule-enabled"' in html
+    assert 'id="crawler-schedule-value"' in html
+    assert 'id="crawler-schedule-unit"' in html
+    assert "schedule_interval_minutes" in script
+    assert 'source_kind:"custom"' in script
+    assert "}/runs`" in script
 
     removed_ids = (
         "crawler-structured-sources",

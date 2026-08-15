@@ -11,10 +11,22 @@ from fastapi import APIRouter, HTTPException, Query, status
 from app.core.crawler.structured import default_structured_registry
 from app.core.crawler.presets import CRAWLER_PRESETS, expand_crawler_presets
 from app.core.crawler.review import apply_review, get_review, get_review_content
+from app.application.crawler_sources import (
+    merge_registered_source_config,
+    trigger_crawler_source,
+)
 from app.schemas.crawler import (
     CrawlerPresetListResponse,
     CrawlerPresetResponse,
     CrawlerDefaultsResponse,
+    CrawlerSourceCreateRequest,
+    CrawlerSourceListResponse,
+    CrawlerSourceResponse,
+    CrawlerSourceRunRequest,
+    CrawlerSourceStatsResponse,
+    CrawlerSourceUpdateRequest,
+    CrawlerSourceVersionListResponse,
+    CrawlerSourceVersionResponse,
     CrawlJobCreateRequest,
     CrawlJobListResponse,
     CrawlJobResponse,
@@ -28,6 +40,7 @@ from app.schemas.crawler import (
 )
 from app.settings import get_settings
 from app.stores.crawler_store import CrawlerStore
+from app.stores.crawler_source_store import CrawlerSourceStore
 from app.stores.experience_store import is_experience_knowledge_base
 from app.stores.knowledge_base_store import get_knowledge_base_store
 from app.workers.eager import dispatch_eager
@@ -51,6 +64,35 @@ def _response(row) -> CrawlJobResponse:
         started_at=row.started_at,
         finished_at=row.finished_at,
         updated_at=row.updated_at,
+    )
+
+
+async def _source_response(row, *, include_stats: bool = False) -> CrawlerSourceResponse:
+    stats = None
+    if include_stats:
+        stats = CrawlerSourceStatsResponse(**(await CrawlerSourceStore().stats(row.id)))
+    return CrawlerSourceResponse(
+        id=row.id,
+        knowledge_base_id=row.knowledge_base_id,
+        name=row.name,
+        description=row.description,
+        source_kind=row.source_kind,
+        endpoint=row.endpoint,
+        preset_ids=list(row.preset_ids_json or []),
+        config=dict(row.config_json or {}),
+        trust_level=row.trust_level,
+        content_type=row.content_type,
+        usage_restrictions=row.usage_restrictions,
+        enabled=bool(row.enabled),
+        schedule_enabled=bool(row.schedule_enabled),
+        schedule_interval_minutes=row.schedule_interval_minutes,
+        next_run_at=row.next_run_at,
+        last_run_at=row.last_run_at,
+        last_success_at=row.last_success_at,
+        last_job_id=row.last_job_id,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        stats=stats,
     )
 
 
@@ -89,6 +131,184 @@ async def structured_sources() -> StructuredSourceListResponse:
             StructuredSourceResponse(**asdict(info))
             for info in default_structured_registry().infos()
         ]
+    )
+
+
+@router.get("/registry", response_model=CrawlerSourceListResponse)
+async def crawler_source_registry(
+    enabled: bool | None = None,
+    knowledge_base_id: str | None = None,
+    include_stats: bool = False,
+) -> CrawlerSourceListResponse:
+    rows = await CrawlerSourceStore().list(
+        enabled=enabled,
+        knowledge_base_id=knowledge_base_id,
+    )
+    return CrawlerSourceListResponse(
+        items=[
+            await _source_response(row, include_stats=include_stats) for row in rows
+        ],
+        total=len(rows),
+    )
+
+
+@router.post(
+    "/registry",
+    response_model=CrawlerSourceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_crawler_source(
+    body: CrawlerSourceCreateRequest,
+) -> CrawlerSourceResponse:
+    knowledge_base = await get_knowledge_base_store().get(body.knowledge_base_id)
+    if knowledge_base is None:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    if is_experience_knowledge_base(
+        knowledge_base_id=knowledge_base.id,
+        name=knowledge_base.name,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Experience knowledge base cannot be used by crawler sources",
+        )
+    try:
+        row = await CrawlerSourceStore().create(body.model_dump())
+    except Exception as error:
+        if "unique" in str(error).lower() or "duplicate" in str(error).lower():
+            raise HTTPException(status_code=409, detail="Crawler source already exists") from error
+        raise
+    return await _source_response(row, include_stats=True)
+
+
+@router.get("/registry/{source_id}", response_model=CrawlerSourceResponse)
+async def get_crawler_source(source_id: str) -> CrawlerSourceResponse:
+    row = await CrawlerSourceStore().get(source_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Crawler source not found")
+    return await _source_response(row, include_stats=True)
+
+
+@router.patch("/registry/{source_id}", response_model=CrawlerSourceResponse)
+async def update_crawler_source(
+    source_id: str,
+    body: CrawlerSourceUpdateRequest,
+) -> CrawlerSourceResponse:
+    values = body.model_dump(exclude_unset=True)
+    current = await CrawlerSourceStore().get(source_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Crawler source not found")
+    source_kind = str(values.get("source_kind") or current.source_kind)
+    endpoint = values.get("endpoint", current.endpoint)
+    preset_ids = values.get("preset_ids", current.preset_ids_json or [])
+    schedule_enabled = bool(
+        values.get("schedule_enabled", current.schedule_enabled)
+    )
+    schedule_interval = values.get(
+        "schedule_interval_minutes", current.schedule_interval_minutes
+    )
+    if source_kind in {"url", "site", "rss", "structured"} and not str(
+        endpoint or ""
+    ).strip():
+        raise HTTPException(
+            status_code=422,
+            detail=f"{source_kind} source requires endpoint",
+        )
+    if source_kind == "preset" and not preset_ids:
+        raise HTTPException(status_code=422, detail="Preset source requires preset_ids")
+    if schedule_enabled and schedule_interval is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Scheduled source requires schedule_interval_minutes",
+        )
+    if values.get("knowledge_base_id"):
+        knowledge_base = await get_knowledge_base_store().get(values["knowledge_base_id"])
+        if knowledge_base is None:
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
+        if is_experience_knowledge_base(
+            knowledge_base_id=knowledge_base.id,
+            name=knowledge_base.name,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Experience knowledge base cannot be used by crawler sources",
+            )
+    try:
+        row = await CrawlerSourceStore().update(source_id, values)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return await _source_response(row, include_stats=True)
+
+
+@router.delete("/registry/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_crawler_source(source_id: str) -> None:
+    if source_id.startswith("preset:"):
+        raise HTTPException(
+            status_code=409,
+            detail="Built-in category source can be disabled but not deleted",
+        )
+    if not await CrawlerSourceStore().delete(source_id):
+        raise HTTPException(status_code=404, detail="Crawler source not found")
+
+
+@router.post(
+    "/registry/{source_id}/runs",
+    response_model=CrawlJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def run_crawler_source(
+    source_id: str,
+    body: CrawlerSourceRunRequest,
+) -> CrawlJobResponse:
+    try:
+        row = await trigger_crawler_source(
+            source_id,
+            trigger_type="manual",
+            overrides=body.model_dump(exclude_none=True),
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    refreshed = await CrawlerStore().get(row.id)
+    return _response(refreshed or row)
+
+
+@router.get(
+    "/registry/{source_id}/versions",
+    response_model=CrawlerSourceVersionListResponse,
+)
+async def crawler_source_versions(
+    source_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> CrawlerSourceVersionListResponse:
+    if await CrawlerSourceStore().get(source_id) is None:
+        raise HTTPException(status_code=404, detail="Crawler source not found")
+    rows, total = await CrawlerSourceStore().list_versions(
+        source_id,
+        offset=offset,
+        limit=limit,
+    )
+    return CrawlerSourceVersionListResponse(
+        items=[
+            CrawlerSourceVersionResponse(
+                id=row.id,
+                source_id=row.source_id,
+                resource_url=row.resource_url,
+                crawl_job_id=row.crawl_job_id,
+                ingest_job_id=row.ingest_job_id,
+                document_id=row.document_id,
+                content_hash=row.content_hash,
+                version=row.version,
+                status=row.status,
+                supersedes_version_id=row.supersedes_version_id,
+                created_at=row.created_at,
+                activated_at=row.activated_at,
+                superseded_at=row.superseded_at,
+            )
+            for row in rows
+        ],
+        total=total,
     )
 
 
@@ -174,7 +394,15 @@ async def create_crawl_job(body: CrawlJobCreateRequest) -> CrawlJobResponse:
     for key, value in configured_defaults.items():
         if config.get(key) is None:
             config[key] = value
-    for key in ("preset_ids", "urls", "keywords", "site_urls", "structured_sources"):
+    for key in (
+        "preset_ids",
+        "source_ids",
+        "urls",
+        "keywords",
+        "site_urls",
+        "rss_urls",
+        "structured_sources",
+    ):
         config[key] = list(dict.fromkeys(value.strip() for value in config[key] if value.strip()))
     try:
         expanded = expand_crawler_presets(config["preset_ids"])
@@ -218,6 +446,12 @@ async def create_crawl_job(body: CrawlJobCreateRequest) -> CrawlJobResponse:
         config["category_priority"] = expanded.priority
     if not str(config.get("review_criteria") or "").strip() and expanded.review_criteria:
         config["review_criteria"] = expanded.review_criteria
+    try:
+        config = await merge_registered_source_config(config)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     if config.get("review_mode") == "agent" and not str(
         config.get("review_criteria") or ""
     ).strip():
@@ -237,6 +471,12 @@ async def create_crawl_job(body: CrawlJobCreateRequest) -> CrawlJobResponse:
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    if config.get("source_id"):
+        await CrawlerSourceStore().register_run(
+            source_id=str(config["source_id"]),
+            crawl_job_id=row.id,
+            trigger_type="manual",
+        )
     await dispatch_eager(event)
     return _response(await store.get(row.id) or row)
 
@@ -329,9 +569,25 @@ async def resume_crawl_job(job_id: str) -> CrawlJobResponse:
 
 
 @router.post("/jobs/{job_id}/stop", response_model=CrawlJobResponse)
-async def stop_crawl_job(job_id: str) -> CrawlJobResponse:
+async def stop_crawl_job(
+    job_id: str,
+    stop_schedule: bool = Query(default=False),
+) -> CrawlJobResponse:
+    store = CrawlerStore()
     try:
-        row = await CrawlerStore().request_cancel(job_id)
+        current = await store.get(job_id)
+        if current is None:
+            raise LookupError("Crawler job not found")
+        source_id = str((current.config_json or {}).get("source_id") or "").strip()
+        if stop_schedule and source_id:
+            source_store = CrawlerSourceStore()
+            source = await source_store.get(source_id)
+            if source is not None:
+                await source_store.update(source_id, {"schedule_enabled": False})
+            await store.request_cancel_for_source(source_id)
+            row = await store.get(job_id) or current
+        else:
+            row = await store.request_cancel(job_id)
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return _response(row)

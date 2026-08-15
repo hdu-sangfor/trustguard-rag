@@ -285,6 +285,150 @@ class CrawlUrlRecordRow(Base):
     )
 
 
+class CrawlerSourceRow(Base):
+    """Persisted crawler source configuration used by presets and schedules."""
+
+    __tablename__ = "crawler_sources"
+    __table_args__ = (
+        Index("idx_crawler_sources_due", "enabled", "schedule_enabled", "next_run_at"),
+        Index("idx_crawler_sources_kb", "knowledge_base_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    knowledge_base_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+    )
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_kind: Mapped[str] = mapped_column(String(32))
+    endpoint: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    preset_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    config_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    trust_level: Mapped[str] = mapped_column(String(32), default="trusted")
+    content_type: Mapped[str] = mapped_column(String(64), default="security_knowledge")
+    usage_restrictions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    schedule_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    schedule_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    last_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CrawlerSourceRunRow(Base):
+    """One scheduled or manually triggered run for a persisted source."""
+
+    __tablename__ = "crawler_source_runs"
+    __table_args__ = (
+        Index("idx_crawler_source_runs_source", "source_id", "created_at"),
+        Index("idx_crawler_source_runs_status", "status", "updated_at"),
+    )
+
+    crawl_job_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("crawler_sources.id", ondelete="CASCADE"),
+    )
+    trigger_type: Mapped[str] = mapped_column(String(32), default="manual")
+    status: Mapped[str] = mapped_column(String(32), default="queued")
+    progress_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    approved_count: Mapped[int] = mapped_column(Integer, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CrawlerResourceStateRow(Base):
+    """Current HTTP validators and active content identity for one source resource."""
+
+    __tablename__ = "crawler_resource_states"
+    __table_args__ = (
+        Index("idx_crawler_resource_status", "source_id", "status", "last_seen_at"),
+    )
+
+    source_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("crawler_sources.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    url_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    url: Mapped[str] = mapped_column(String(2048))
+    etag: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    last_modified: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    current_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    current_ingest_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    current_document_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    current_version: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    last_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CrawlerSourceVersionRow(Base):
+    """Auditable content-version history for one crawler source resource."""
+
+    __tablename__ = "crawler_source_versions"
+    __table_args__ = (
+        Index(
+            "uq_crawler_version_content",
+            "source_id",
+            "url_hash",
+            "content_hash",
+            unique=True,
+        ),
+        Index("idx_crawler_versions_resource", "source_id", "url_hash", "version"),
+        Index("idx_crawler_versions_ingest", "ingest_job_id"),
+        Index("idx_crawler_versions_status", "status", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("crawler_sources.id", ondelete="CASCADE"),
+    )
+    url_hash: Mapped[str] = mapped_column(String(64))
+    resource_url: Mapped[str] = mapped_column(String(2048))
+    crawl_job_id: Mapped[str] = mapped_column(String(36))
+    ingest_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    document_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="queued")
+    supersedes_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now()
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class OutboxEventRow(Base):
     """等待可靠发布到 RabbitMQ 的领域命令。"""
 

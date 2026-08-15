@@ -38,6 +38,10 @@ from app.api.errors import (
 )
 from app.core.indexing.opensearch_backfill import backfill_ready_documents
 from app.core.ingest.scheduler import shutdown_sync_scheduler, start_sync_scheduler
+from app.core.crawler.scheduler import (
+    shutdown_crawler_scheduler,
+    start_crawler_scheduler,
+)
 from app.application.experience import get_experience_service
 from app.settings import get_settings
 from app.security.service_auth import require_gateway_service
@@ -59,6 +63,10 @@ from app.stores.db import get_engine
 from app.stores.migration_state_store import (
     KNOWLEDGE_BASE_INDEX_BACKFILL,
     set_migration_state,
+)
+from app.stores.crawler_source_store import (
+    ensure_crawler_source_schema,
+    seed_category_preset_sources,
 )
 
 logger = logging.getLogger(__name__)
@@ -145,6 +153,7 @@ async def lifespan(app: FastAPI):
     await ensure_outbox_schema()
     await ensure_ocr_schema()
     await ensure_knowledge_base_schema()
+    await ensure_crawler_source_schema()
     await ensure_experience_schema()
     if s.experience_enabled:
         try:
@@ -157,6 +166,12 @@ async def lifespan(app: FastAPI):
     migrated_documents = await migrate_legacy_knowledge_bases()
     migrated_jobs = await migrate_legacy_job_knowledge_bases()
     await enforce_knowledge_base_integrity()
+    try:
+        seeded_sources = await seed_category_preset_sources()
+        if seeded_sources:
+            logger.info("seeded crawler category sources: %s", seeded_sources)
+    except Exception:  # noqa: BLE001
+        logger.warning("seed_category_preset_sources failed", exc_info=True)
     if migrated_documents or migrated_jobs:
         logger.info(
             "knowledge base migration assigned documents=%s jobs=%s",
@@ -181,7 +196,9 @@ async def lifespan(app: FastAPI):
             name="experience-index-recovery",
         )
     start_sync_scheduler()
+    start_crawler_scheduler()
     yield
+    shutdown_crawler_scheduler()
     shutdown_sync_scheduler()
     tasks = [knowledge_base_backfill_task]
     if backfill_task is not None:
