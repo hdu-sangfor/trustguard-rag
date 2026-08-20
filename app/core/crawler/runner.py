@@ -21,6 +21,7 @@ from app.domain.crawler import CrawlJobStatus
 from app.settings import get_settings
 from app.stores.blob_store import get_blob_store
 from app.stores.crawler_store import CrawlerStore
+from app.stores.crawler_source_store import CrawlerSourceStore
 from app.stores.job_store import JobStore
 from app.stores.knowledge_base_store import KnowledgeBaseStore
 
@@ -74,6 +75,9 @@ class CrawlerRunner:
             return
         settings = get_settings()
         config = dict(job.config_json or {})
+        source_id = str(config.get("source_id") or "").strip() or None
+        incremental = bool(config.get("incremental") and source_id)
+        source_store = CrawlerSourceStore()
         require_review = bool(config.get("require_review"))
         review_mode = str(config.get("review_mode") or "human")
         review_criteria = str(config.get("review_criteria") or "").strip()
@@ -81,6 +85,7 @@ class CrawlerRunner:
             urls=list(config.get("urls") or []),
             keywords=list(config.get("keywords") or []),
             site_urls=list(config.get("site_urls") or []),
+            rss_urls=list(config.get("rss_urls") or []),
             structured_sources=list(config.get("structured_sources") or []),
             source_options=dict(config.get("source_options") or {}),
             max_results_per_keyword=int(
@@ -124,6 +129,8 @@ class CrawlerRunner:
             "rejections": list((job.progress_json or {}).get("rejections") or []),
             "review_mode": review_mode,
             "review_criteria": review_criteria,
+            "duplicates": int((job.progress_json or {}).get("duplicates", 0)),
+            "not_modified": int((job.progress_json or {}).get("not_modified", 0)),
         }
         min_content_chars = int(
             config.get("min_content_chars")
@@ -223,9 +230,9 @@ class CrawlerRunner:
             page: CrawlPage,
             *,
             knowledge_base_id: str | None = None,
-        ) -> None:
+        ) -> bool:
             if await control() in {"pause", "cancel", "lost"}:
-                return
+                return False
             knowledge_base_id = knowledge_base_id or job.knowledge_base_id
             classification_metadata = {
                 "domain_category": config.get("domain_category"),
@@ -239,6 +246,17 @@ class CrawlerRunner:
             for key, value in classification_metadata.items():
                 if value not in (None, "", []):
                     page.metadata.setdefault(key, value)
+            if source_id:
+                page.metadata.setdefault("crawler_source_id", source_id)
+                page.metadata.setdefault("crawler_incremental", incremental)
+                page.metadata.setdefault(
+                    "source_trust_level",
+                    config.get("source_trust_level"),
+                )
+                page.metadata.setdefault(
+                    "source_content_type",
+                    config.get("source_content_type"),
+                )
             progress["discovered"] = int(progress.get("discovered", 0)) + 1
             progress["fetched"] = int(progress.get("fetched", 0)) + 1
             progress["current_url"] = page.url
@@ -256,22 +274,40 @@ class CrawlerRunner:
                     }
                 )
                 progress["rejections"] = rejections[-100:]
-                await self._store.record_url(
+                url_recorded = await self._store.record_url(
                     knowledge_base_id=knowledge_base_id,
                     url=page.url,
                     status="rejected",
                     content_hash=page.content_hash,
                     error=outcome.rejected_reason,
                 )
-                await self._store.update_progress(
+                progress_recorded = await self._store.update_progress(
                     crawl_job_id,
                     progress=progress,
                     expected_attempt=expected_attempt,
                 )
-                return
+                return bool(url_recorded and progress_recorded)
             page = outcome.page
             if page is None:
                 raise RuntimeError("Crawler cleaner returned no page without a rejection")
+            if incremental and source_id and await source_store.is_duplicate(
+                source_id,
+                page.url,
+                page.content_hash,
+            ):
+                progress["duplicates"] = int(progress.get("duplicates", 0)) + 1
+                url_recorded = await self._store.record_url(
+                    knowledge_base_id=knowledge_base_id,
+                    url=page.url,
+                    status="unchanged",
+                    content_hash=page.content_hash,
+                )
+                progress_recorded = await self._store.update_progress(
+                    crawl_job_id,
+                    progress=progress,
+                    expected_attempt=expected_attempt,
+                )
+                return bool(url_recorded and progress_recorded)
             progress["cleaned"] = int(progress.get("cleaned", 0)) + 1
             if require_review:
                 review_item = await self._stage_review(
@@ -280,6 +316,17 @@ class CrawlerRunner:
                     page=page,
                 )
                 review_items = list(progress.get("review_items") or [])
+                if source_id:
+                    version = await source_store.record_version(
+                        source_id=source_id,
+                        resource_url=page.url,
+                        crawl_job_id=crawl_job_id,
+                        content_hash=page.content_hash,
+                        ingest_job_id=review_item["id"],
+                        status="pending_review",
+                    )
+                    review_item["source_id"] = source_id
+                    review_item["source_version_id"] = version.id
                 review_items.append(review_item)
                 progress["review_items"] = review_items
                 progress["pending_review"] = int(progress.get("pending_review", 0)) + 1
@@ -293,6 +340,15 @@ class CrawlerRunner:
                     page=page,
                 )
                 progress["queued_for_ingest"] = int(progress.get("queued_for_ingest", 0)) + 1
+                if source_id:
+                    await source_store.record_version(
+                        source_id=source_id,
+                        resource_url=page.url,
+                        crawl_job_id=crawl_job_id,
+                        content_hash=page.content_hash,
+                        ingest_job_id=ingest_job_id,
+                        status="queued",
+                    )
                 record_status = "queued_for_ingest"
                 record_job_id = ingest_job_id
             url_recorded = await self._store.record_url(
@@ -310,18 +366,21 @@ class CrawlerRunner:
             if not url_recorded or not progress_recorded:
                 if require_review:
                     get_blob_store().delete_job_staging(record_job_id)
-                return
+                return False
             if not require_review:
-                await self._store.update_progress(
+                progress_recorded = await self._store.update_progress(
                     crawl_job_id,
                     progress=progress,
                     ingest_job_id=record_job_id,
                     expected_attempt=expected_attempt,
                 )
+                if not progress_recorded:
+                    return False
+            return True
 
         try:
             has_web_sources = bool(
-                request.urls or request.keywords or request.site_urls
+                request.urls or request.keywords or request.site_urls or request.rss_urls
             )
             fair_structured_limit = request.max_total_pages
             if has_web_sources and request.structured_sources:
@@ -329,13 +388,13 @@ class CrawlerRunner:
                     request.max_total_pages
                     / (len(request.structured_sources) + 1)
                 )
-            for source_id in request.structured_sources:
+            for structured_source_id in request.structured_sources:
                 if int(progress.get("fetched", 0)) >= request.max_total_pages:
                     break
                 if await control() in {"pause", "cancel", "lost"}:
                     break
-                adapter = self._structured.get(source_id)
-                options = request.source_options.get(source_id) or {}
+                adapter = self._structured.get(structured_source_id)
+                options = request.source_options.get(structured_source_id) or {}
                 requested_source_limit = max(
                     int(options.get("limit", adapter.info.default_limit)),
                     1,
@@ -351,9 +410,9 @@ class CrawlerRunner:
                     200,
                 )
                 source_limits = dict(progress.get("source_limits") or {})
-                source_limits[source_id] = source_limit
+                source_limits[structured_source_id] = source_limit
                 progress["source_limits"] = source_limits
-                progress["current_source"] = source_id
+                progress["current_source"] = structured_source_id
                 try:
                     async for page in adapter.crawl(
                         options,
@@ -365,15 +424,16 @@ class CrawlerRunner:
                         if await control() in {"pause", "cancel", "lost"}:
                             break
                         target_id = await target_knowledge_base_id(page)
-                        if not request.force and await should_skip(
+                        if not request.force and not incremental and await should_skip(
                             page.url, target_id
                         ):
                             continue
-                        await queue_page(page, knowledge_base_id=target_id)
+                        if not await queue_page(page, knowledge_base_id=target_id):
+                            break
                         if int(progress.get("fetched", 0)) >= request.max_total_pages:
                             break
                 except (httpx.HTTPError, ValueError, TypeError) as error:
-                    await on_error(f"structured:{source_id}", error)
+                    await on_error(f"structured:{structured_source_id}", error)
 
             remaining = request.max_total_pages - int(progress.get("fetched", 0))
             request.max_total_pages = max(remaining, 0)
@@ -385,18 +445,51 @@ class CrawlerRunner:
                     )
 
                 async def should_skip_web(url: str) -> bool:
+                    if incremental:
+                        return False
                     return await should_skip(url, web_knowledge_base_id)
+
+                async def conditional_headers(url: str) -> dict[str, str]:
+                    if not source_id:
+                        return {}
+                    return await source_store.conditional_headers(source_id, url)
+
+                async def on_http_state(
+                    url: str,
+                    etag: str | None,
+                    last_modified: str | None,
+                    not_modified: bool,
+                ) -> None:
+                    if not source_id:
+                        return
+                    await source_store.record_http_state(
+                        source_id=source_id,
+                        url=url,
+                        etag=etag,
+                        last_modified=last_modified,
+                        not_modified=not_modified,
+                    )
+                    if not_modified:
+                        progress["not_modified"] = int(progress.get("not_modified", 0)) + 1
+                        await self._store.update_progress(
+                            crawl_job_id,
+                            progress=progress,
+                            expected_attempt=expected_attempt,
+                        )
 
                 async for page in self._engine.crawl(
                     request,
                     should_skip=should_skip_web,
                     control=control,
                     on_error=on_error,
+                    conditional_headers=(conditional_headers if incremental else None),
+                    on_http_state=(on_http_state if incremental else None),
                 ):
-                    await queue_page(
+                    if not await queue_page(
                         page,
                         knowledge_base_id=web_knowledge_base_id,
-                    )
+                    ):
+                        break
         except Exception as error:
             await self._store.finish(
                 crawl_job_id,
@@ -405,6 +498,13 @@ class CrawlerRunner:
                 error_message=str(error),
                 expected_attempt=expected_attempt,
             )
+            if source_id:
+                await source_store.finish_run(
+                    crawl_job_id=crawl_job_id,
+                    status=CrawlJobStatus.FAILED,
+                    progress=progress,
+                    error_message=str(error),
+                )
             raise
 
         state = await control()
@@ -439,6 +539,12 @@ class CrawlerRunner:
                 progress=progress,
                 expected_attempt=expected_attempt,
             )
+            if source_id:
+                await source_store.finish_run(
+                    crawl_job_id=crawl_job_id,
+                    status=CrawlJobStatus.CANCELLED,
+                    progress=progress,
+                )
         elif state == "pause":
             await self._store.finish(
                 crawl_job_id,
@@ -446,6 +552,12 @@ class CrawlerRunner:
                 progress=progress,
                 expected_attempt=expected_attempt,
             )
+            if source_id:
+                await source_store.finish_run(
+                    crawl_job_id=crawl_job_id,
+                    status=CrawlJobStatus.PAUSED,
+                    progress=progress,
+                )
         elif (
             int(progress.get("queued_for_ingest", 0)) == 0
             and int(progress.get("pending_review", 0)) == 0
@@ -458,6 +570,13 @@ class CrawlerRunner:
                 error_message="All discovered pages failed to fetch or extract",
                 expected_attempt=expected_attempt,
             )
+            if source_id:
+                await source_store.finish_run(
+                    crawl_job_id=crawl_job_id,
+                    status=CrawlJobStatus.FAILED,
+                    progress=progress,
+                    error_message="All discovered pages failed to fetch or extract",
+                )
         else:
             await self._store.finish(
                 crawl_job_id,
@@ -465,6 +584,12 @@ class CrawlerRunner:
                 progress=progress,
                 expected_attempt=expected_attempt,
             )
+            if source_id:
+                await source_store.finish_run(
+                    crawl_job_id=crawl_job_id,
+                    status=CrawlJobStatus.SUCCEEDED,
+                    progress=progress,
+                )
 
     async def _stage_review(
         self,
@@ -508,6 +633,11 @@ class CrawlerRunner:
                 "embedding_model": profile.model,
                 "embedding_dim": profile.dimension,
                 "embedding_query_instruction": profile.query_instruction,
+                "conflict_policy": (
+                    "keep_new"
+                    if page.metadata.get("crawler_incremental")
+                    else "manual"
+                ),
             },
         }
 
@@ -547,6 +677,11 @@ class CrawlerRunner:
                     "embedding_model": profile.model,
                     "embedding_dim": profile.dimension,
                     "embedding_query_instruction": profile.query_instruction,
+                    "conflict_policy": (
+                        "keep_new"
+                        if page.metadata.get("crawler_incremental")
+                        else "manual"
+                    ),
                 },
             )
         except Exception:

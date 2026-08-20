@@ -50,7 +50,14 @@ async def source_capabilities() -> dict:
                 "managed_by": "/v1/crawler/jobs",
                 "public_http_only": not settings.crawler_allow_private_urls,
                 "max_total_pages": settings.crawler_max_total_pages,
-                "parsers": {"text/html": "trafilatura"},
+                "registry": "/v1/crawler/registry",
+                "schedule_enabled": settings.crawler_schedule_enabled,
+                "parsers": {
+                    "text/html": "trafilatura",
+                    "application/rss+xml": "rss-atom",
+                    "application/atom+xml": "rss-atom",
+                    "application/xml": "rss-atom",
+                },
             },
         ],
         "sync": {

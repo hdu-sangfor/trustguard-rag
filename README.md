@@ -57,8 +57,10 @@ docker compose up -d --build
 
 首次构建 MinerU 需要安装解析依赖并下载模型，耗时及磁盘占用较大。默认 `pipeline`
 后端使用 Python slim 基础镜像，不额外携带 vLLM 运行时；相关镜像源可用
-`DOCKERHUB_REGISTRY`、`MINERU_BASE_IMAGE`、`UBUNTU_APT_MIRROR`、`PIP_INDEX_URL`
-和 `MINERU_MODEL_SOURCE` 覆盖。默认只下载 `MINERU_MODEL_TYPE=pipeline` 对应模型，
+`DOCKERHUB_REGISTRY`、`MINERU_BASE_IMAGE`、`UBUNTU_APT_MIRROR`、
+`MINERU_PIP_INDEX_URL` 和 `MINERU_MODEL_SOURCE` 覆盖。MinerU 默认单独使用官方
+PyPI，避免第三方镜像中的 CUDA wheel 与索引哈希不一致；项目其他 Python 依赖仍可
+使用全局 `PIP_INDEX_URL`。默认只下载 `MINERU_MODEL_TYPE=pipeline` 对应模型，
 避免把未使用的 VLM 模型打入镜像。
 若只需本地 PDF 文本层 + 图片区域 OCR，可显式设置 `RAG_PDF_PARSER=local`；DOCX
 仍需要 MinerU。
@@ -157,6 +159,52 @@ curl http://localhost:18200/v1/crawler/presets
 curl http://localhost:18200/v1/crawler/legacy-corpus
 ```
 
+### 数据源注册与周期增量采集
+
+九类分类预置仍由采集页的小卡片选择。服务首次启动时会把九类预置幂等写入
+`crawler_sources`，之后数据源地址、可信等级、内容类型、使用限制和调度周期均以 MySQL
+配置为准；前端不需要增加结构化数据源表单。也可以通过管理 API 增加 URL、站点、RSS/Atom
+或结构化来源：
+
+```bash
+curl -X POST http://localhost:18200/v1/crawler/registry \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "cisa-alert-feed",
+    "knowledge_base_id": "<knowledge-base-id>",
+    "name": "CISA Alerts",
+    "source_kind": "rss",
+    "endpoint": "https://www.cisa.gov/news.xml",
+    "preset_ids": ["agent_08_threat_intelligence"],
+    "trust_level": "official",
+    "content_type": "threat_intelligence",
+    "usage_restrictions": "保留来源与发布时间",
+    "schedule_enabled": true,
+    "schedule_interval_minutes": 360,
+    "config": {"require_review": true, "review_mode": "human"}
+  }'
+
+# 立即触发一次增量采集；周期任务仍使用同一审核和入库链路
+curl -X POST http://localhost:18200/v1/crawler/registry/cisa-alert-feed/runs \
+  -H "Content-Type: application/json" -d '{}'
+
+# 查看数据源级成功率、重复率、审核通过率和知识新鲜度
+curl 'http://localhost:18200/v1/crawler/registry?include_stats=true'
+
+# 查看内容版本、当前文档和被替代版本
+curl http://localhost:18200/v1/crawler/registry/cisa-alert-feed/versions
+```
+
+增量 HTTP 采集会保存 `ETag` 和 `Last-Modified`，后续发送 `If-None-Match` 与
+`If-Modified-Since`；`304 Not Modified` 不重复清洗或入库。正文哈希未变化时计为重复；哈希
+变化时以 `conflict_policy=keep_new` 复用现有 Saga 发布新文档，并将旧文档和旧数据源版本标记
+为已替代。每个数据源保留运行历史、资源状态和内容版本历史，周期调度按数据库中的
+`schedule_interval_minutes` 执行。
+
+采集页可直接选择“一次性采集”或开启“周期采集”，周期支持分钟、小时和天。开启后会先保存
+数据源并立即执行首轮任务；分类卡片会展示已经启用的周期，关闭开关并再次提交可停用该分类的
+后续调度。自定义周期采集会保存为 `custom` 数据源。
+
 历史语料可按分类和偏移提交，例如：
 
 ```bash
@@ -188,19 +236,23 @@ Agent 自动驳回的清洗正文默认保留 30 天，期间可由人工查看�
 立即删除暂存正文。Worker 按 `RAG_CRAWLER_REVIEW_CLEANUP_SCAN_SECONDS` 定期清理到期
 内容，保留天数可通过 `RAG_CRAWLER_AGENT_REJECTION_RETENTION_DAYS` 调整。
 
-## 端口（182xx）
+## 端口
 
 | 服务 | 端口 |
 |------|------|
 | rag-service | 18200 |
 | rag-mcp（Streamable HTTP `/mcp`） | 18201 |
-| mineru-api | 18220 |
-| mysql | 18210 |
-| redis | 18211 |
-| rabbitmq | 18212 / 18213 |
-| qdrant | 18214 / 18215 |
-| opensearch | 18216 |
-| minio | 18217 / 18218 |
+| mineru-api | 8220 |
+| mysql | 8210 |
+| redis | 8211 |
+| rabbitmq | 8212 / 8213 |
+| qdrant | 8214 / 8215 |
+| opensearch | 8216 |
+| minio | 8217 / 8218 |
+
+宿主机端口均可通过 `.env` 中对应的 `*_HOST_PORT` 配置覆盖。默认使用 Windows
+动态端口范围以下的 82xx，避免 Hyper-V、WSL 和 HNS 动态排除端口；容器之间仍使用
+服务原生端口通信。
 
 本地 Compose 使用单节点 OpenSearch，并关闭安全插件，不能直接作为生产配置使用。
 应用启动时会幂等地把 MySQL 中已有的 ready 文档分块回填到 OpenSearch，因而支持
@@ -232,7 +284,7 @@ curl http://localhost:18200/v1/documents/<document_id>/chunks
 
 PDF 和 DOCX 使用独立 MinerU API 解析为 Markdown；TXT 和 Markdown 由 RAG
 按 UTF-8 直接读取（MinerU 本地 API 不接受这两种文本格式）。使用 Docker 全栈
-启动时 MinerU 会自动启动，API 文档位于 `http://localhost:18220/docs`。
+启动时 MinerU 会自动启动，API 文档位于 `http://localhost:8220/docs`。
 
 仅做本地 Python 开发、不运行完整 Compose 时，可单独启动 MinerU：
 
@@ -395,7 +447,7 @@ MCP Transport 只要求 JWT 通过认证，不在会话初始化时同时要求�
 
 入库、删除和冲突解决均通过 Transactional Outbox 调度。API 在同一 MySQL 事务中保存
 业务状态和 `outbox_events`，独立 Worker 再可靠发布到 RabbitMQ，因此 RabbitMQ 短暂不可用
-不会丢任务。RabbitMQ 管理页为 <http://localhost:18213>。
+不会丢任务。RabbitMQ 管理页为 <http://localhost:8213>。
 
 ```bash
 # Docker 会同时启动 API 和 Worker
