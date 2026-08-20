@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.settings import get_settings
 from app.stores.crawler_source_store import CrawlerSourceStore
 from app.stores.crawler_store import CrawlerStore
 from app.workers.eager import dispatch_eager
@@ -19,6 +20,10 @@ _LIST_KEYS = (
 )
 
 
+class CrawlerDisabledError(RuntimeError):
+    """Raised when a caller attempts to run the globally disabled crawler."""
+
+
 def _unique(values: list[Any]) -> list[str]:
     return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
@@ -28,6 +33,41 @@ def config_from_source(row, *, overrides: dict[str, Any] | None = None) -> dict[
     for key in _LIST_KEYS:
         config[key] = _unique(list(config.get(key) or []))
     config["source_options"] = dict(config.get("source_options") or {})
+    if row.source_kind == "preset":
+        from app.core.crawler.presets import expand_crawler_presets
+
+        config["preset_ids"] = _unique(
+            [*config["preset_ids"], *list(row.preset_ids_json or [])]
+        )
+        expanded = expand_crawler_presets(config["preset_ids"])
+        config["site_urls"] = _unique([*expanded.site_urls, *config["site_urls"]])
+        config["keywords"] = _unique([*expanded.keywords, *config["keywords"]])
+        config["structured_sources"] = _unique(
+            [*expanded.structured_sources, *config["structured_sources"]]
+        )
+        config["source_options"] = {
+            source_id: {
+                **dict(expanded.source_options.get(source_id) or {}),
+                **dict(config["source_options"].get(source_id) or {}),
+            }
+            for source_id in dict.fromkeys(
+                [*expanded.source_options, *config["source_options"]]
+            )
+        }
+        expanded_metadata = {
+            "target_category": expanded.category_name,
+            "domain_category": expanded.domain_category,
+            "kb_tier": expanded.kb_tier,
+            "agent_phases": expanded.phases,
+            "topic_tags": expanded.topic_tags,
+            "category_priority": expanded.priority,
+            "review_criteria": expanded.review_criteria,
+        }
+        for key, value in expanded_metadata.items():
+            if value not in (None, "", []):
+                config.setdefault(key, value)
+        if expanded.category_name:
+            config.setdefault("route_by_category", True)
     endpoint = str(row.endpoint or "").strip()
     if row.source_kind == "url" and endpoint:
         config["urls"] = _unique([*config["urls"], endpoint])
@@ -66,6 +106,8 @@ async def trigger_crawler_source(
     trigger_type: str = "manual",
     overrides: dict[str, Any] | None = None,
 ):
+    if not get_settings().crawler_enabled:
+        raise CrawlerDisabledError("Crawler is disabled")
     sources = CrawlerSourceStore()
     source = await sources.get(source_id)
     if source is None:
@@ -74,20 +116,11 @@ async def trigger_crawler_source(
         raise ValueError("Crawler source is disabled")
     config = config_from_source(source, overrides=overrides)
     crawler = CrawlerStore()
-    row, event = await crawler.create_job(
-        knowledge_base_id=source.knowledge_base_id,
+    row, event = await crawler.create_source_job(
+        source_id=source.id,
         config=config,
+        trigger_type=trigger_type,
     )
-    try:
-        await sources.register_run(
-            source_id=source.id,
-            crawl_job_id=row.id,
-            trigger_type=trigger_type,
-        )
-    except Exception:
-        # The crawl command remains recoverable through the outbox. Keeping the
-        # source-run registration transactional is handled by a future schema merge.
-        raise
     await dispatch_eager(event)
     return await crawler.get(row.id) or row
 

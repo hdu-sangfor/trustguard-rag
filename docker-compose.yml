@@ -1,5 +1,6 @@
-# TrustGuard RAG 平台全栈。容器内部保留 182xx，宿主机使用动态端口范围以下的 82xx。
-# 启动：docker compose up -d --build   健康检查：curl http://localhost:8200/health
+# TrustGuard RAG 平台全栈。RAG/MCP 保留 Agent 已使用的 18200/18201 宿主机契约，
+# 依赖服务使用动态端口范围以下的 82xx。
+# 启动：docker compose up -d --build   健康检查：curl http://localhost:18200/health
 name: trustguard-rag
 
 x-optional-env-files: &optional-env-files
@@ -71,7 +72,7 @@ services:
       network: host
     image: ${TRUSTGUARD_IMAGE_PREFIX:-trustguard-}rag-service
     ports:
-      - "${RAG_API_HOST_PORT:-8200}:18200"
+      - "${RAG_API_HOST_PORT:-18200}:18200"
     environment:
       RAG_MYSQL_HOST: mysql
       RAG_MYSQL_PORT: "3306"
@@ -157,7 +158,7 @@ services:
         "18201",
       ]
     ports:
-      - "${RAG_MCP_HOST_PORT:-8201}:18201"
+      - "${RAG_MCP_HOST_PORT:-18201}:18201"
     environment:
       RAG_MCP_ENABLED: "true"
       RAG_MCP_BACKEND_URL: http://rag-service:18200
@@ -166,8 +167,8 @@ services:
       RAG_MCP_AUTH_ISSUER: ${RAG_MCP_AUTH_ISSUER:-}
       RAG_MCP_AUTH_AUDIENCE: ${RAG_MCP_AUTH_AUDIENCE:-trustguard-rag-mcp}
       RAG_MCP_AUTH_JWKS_URL: ${RAG_MCP_AUTH_JWKS_URL:-}
-      RAG_MCP_RESOURCE_SERVER_URL: ${RAG_MCP_RESOURCE_SERVER_URL:-http://localhost:8201/mcp}
-      RAG_MCP_ALLOWED_HOSTS: ${RAG_MCP_ALLOWED_HOSTS:-localhost,localhost:8201,127.0.0.1,127.0.0.1:8201,host.docker.internal,host.docker.internal:8201,rag-mcp,rag-mcp:18201}
+      RAG_MCP_RESOURCE_SERVER_URL: ${RAG_MCP_RESOURCE_SERVER_URL:-http://localhost:18201/mcp}
+      RAG_MCP_ALLOWED_HOSTS: ${RAG_MCP_ALLOWED_HOSTS:-localhost,localhost:18201,127.0.0.1,127.0.0.1:18201,host.docker.internal,host.docker.internal:18201,rag-mcp,rag-mcp:18201}
       RAG_MCP_ALLOWED_ORIGINS: ${RAG_MCP_ALLOWED_ORIGINS:-}
     env_file: *optional-env-files
     depends_on:

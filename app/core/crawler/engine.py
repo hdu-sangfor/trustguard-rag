@@ -310,20 +310,27 @@ class CrawlEngine:
                     if on_error:
                         await on_error(feed_url, error)
                     continue
-                if on_http_state:
+                fully_consumed = True
+                for page in pages:
+                    if emitted >= request.max_total_pages:
+                        fully_consumed = False
+                        break
+                    if should_skip and not request.force and await should_skip(page.url):
+                        continue
+                    emitted += 1
+                    yield page
+                # A successful response may only advance its HTTP validators after
+                # every yielded entry has been accepted by the async consumer. If
+                # the consumer raises or breaks, the generator closes at ``yield``
+                # and this callback is intentionally skipped so the feed is fetched
+                # again on the next run.
+                if fully_consumed and on_http_state:
                     await on_http_state(
                         feed_url,
                         state.get("etag"),
                         state.get("last_modified"),
                         False,
                     )
-                for page in pages:
-                    if emitted >= request.max_total_pages:
-                        break
-                    if should_skip and not request.force and await should_skip(page.url):
-                        continue
-                    emitted += 1
-                    yield page
                 if request.fetch_delay_seconds > 0:
                     await asyncio.sleep(request.fetch_delay_seconds)
 
@@ -367,6 +374,11 @@ class CrawlEngine:
                     continue
                 if control and await control() in {"pause", "cancel", "lost"}:
                     break
+                emitted += 1
+                yield page
+                # Resume here only after the consumer has handled the page. This
+                # prevents a transient staging/ingest failure from persisting an
+                # ETag that would turn the next attempt into a lossy HTTP 304.
                 if on_http_state:
                     await on_http_state(
                         normalized,
@@ -374,8 +386,6 @@ class CrawlEngine:
                         str(page.metadata.get("http_last_modified") or "") or None,
                         False,
                     )
-                emitted += 1
-                yield page
                 if request.fetch_delay_seconds > 0:
                     await asyncio.sleep(request.fetch_delay_seconds)
 

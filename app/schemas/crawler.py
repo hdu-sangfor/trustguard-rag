@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from app.domain.crawler import CrawlJobStatus
 
@@ -140,6 +140,63 @@ class StructuredSourceListResponse(BaseModel):
 CrawlerSourceKind = Literal["url", "site", "rss", "structured", "preset", "custom"]
 
 
+def validate_crawler_source_config(
+    *,
+    source_kind: CrawlerSourceKind,
+    endpoint: str | None,
+    preset_ids: list[str],
+    config: dict[str, Any],
+) -> None:
+    """Apply one-shot crawler limits to the persisted source configuration."""
+    candidate = dict(config)
+
+    def append_values(key: str, values: list[str]) -> None:
+        current = candidate.get(key)
+        if current is None:
+            candidate[key] = values
+        elif isinstance(current, list):
+            candidate[key] = [*current, *values]
+
+    if candidate.get("source_ids"):
+        raise ValueError("Managed source config cannot reference another source")
+    candidate["knowledge_base_id"] = "crawler-source-validation"
+    if source_kind == "url" and endpoint:
+        append_values("urls", [endpoint])
+    elif source_kind == "site" and endpoint:
+        append_values("site_urls", [endpoint])
+    elif source_kind == "rss" and endpoint:
+        append_values("rss_urls", [endpoint])
+    elif source_kind == "structured" and endpoint:
+        append_values("structured_sources", [endpoint])
+    elif source_kind == "preset":
+        append_values("preset_ids", preset_ids)
+    try:
+        validated = CrawlJobCreateRequest.model_validate(candidate)
+    except ValidationError as error:
+        messages = "; ".join(
+            f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}"
+            for item in error.errors()
+        )
+        raise ValueError(f"Invalid crawler source config: {messages}") from error
+    if source_kind == "preset":
+        from app.core.crawler.presets import expand_crawler_presets
+
+        try:
+            expand_crawler_presets(validated.preset_ids)
+        except ValueError as error:
+            raise ValueError(f"Invalid crawler source config: {error}") from error
+    if validated.structured_sources:
+        from app.core.crawler.structured import default_structured_registry
+
+        known_sources = {item.id for item in default_structured_registry().infos()}
+        unknown_sources = set(validated.structured_sources) - known_sources
+        if unknown_sources:
+            unknown = ", ".join(sorted(unknown_sources))
+            raise ValueError(
+                f"Invalid crawler source config: unknown structured sources: {unknown}"
+            )
+
+
 class CrawlerSourceCreateRequest(BaseModel):
     id: str | None = Field(default=None, min_length=1, max_length=64)
     knowledge_base_id: str
@@ -167,6 +224,12 @@ class CrawlerSourceCreateRequest(BaseModel):
             raise ValueError("Scheduled source requires schedule_interval_minutes")
         if self.source_kind == "preset" and not self.preset_ids:
             raise ValueError("Preset source requires preset_ids")
+        validate_crawler_source_config(
+            source_kind=self.source_kind,
+            endpoint=self.endpoint,
+            preset_ids=self.preset_ids,
+            config=self.config,
+        )
         return self
 
 

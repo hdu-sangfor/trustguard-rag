@@ -16,6 +16,7 @@ from app.settings import get_settings
 from app.stores.db import get_engine
 from app.stores.models import (
     CrawlJobRow,
+    CrawlerSourceRow,
     CrawlerSourceRunRow,
     CrawlUrlRecordRow,
     KnowledgeBaseRow,
@@ -30,6 +31,29 @@ def _utcnow() -> datetime:
 
 def _url_hash(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+def _new_crawl_job(
+    *,
+    crawl_job_id: str,
+    knowledge_base_id: str,
+    config: dict[str, Any],
+) -> CrawlJobRow:
+    return CrawlJobRow(
+        id=crawl_job_id,
+        knowledge_base_id=knowledge_base_id,
+        status=CrawlJobStatus.QUEUED,
+        config_json=config,
+        progress_json={
+            "discovered": 0,
+            "fetched": 0,
+            "queued_for_ingest": 0,
+            "skipped": 0,
+            "failed": 0,
+            "errors": [],
+        },
+        ingest_job_ids_json=[],
+    )
 
 
 def _refresh_review_counts(progress: dict[str, Any]) -> None:
@@ -125,22 +149,87 @@ class CrawlerStore:
             knowledge_base = await session.get(KnowledgeBaseRow, knowledge_base_id)
             if knowledge_base is None:
                 raise LookupError("Knowledge base not found")
-            row = CrawlJobRow(
-                id=crawl_job_id,
+            row = _new_crawl_job(
+                crawl_job_id=crawl_job_id,
                 knowledge_base_id=knowledge_base_id,
-                status=CrawlJobStatus.QUEUED,
-                config_json=config,
-                progress_json={
-                    "discovered": 0,
-                    "fetched": 0,
-                    "queued_for_ingest": 0,
-                    "skipped": 0,
-                    "failed": 0,
-                    "errors": [],
-                },
-                ingest_job_ids_json=[],
+                config=config,
             )
             session.add(row)
+            event_row = add_outbox_event(
+                session,
+                event_type=RUN_CRAWLER,
+                aggregate_id=crawl_job_id,
+                payload={"crawl_job_id": crawl_job_id},
+            )
+            await session.commit()
+            return row, event_from_row(event_row)
+
+    async def create_source_job(
+        self,
+        *,
+        source_id: str,
+        config: dict[str, Any],
+        trigger_type: str,
+        job_id: str | None = None,
+    ) -> tuple[CrawlJobRow, OutboxEvent]:
+        """Atomically create one non-overlapping run for a managed source."""
+        crawl_job_id = job_id or str(uuid4())
+        now = _utcnow()
+        active_statuses = (
+            CrawlJobStatus.QUEUED,
+            CrawlJobStatus.RUNNING,
+            CrawlJobStatus.PAUSED,
+        )
+        async with AsyncSession(get_engine(), expire_on_commit=False) as session:
+            source = await session.get(
+                CrawlerSourceRow,
+                source_id,
+                with_for_update=True,
+            )
+            if source is None:
+                raise LookupError("Crawler source not found")
+            if not source.enabled:
+                raise ValueError("Crawler source is disabled")
+            active_job_id = await session.scalar(
+                select(CrawlJobRow.id)
+                .join(
+                    CrawlerSourceRunRow,
+                    CrawlerSourceRunRow.crawl_job_id == CrawlJobRow.id,
+                )
+                .where(
+                    CrawlerSourceRunRow.source_id == source_id,
+                    CrawlJobRow.status.in_(active_statuses),
+                )
+                .limit(1)
+            )
+            if active_job_id is not None:
+                raise ValueError(
+                    f"Crawler source already has an active run: {active_job_id}"
+                )
+            knowledge_base = await session.get(
+                KnowledgeBaseRow,
+                source.knowledge_base_id,
+            )
+            if knowledge_base is None:
+                raise LookupError("Knowledge base not found")
+            row = _new_crawl_job(
+                crawl_job_id=crawl_job_id,
+                knowledge_base_id=source.knowledge_base_id,
+                config=config,
+            )
+            session.add(row)
+            session.add(
+                CrawlerSourceRunRow(
+                    crawl_job_id=crawl_job_id,
+                    source_id=source_id,
+                    trigger_type=trigger_type,
+                    status=CrawlJobStatus.QUEUED.value,
+                    progress_json={},
+                )
+            )
+            source.last_job_id = crawl_job_id
+            source.last_run_at = now
+            source.updated_at = now
             event_row = add_outbox_event(
                 session,
                 event_type=RUN_CRAWLER,

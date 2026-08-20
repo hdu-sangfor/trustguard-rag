@@ -10,7 +10,7 @@ TrustGuard 独立 RAG **知识库、混合检索与基于证据的回答**服务
 ```bash
 cp .env.example .env
 docker compose up -d --build
-curl http://localhost:8200/health
+curl http://localhost:18200/health
 ```
 
 开发环境默认允许直接调用 RAG 业务 REST。生产环境必须启用 Agent Gateway 服务身份，且
@@ -27,7 +27,7 @@ RAG_RESOURCE_REF_SECRET=replace-with-another-random-secret-at-least-32-character
 `Authorization: Bearer <RAG_GATEWAY_SERVICE_TOKEN>`。健康检查和 `/v1/internal/*` 不使用
 该身份；内部接口只接受独立的 `RAG_INTERNAL_SERVICE_TOKEN`。
 生产环境还要求 `RAG_RESOURCE_REF_SECRET` 至少 32 字符，用于签发防篡改的不透明资源引用。
-生产反向代理或 API Gateway 必须屏蔽 `/v1/internal/*`；Compose 暴露 8200 仅用于本地开发。
+生产反向代理或 API Gateway 必须屏蔽 `/v1/internal/*`；Compose 暴露 18200 仅用于本地开发。
 
 ### 国内网络加速
 
@@ -167,7 +167,7 @@ curl http://localhost:18200/v1/crawler/legacy-corpus
 或结构化来源：
 
 ```bash
-curl -X POST http://localhost:8200/v1/crawler/registry \
+curl -X POST http://localhost:18200/v1/crawler/registry \
   -H "Content-Type: application/json" \
   -d '{
     "id": "cisa-alert-feed",
@@ -185,14 +185,14 @@ curl -X POST http://localhost:8200/v1/crawler/registry \
   }'
 
 # 立即触发一次增量采集；周期任务仍使用同一审核和入库链路
-curl -X POST http://localhost:8200/v1/crawler/registry/cisa-alert-feed/runs \
+curl -X POST http://localhost:18200/v1/crawler/registry/cisa-alert-feed/runs \
   -H "Content-Type: application/json" -d '{}'
 
 # 查看数据源级成功率、重复率、审核通过率和知识新鲜度
-curl 'http://localhost:8200/v1/crawler/registry?include_stats=true'
+curl 'http://localhost:18200/v1/crawler/registry?include_stats=true'
 
 # 查看内容版本、当前文档和被替代版本
-curl http://localhost:8200/v1/crawler/registry/cisa-alert-feed/versions
+curl http://localhost:18200/v1/crawler/registry/cisa-alert-feed/versions
 ```
 
 增量 HTTP 采集会保存 `ETag` 和 `Last-Modified`，后续发送 `If-None-Match` 与
@@ -240,8 +240,8 @@ Agent 自动驳回的清洗正文默认保留 30 天，期间可由人工查看�
 
 | 服务 | 端口 |
 |------|------|
-| rag-service | 8200 |
-| rag-mcp（Streamable HTTP `/mcp`） | 8201 |
+| rag-service | 18200 |
+| rag-mcp（Streamable HTTP `/mcp`） | 18201 |
 | mineru-api | 8220 |
 | mysql | 8210 |
 | redis | 8211 |
@@ -409,16 +409,16 @@ curl -X PUT http://localhost:18200/v1/knowledge-scopes/compliance \
 Experience REST 与其他业务 REST 使用同一个 Agent Gateway 服务身份，不配置独立 Token 表。
 浏览器用户的 `ADMIN/OPERATOR` 权限由 Agent Gateway 校验；RAG 服务必须只暴露在内部网络。
 
-Compose 会在 `http://localhost:8201/mcp` 启动无状态 Streamable HTTP Server：
+Compose 会在 `http://localhost:18201/mcp` 启动无状态 Streamable HTTP Server：
 
 ```bash
 docker compose up -d --build rag-service rag-mcp
 npx -y @modelcontextprotocol/inspector@latest --cli \
-  http://localhost:8201/mcp --transport http --method tools/list
+  http://localhost:18201/mcp --transport http --method tools/list
 ```
 
 Agent 与 RAG 使用两套 Compose 时，Agent 默认通过
-`http://host.docker.internal:8201/mcp` 访问；开发默认 Host 白名单已包含该地址，生产环境应
+`http://host.docker.internal:18201/mcp` 访问；开发默认 Host 白名单已包含该地址，生产环境应
 按实际服务域名覆盖 `RAG_MCP_ALLOWED_HOSTS`。
 
 多知识库 Scope 只由 RAG Core 的 `KnowledgeApplicationService.search_scope` 解析和执行。

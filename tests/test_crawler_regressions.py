@@ -33,6 +33,18 @@ def test_compose_worker_consumes_ordinary_ingest_queue() -> None:
     assert "RAG_WORKER_CONSUME_QUEUES: rag.crawl,rag.ingest," in compose
 
 
+def test_compose_preserves_agent_facing_rag_port_contract() -> None:
+    root = Path(__file__).resolve().parents[1]
+    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+    example = (root / ".env.example").read_text(encoding="utf-8")
+
+    assert '${RAG_API_HOST_PORT:-18200}:18200' in compose
+    assert '${RAG_MCP_HOST_PORT:-18201}:18201' in compose
+    assert "RAG_API_HOST_PORT=18200" in example
+    assert "RAG_MCP_HOST_PORT=18201" in example
+    assert "RAG_MCP_BACKEND_URL=http://127.0.0.1:18200" in example
+
+
 def test_committed_crawler_report_preserves_v2_quality_evidence() -> None:
     report = (
         Path(__file__).resolve().parents[1]

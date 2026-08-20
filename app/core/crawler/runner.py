@@ -230,9 +230,9 @@ class CrawlerRunner:
             page: CrawlPage,
             *,
             knowledge_base_id: str | None = None,
-        ) -> None:
+        ) -> bool:
             if await control() in {"pause", "cancel", "lost"}:
-                return
+                return False
             knowledge_base_id = knowledge_base_id or job.knowledge_base_id
             classification_metadata = {
                 "domain_category": config.get("domain_category"),
@@ -274,19 +274,19 @@ class CrawlerRunner:
                     }
                 )
                 progress["rejections"] = rejections[-100:]
-                await self._store.record_url(
+                url_recorded = await self._store.record_url(
                     knowledge_base_id=knowledge_base_id,
                     url=page.url,
                     status="rejected",
                     content_hash=page.content_hash,
                     error=outcome.rejected_reason,
                 )
-                await self._store.update_progress(
+                progress_recorded = await self._store.update_progress(
                     crawl_job_id,
                     progress=progress,
                     expected_attempt=expected_attempt,
                 )
-                return
+                return bool(url_recorded and progress_recorded)
             page = outcome.page
             if page is None:
                 raise RuntimeError("Crawler cleaner returned no page without a rejection")
@@ -296,18 +296,18 @@ class CrawlerRunner:
                 page.content_hash,
             ):
                 progress["duplicates"] = int(progress.get("duplicates", 0)) + 1
-                await self._store.record_url(
+                url_recorded = await self._store.record_url(
                     knowledge_base_id=knowledge_base_id,
                     url=page.url,
                     status="unchanged",
                     content_hash=page.content_hash,
                 )
-                await self._store.update_progress(
+                progress_recorded = await self._store.update_progress(
                     crawl_job_id,
                     progress=progress,
                     expected_attempt=expected_attempt,
                 )
-                return
+                return bool(url_recorded and progress_recorded)
             progress["cleaned"] = int(progress.get("cleaned", 0)) + 1
             if require_review:
                 review_item = await self._stage_review(
@@ -366,14 +366,17 @@ class CrawlerRunner:
             if not url_recorded or not progress_recorded:
                 if require_review:
                     get_blob_store().delete_job_staging(record_job_id)
-                return
+                return False
             if not require_review:
-                await self._store.update_progress(
+                progress_recorded = await self._store.update_progress(
                     crawl_job_id,
                     progress=progress,
                     ingest_job_id=record_job_id,
                     expected_attempt=expected_attempt,
                 )
+                if not progress_recorded:
+                    return False
+            return True
 
         try:
             has_web_sources = bool(
@@ -425,7 +428,8 @@ class CrawlerRunner:
                             page.url, target_id
                         ):
                             continue
-                        await queue_page(page, knowledge_base_id=target_id)
+                        if not await queue_page(page, knowledge_base_id=target_id):
+                            break
                         if int(progress.get("fetched", 0)) >= request.max_total_pages:
                             break
                 except (httpx.HTTPError, ValueError, TypeError) as error:
@@ -481,10 +485,11 @@ class CrawlerRunner:
                     conditional_headers=(conditional_headers if incremental else None),
                     on_http_state=(on_http_state if incremental else None),
                 ):
-                    await queue_page(
+                    if not await queue_page(
                         page,
                         knowledge_base_id=web_knowledge_base_id,
-                    )
+                    ):
+                        break
         except Exception as error:
             await self._store.finish(
                 crawl_job_id,

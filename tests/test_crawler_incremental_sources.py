@@ -5,11 +5,17 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from sqlalchemy import select, update
 
+from app.application.crawler_sources import (
+    CrawlerDisabledError,
+    config_from_source,
+    trigger_crawler_source,
+)
 from app.core.crawler.engine import CrawlEngine, CrawlPage, CrawlRequest
 from app.core.crawler.runner import CrawlerRunner
 from app.core.crawler.structured import StructuredSourceInfo, StructuredSourceRegistry
@@ -24,6 +30,7 @@ from app.stores.job_store import JobStore
 from app.stores.knowledge_base_store import KnowledgeBaseStore
 from app.stores.models import CrawlJobRow, CrawlerResourceStateRow, IngestJobRow
 from app.stores import db
+from app.settings import get_settings
 
 
 def _naive_utcnow() -> datetime:
@@ -125,6 +132,59 @@ async def test_rss_feed_uses_conditional_headers_and_reports_304() -> None:
 
 
 @pytest.mark.asyncio
+async def test_http_validator_waits_for_consumer_acceptance() -> None:
+    response = httpx.Response(
+        200,
+        headers={"content-type": "text/html", "etag": '"page-v1"'},
+        text="""<html><head><title>Advisory</title></head>
+        <body><main>Apply the security update immediately and verify the fixed build.</main></body>
+        </html>""",
+        request=httpx.Request("GET", "https://example.com/advisory"),
+    )
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url, **kwargs):
+            return response
+
+    async def validator(url: str, **kwargs) -> str:
+        return url
+
+    states: list[tuple[str, str | None, bool]] = []
+
+    async def state(
+        url: str,
+        etag: str | None,
+        last_modified: str | None,
+        not_modified: bool,
+    ) -> None:
+        states.append((url, etag, not_modified))
+
+    engine = CrawlEngine(
+        client_factory=lambda **kwargs: Client(),
+        validator=validator,
+    )
+    stream = engine.crawl(
+        CrawlRequest(
+            urls=["https://example.com/advisory"],
+            fetch_delay_seconds=0,
+        ),
+        on_http_state=state,
+    )
+    with pytest.raises(RuntimeError, match="downstream staging failed"):
+        async for _page in stream:
+            raise RuntimeError("downstream staging failed")
+    await stream.aclose()
+
+    assert states == []
+
+
+@pytest.mark.asyncio
 async def test_registry_api_manages_scheduled_rss_source(client) -> None:
     knowledge_base = await KnowledgeBaseStore().get_default()
     created = await client.post(
@@ -173,6 +233,124 @@ async def test_registry_api_manages_scheduled_rss_source(client) -> None:
     )
     assert custom.status_code == 201, custom.text
     assert custom.json()["source_kind"] == "custom"
+
+
+@pytest.mark.asyncio
+async def test_registry_rejects_source_config_that_bypasses_job_limits(client) -> None:
+    knowledge_base = await KnowledgeBaseStore().get_default()
+    response = await client.post(
+        "/v1/crawler/registry",
+        json={
+            "knowledge_base_id": knowledge_base.id,
+            "name": "Unbounded source",
+            "source_kind": "custom",
+            "config": {
+                "keywords": [f"keyword-{index}" for index in range(51)],
+                "max_total_pages": 10_000_000,
+                "max_retries": 999_999,
+            },
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Invalid crawler source config" in response.text
+
+    valid = await client.post(
+        "/v1/crawler/registry",
+        json={
+            "id": "bounded-source",
+            "knowledge_base_id": knowledge_base.id,
+            "name": "Bounded source",
+            "source_kind": "url",
+            "endpoint": "https://example.com/advisory",
+        },
+    )
+    assert valid.status_code == 201, valid.text
+
+    updated = await client.patch(
+        "/v1/crawler/registry/bounded-source",
+        json={"config": {"max_total_pages": 10_000_000}},
+    )
+    assert updated.status_code == 422
+    assert "Invalid crawler source config" in updated.text
+
+
+@pytest.mark.asyncio
+async def test_managed_source_rejects_overlapping_manual_runs(
+    test_engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    knowledge_base = await KnowledgeBaseStore().get_default()
+    await CrawlerSourceStore().create(
+        {
+            "id": "single-flight-source",
+            "knowledge_base_id": knowledge_base.id,
+            "name": "Single-flight source",
+            "source_kind": "url",
+            "endpoint": "https://example.com/advisory",
+        }
+    )
+    dispatch = AsyncMock()
+    monkeypatch.setattr(
+        "app.application.crawler_sources.dispatch_eager",
+        dispatch,
+    )
+
+    first = await trigger_crawler_source("single-flight-source")
+    with pytest.raises(ValueError, match="already has an active run"):
+        await trigger_crawler_source("single-flight-source")
+
+    assert first.status == CrawlJobStatus.QUEUED
+    assert dispatch.await_count == 1
+    rows, total = await CrawlerStore().list()
+    assert total == 1
+    assert rows[0].id == first.id
+
+
+@pytest.mark.asyncio
+async def test_managed_source_honors_global_crawler_switch(
+    test_engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    knowledge_base = await KnowledgeBaseStore().get_default()
+    await CrawlerSourceStore().create(
+        {
+            "id": "disabled-crawler-source",
+            "knowledge_base_id": knowledge_base.id,
+            "name": "Disabled crawler source",
+            "source_kind": "url",
+            "endpoint": "https://example.com/advisory",
+        }
+    )
+    monkeypatch.setenv("RAG_CRAWLER_ENABLED", "false")
+    get_settings.cache_clear()
+
+    with pytest.raises(CrawlerDisabledError, match="Crawler is disabled"):
+        await trigger_crawler_source("disabled-crawler-source")
+
+    _, total = await CrawlerStore().list()
+    assert total == 0
+
+
+@pytest.mark.asyncio
+async def test_preset_source_expands_registered_preset_ids(test_engine) -> None:
+    knowledge_base = await KnowledgeBaseStore().get_default()
+    row = await CrawlerSourceStore().create(
+        {
+            "id": "minimal-preset-source",
+            "knowledge_base_id": knowledge_base.id,
+            "name": "Minimal preset source",
+            "source_kind": "preset",
+            "preset_ids": ["agent_02_vulnerability_weakness"],
+        }
+    )
+
+    config = config_from_source(row)
+
+    assert config["preset_ids"] == ["agent_02_vulnerability_weakness"]
+    assert config["structured_sources"]
+    assert config["site_urls"]
+    assert config["route_by_category"] is True
 
 
 @pytest.mark.asyncio

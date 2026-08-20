@@ -12,6 +12,7 @@ from app.core.crawler.structured import default_structured_registry
 from app.core.crawler.presets import CRAWLER_PRESETS, expand_crawler_presets
 from app.core.crawler.review import apply_review, get_review, get_review_content
 from app.application.crawler_sources import (
+    CrawlerDisabledError,
     merge_registered_source_config,
     trigger_crawler_source,
 )
@@ -37,6 +38,7 @@ from app.schemas.crawler import (
     LegacyCorpusCategoryResponse,
     StructuredSourceListResponse,
     StructuredSourceResponse,
+    validate_crawler_source_config,
 )
 from app.settings import get_settings
 from app.stores.crawler_store import CrawlerStore
@@ -220,6 +222,15 @@ async def update_crawler_source(
             status_code=422,
             detail="Scheduled source requires schedule_interval_minutes",
         )
+    try:
+        validate_crawler_source_config(
+            source_kind=source_kind,  # type: ignore[arg-type]
+            endpoint=endpoint,
+            preset_ids=list(preset_ids),
+            config=dict(values.get("config", current.config_json or {})),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     if values.get("knowledge_base_id"):
         knowledge_base = await get_knowledge_base_store().get(values["knowledge_base_id"])
         if knowledge_base is None:
@@ -267,6 +278,8 @@ async def run_crawler_source(
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except CrawlerDisabledError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     refreshed = await CrawlerStore().get(row.id)
@@ -465,18 +478,21 @@ async def create_crawl_job(body: CrawlJobCreateRequest) -> CrawlJobResponse:
         )
     store = CrawlerStore()
     try:
-        row, event = await store.create_job(
-            knowledge_base_id=body.knowledge_base_id,
-            config=config,
-        )
+        if config.get("source_id"):
+            row, event = await store.create_source_job(
+                source_id=str(config["source_id"]),
+                config=config,
+                trigger_type="manual",
+            )
+        else:
+            row, event = await store.create_job(
+                knowledge_base_id=body.knowledge_base_id,
+                config=config,
+            )
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    if config.get("source_id"):
-        await CrawlerSourceStore().register_run(
-            source_id=str(config["source_id"]),
-            crawl_job_id=row.id,
-            trigger_type="manual",
-        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     await dispatch_eager(event)
     return _response(await store.get(row.id) or row)
 
